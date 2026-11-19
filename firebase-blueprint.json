@@ -1,0 +1,197 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public manager profile without PII, synced across devices.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "managerName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "nationality": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "clubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clubName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "preferredFormation": { "type": "string", "enum": ["4-3-3", "4-2-3-1", "3-4-2-1", "3-5-2", "4-4-2", "5-3-2"] },
+        "role": { "type": "string", "enum": ["manager", "admin"] },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "matchesPlayed": { "type": "integer" },
+        "wins": { "type": "integer" },
+        "draws": { "type": "integer" },
+        "losses": { "type": "integer" },
+        "trophies": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "managerName", "clubId", "clubName", "role", "status", "matchesPlayed", "wins", "draws", "losses", "trophies", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document for user account settings and notification preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "pushEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "pushEnabled", "createdAt", "updatedAt"]
+    },
+    "CareerSave": {
+      "title": "CareerSave",
+      "description": "Full cloud-synced Football Manager career state stored per user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "season": { "type": "string", "minLength": 4, "maxLength": 16 },
+        "matchweek": { "type": "integer" },
+        "transferBudget": { "type": "number" },
+        "wageBudget": { "type": "number" },
+        "boardConfidence": { "type": "integer" },
+        "fanSupport": { "type": "integer" },
+        "trainingFocus": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "trainingIntensity": { "type": "string", "enum": ["light", "balanced", "intense"] },
+        "tactics": { "type": "object" },
+        "squad": { "type": "array" },
+        "standings": { "type": "array" },
+        "fixtures": { "type": "array" },
+        "recentResults": { "type": "array" },
+        "transferHistory": { "type": "array" },
+        "competitions": { "type": "object" },
+        "trophyCabinet": { "type": "array" },
+        "seasonHistory": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "clubId", "season", "matchweek", "transferBudget", "wageBudget", "boardConfidence", "tactics", "squad", "standings", "fixtures", "updatedAt"]
+    },
+    "NewsArticle": {
+      "title": "NewsArticle",
+      "description": "Real-time transfer market news and official club bulletins.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "summary": { "type": "string", "minLength": 5, "maxLength": 1200 },
+        "category": { "type": "string", "enum": ["transfer", "rumor", "matchday", "injury", "official"] },
+        "playerName": { "type": "string", "maxLength": 80 },
+        "clubTag": { "type": "string", "maxLength": 64 },
+        "feeText": { "type": "string", "maxLength": 48 },
+        "sourceTitle": { "type": "string", "maxLength": 120 },
+        "sourceUrl": { "type": "string", "maxLength": 400 },
+        "isBreaking": { "type": "boolean" },
+        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "summary", "category", "isBreaking", "authorUid", "createdAt", "updatedAt"]
+    },
+    "PushNotification": {
+      "title": "PushNotification",
+      "description": "Push notification broadcast sent by Admin to all managers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "body": { "type": "string", "minLength": 2, "maxLength": 500 },
+        "category": { "type": "string", "enum": ["transfer", "matchday", "system", "urgent"] },
+        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "body", "category", "authorUid", "createdAt"]
+    },
+    "MarketOverride": {
+      "title": "MarketOverride",
+      "description": "Admin-managed real-time player valuation and club transfer overrides.",
+      "type": "object",
+      "properties": {
+        "playerId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "marketValueM": { "type": "number" },
+        "rating": { "type": "integer" },
+        "transferStatus": { "type": "string", "enum": ["available", "listed", "untouchable", "loan"] },
+        "rumorNote": { "type": "string", "maxLength": 200 },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["playerId", "clubId", "marketValueM", "rating", "transferStatus", "updatedBy", "updatedAt"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Telemetry event for Admin statistics (matches played, transfers completed).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventType": { "type": "string", "enum": ["match_played", "transfer_completed", "tactic_saved", "career_started", "season_completed"] },
+        "clubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "detail": { "type": "string", "maxLength": 200 },
+        "valueM": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "eventType", "clubId", "createdAt"]
+    },
+    "AdminRegistry": {
+      "title": "AdminRegistry",
+      "description": "Trusted admin UID registry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "grantedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "grantedBy", "createdAt"]
+    },
+    "ClubNotification": {
+      "title": "ClubNotification",
+      "description": "Cloud-synced per-user club event and change notification feed.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "enum": ["match", "transfer", "tactics", "medical", "training", "season", "trophy", "contract"] },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "body": { "type": "string", "minLength": 2, "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "category", "title", "body", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public manager profiles (no PII)."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "PII-isolated private user info (email, push preferences)."
+    },
+    "/users/{userId}/clubNotifications/{notifId}": {
+      "schema": { "$ref": "#/entities/ClubNotification" },
+      "description": "Real-time cloud-synced notifications for all club actions and changes."
+    },
+    "/careers/{userId}": {
+      "schema": { "$ref": "#/entities/CareerSave" },
+      "description": "Cloud-synced football manager career save state."
+    },
+    "/news/{newsId}": {
+      "schema": { "$ref": "#/entities/NewsArticle" },
+      "description": "Real-time transfer market & football news articles."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/PushNotification" },
+      "description": "Push notification broadcasts sent by admins."
+    },
+    "/marketOverrides/{playerId}": {
+      "schema": { "$ref": "#/entities/MarketOverride" },
+      "description": "Admin real-time market value & player status overrides."
+    },
+    "/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Gameplay telemetry logs for Admin statistics."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRegistry" },
+      "description": "Admin role registry."
+    }
+  }
+}

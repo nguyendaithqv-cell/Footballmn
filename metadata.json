@@ -1,0 +1,6 @@
+{
+  "name": "Touchline XI — Pro Football Manager",
+  "description": "Game quản lý bóng đá chuyên nghiệp tối ưu màn hình dọc, dữ liệu cầu thủ & HLV thực tế, chiến thuật chuyên sâu, cập nhật chuyển nhượng thời gian thực và đồng bộ đám mây Firebase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
