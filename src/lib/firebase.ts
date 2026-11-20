@@ -6,11 +6,26 @@ import {
   setPersistence,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import firebaseAppletConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const resolvedFirebaseConfig = {
+  projectId: env.VITE_FIREBASE_PROJECT_ID || firebaseAppletConfig.projectId,
+  appId: env.VITE_FIREBASE_APP_ID || firebaseAppletConfig.appId,
+  apiKey: env.VITE_FIREBASE_API_KEY || firebaseAppletConfig.apiKey,
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || firebaseAppletConfig.authDomain,
+  firestoreDatabaseId:
+    env.VITE_FIREBASE_DATABASE_ID || firebaseAppletConfig.firestoreDatabaseId,
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || firebaseAppletConfig.storageBucket,
+  messagingSenderId:
+    env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseAppletConfig.messagingSenderId,
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || firebaseAppletConfig.measurementId,
+};
+
+const app = initializeApp(resolvedFirebaseConfig);
+
+export const db = getFirestore(app, resolvedFirebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -46,7 +61,7 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export const FIRESTORE_QUOTA_UPGRADE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/data?openUpgradeDialog=true`;
+export const FIRESTORE_QUOTA_UPGRADE_URL = `https://console.firebase.google.com/project/${resolvedFirebaseConfig.projectId}/firestore/databases/${resolvedFirebaseConfig.firestoreDatabaseId}/data?openUpgradeDialog=true`;
 
 const QUOTA_SESSION_KEY = 'txi_firestore_quota_utc_day';
 const getUtcDay = () => new Date().toISOString().slice(0, 10);

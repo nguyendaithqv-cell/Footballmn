@@ -39,6 +39,7 @@ import {
   applyCupMatchResults,
   applyMarketOverrides,
   applyMatchToStandings,
+  buildAutoLineupSlots,
   createInitialCareer,
   createNextSeasonCareer,
   ensureCareerCompetitions,
@@ -507,7 +508,13 @@ export default function App() {
       };
 
       const initialCareer = createInitialCareer(uid, club.id, marketOverrides);
-      initialCareer.tactics.formation = data.preferredFormation;
+      if (initialCareer.tactics.formation !== data.preferredFormation) {
+        initialCareer.tactics = {
+          ...initialCareer.tactics,
+          formation: data.preferredFormation,
+          slots: buildAutoLineupSlots(data.preferredFormation, initialCareer.squad),
+        };
+      }
 
       try {
         await setDoc(doc(db, 'users', uid), newProfile);
@@ -1067,6 +1074,7 @@ export default function App() {
       };
 
       await saveCareerCloud(nextCareer);
+      if (hasFirestoreQuotaExceeded()) return;
 
       try {
         if (userMatch || trophiesAdded > 0) {
@@ -1270,6 +1278,9 @@ export default function App() {
       if (!hydratedCareer || !firebaseUser) {
         return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
       }
+      if (hydratedCareer.squad.length >= 45) {
+        return { ok: false, message: 'Đội hình đã đạt giới hạn tối đa 45 cầu thủ.' };
+      }
       if (bidM > hydratedCareer.transferBudget) {
         return { ok: false, message: 'Ngân sách chuyển nhượng không đủ.' };
       }
@@ -1292,6 +1303,11 @@ export default function App() {
         ...player,
         clubId: hydratedCareer.clubId,
         wageK,
+        stars: 1,
+        fitness: 95,
+        appearances: 0,
+        goals: 0,
+        assists: 0,
         transferStatus: 'available',
         morale: 92,
       };
@@ -1421,10 +1437,20 @@ export default function App() {
       if (!target) return;
       const feeM = Math.round(target.marketValueM * 0.92);
       const nextSquad = hydratedCareer.squad.filter((p) => p.id !== playerId);
-      const fallbackId = nextSquad[0]?.id ?? '';
-      const nextSlots = hydratedCareer.tactics.slots.map((s) =>
-        s.playerId === playerId ? { ...s, playerId: fallbackId } : s
+      const occupiedIds = new Set(
+        hydratedCareer.tactics.slots
+          .filter((s) => s.playerId !== playerId)
+          .map((s) => s.playerId)
       );
+      const benchPool = nextSquad
+        .filter((p) => !occupiedIds.has(p.id))
+        .sort((a, b) => b.rating - a.rating);
+      const nextSlots = hydratedCareer.tactics.slots.map((s) => {
+        if (s.playerId !== playerId) return s;
+        const posMatch = benchPool.find((p) => p.position === s.label) ?? benchPool[0] ?? nextSquad[0];
+        if (posMatch) occupiedIds.add(posMatch.id);
+        return { ...s, playerId: posMatch?.id ?? '' };
+      });
       saveCareerCloud({
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(1)),

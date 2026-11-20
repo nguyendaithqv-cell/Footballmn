@@ -504,45 +504,67 @@ export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[
     const effRating = Math.max(50, p.rating - penalty);
 
     if (['ST', 'LW', 'RW', 'CAM'].includes(slot.label)) {
-      atkSum += effRating * 0.7 + (p.attributes.sho + p.attributes.dri) * 0.15;
+      atkSum += effRating * 0.72 + (p.attributes.sho + p.attributes.dri) * 0.14;
       atkCount++;
     } else if (['CM', 'CDM'].includes(slot.label)) {
-      midSum += effRating * 0.7 + (p.attributes.pas + p.attributes.dri) * 0.15;
+      midSum += effRating * 0.72 + (p.attributes.pas + p.attributes.dri) * 0.14;
       midCount++;
+    } else if (slot.label === 'GK') {
+      // Goalkeepers use true GK rating + distribution/physicality instead of outfield tackling (def)
+      defSum += effRating * 0.86 + p.attributes.pas * 0.06 + p.attributes.phy * 0.08;
+      defCount++;
     } else {
-      defSum += effRating * 0.7 + (p.attributes.def + p.attributes.phy) * 0.15;
+      defSum += effRating * 0.72 + (p.attributes.def + p.attributes.phy) * 0.14;
       defCount++;
     }
   }
 
   const mentalityAtkBonus =
     tactics.mentality === 'Very Attacking'
-      ? 5
+      ? 4.5
       : tactics.mentality === 'Attacking'
-        ? 3
+        ? 3.0
         : tactics.mentality === 'Positive'
           ? 1.5
           : tactics.mentality === 'Cautious'
-            ? -2
-            : 0;
+            ? -1.5
+            : 0.5;
 
   const mentalityDefBonus =
     tactics.mentality === 'Cautious'
-      ? 4
+      ? 3.5
       : tactics.mentality === 'Balanced'
-        ? 2
-        : tactics.mentality === 'Very Attacking'
-          ? -4
-          : -1;
+        ? 1.5
+        : tactics.mentality === 'Positive'
+          ? 0.5
+          : tactics.mentality === 'Very Attacking'
+            ? -2.5
+            : -1.0;
 
-  const attack = Math.min(99, Math.round((atkCount ? atkSum / atkCount : 75) + mentalityAtkBonus));
+  const attack = Math.min(
+    99,
+    Math.round(
+      (atkCount ? atkSum / atkCount : 75) +
+        mentalityAtkBonus +
+        (tactics.workBallIntoBox ? 0.8 : 0)
+    )
+  );
   const midfield = Math.min(
     99,
-    Math.round((midCount ? midSum / midCount : 75) + (tactics.playOutOfDefence ? 1.5 : 0))
+    Math.round(
+      (midCount ? midSum / midCount : 75) +
+        (tactics.playOutOfDefence ? 1.2 : 0) +
+        (tactics.counterPress ? 0.8 : 0) +
+        (tactics.passingDirectness <= 2 ? 0.6 : 0)
+    )
   );
   const defense = Math.min(
     99,
-    Math.round((defCount ? defSum / defCount : 75) + mentalityDefBonus)
+    Math.round(
+      (defCount ? defSum / defCount : 75) +
+        mentalityDefBonus +
+        (tactics.offsideTrap && tactics.defensiveLine >= 4 ? 0.5 : 0)
+    )
   );
   const cohesion = Math.min(100, Math.round((fitMatches / 11) * 85 + (tactics.counterPress ? 8 : 5) + 7));
   const possessionIndex = Math.min(
@@ -808,6 +830,71 @@ function computeMatchPlayerRatings(params: {
   return { playerRatings: all, motm };
 }
 
+function samplePoissonGoals(lambda: number, maxGoals = 9): number {
+  const safeLambda = Math.max(0.15, Math.min(6.0, lambda));
+  const L = Math.exp(-safeLambda);
+  let k = 0;
+  let p = 1;
+  do {
+    k++;
+    p *= Math.random();
+  } while (p > L && k <= maxGoals);
+  return Math.min(maxGoals, k - 1);
+}
+
+function computeUserConditionBonus(starters: StarterEntry[], cohesion: number): number {
+  if (starters.length === 0) return 0;
+  const avgFit = starters.reduce((s, e) => s + e.player.fitness, 0) / starters.length;
+  const avgMorale = starters.reduce((s, e) => s + e.player.morale, 0) / starters.length;
+  const avgForm = starters.reduce((s, e) => s + e.player.form, 0) / starters.length;
+
+  // Fitness below 85 hurts sharpness; fit squad >= 92 gets slight sharpness bonus
+  const fitMod =
+    avgFit >= 92 ? (avgFit - 92) * 0.08 : avgFit >= 84 ? 0 : (avgFit - 84) * 0.18;
+  const moraleMod = (avgMorale - 80) * 0.05;
+  const formMod = (avgForm - 7.1) * 0.45;
+  const cohesionMod = cohesion >= 88 ? (cohesion - 88) * 0.06 : (cohesion - 88) * 0.14;
+
+  return Math.max(-4.5, Math.min(3.5, fitMod + moraleMod + formMod + cohesionMod));
+}
+
+function computeAITeamProfile(
+  clubId: string,
+  roster: Player[],
+  fallbackRep: number
+): { attack: number; midfield: number; defense: number; overall: number } {
+  const club = CLUBS.find((c) => c.id === clubId);
+  const mgr = REAL_MANAGERS.find((m) => m.id === club?.managerId);
+  const formation: FormationId = mgr?.preferredFormation ?? '4-3-3';
+  const slots = buildAutoLineupSlots(formation, roster);
+  if (slots.length === 0) {
+    return { attack: fallbackRep, midfield: fallbackRep, defense: fallbackRep, overall: fallbackRep };
+  }
+  const aiTactics: TacticSettings = {
+    formation,
+    mentality: mgr?.pressingStyle === 'Low Compact' ? 'Cautious' : 'Positive',
+    passingDirectness: mgr?.pressingStyle === 'Positional Control' ? 2 : 3,
+    tempo: mgr?.pressingStyle === 'High Gegenpress' ? 4 : 3,
+    width: 3,
+    pressingIntensity: mgr?.pressingStyle === 'Low Compact' ? 2 : 4,
+    defensiveLine: mgr?.pressingStyle === 'Low Compact' ? 2 : 4,
+    counterPress: mgr?.pressingStyle !== 'Low Compact',
+    playOutOfDefence: mgr?.pressingStyle !== 'Low Compact',
+    workBallIntoBox: mgr?.pressingStyle === 'Positional Control',
+    offsideTrap: false,
+    slots,
+  };
+  const prof = calculateTacticalProfile(aiTactics, roster);
+  // Subtle manager tactical rating modifier (-0.6 to +1.0) without inflating beyond real XI talent
+  const mgrBonus = mgr ? Math.max(-0.6, Math.min(1.0, (mgr.tacticalRating - 85) * 0.12)) : 0;
+  return {
+    attack: Math.min(99, prof.attack + mgrBonus),
+    midfield: Math.min(99, prof.midfield + mgrBonus * 0.8),
+    defense: Math.min(99, prof.defense + mgrBonus),
+    overall: Math.min(99, prof.overall + mgrBonus),
+  };
+}
+
 export function simulateMatchFull(
   homeId: string,
   awayId: string,
@@ -832,30 +919,6 @@ export function simulateMatchFull(
   const homeRoster = isUserHome ? userSquad : allPlayers.filter((p) => p.clubId === homeId);
   const awayRoster = isUserAway ? userSquad : allPlayers.filter((p) => p.clubId === awayId);
 
-  const userProfile = calculateTacticalProfile(userTactics, userSquad);
-  const homeStrength = isUserHome ? userProfile.overall + 3 : homeClub.reputation + 2;
-  const awayStrength = isUserAway ? userProfile.overall : awayClub.reputation;
-
-  const diff = (homeStrength - awayStrength) * 0.08;
-  const homeTempoBoost = isUserHome ? (userTactics.tempo - 3) * 0.12 : 0;
-  const awayTempoBoost = isUserAway ? (userTactics.tempo - 3) * 0.12 : 0;
-
-  const expectedHome = Math.max(0.35, 1.45 + diff + homeTempoBoost);
-  const expectedAway = Math.max(0.3, 1.2 - diff * 0.8 + awayTempoBoost);
-
-  const sampleGoals = (lambda: number) => {
-    let g = 0;
-    const steps = 6;
-    const p = Math.min(0.45, lambda / steps);
-    for (let i = 0; i < steps; i++) {
-      if (Math.random() < p) g++;
-    }
-    return g;
-  };
-
-  const homeGoals = sampleGoals(expectedHome);
-  const awayGoals = sampleGoals(expectedAway);
-
   const homeMgr = REAL_MANAGERS.find((m) => m.id === homeClub.managerId) ?? REAL_MANAGERS[0];
   const awayMgr = REAL_MANAGERS.find((m) => m.id === awayClub.managerId) ?? REAL_MANAGERS[1];
 
@@ -873,6 +936,69 @@ export function simulateMatchFull(
   );
   const homePlayingXI = homeStarters.length > 0 ? homeStarters.map((s) => s.player) : homeRoster;
   const awayPlayingXI = awayStarters.length > 0 ? awayStarters.map((s) => s.player) : awayRoster;
+
+  const userProfile = calculateTacticalProfile(userTactics, userSquad);
+  const userCondBonus = isUserHome
+    ? computeUserConditionBonus(homeStarters, userProfile.cohesion)
+    : isUserAway
+      ? computeUserConditionBonus(awayStarters, userProfile.cohesion)
+      : 0;
+
+  const homeProfile = isUserHome
+    ? {
+        attack: userProfile.attack + userCondBonus,
+        midfield: userProfile.midfield + userCondBonus * 0.85,
+        defense: userProfile.defense + userCondBonus,
+        overall: userProfile.overall + userCondBonus,
+      }
+    : computeAITeamProfile(homeId, homeRoster, homeClub.reputation);
+
+  const awayProfile = isUserAway
+    ? {
+        attack: userProfile.attack + userCondBonus,
+        midfield: userProfile.midfield + userCondBonus * 0.85,
+        defense: userProfile.defense + userCondBonus,
+        overall: userProfile.overall + userCondBonus,
+      }
+    : computeAITeamProfile(awayId, awayRoster, awayClub.reputation);
+
+  const homeStrength = homeProfile.overall;
+  const awayStrength = awayProfile.overall;
+
+  // Match pace adjustment from user tempo/mentality applies symmetrically to openness while keeping edge fair
+  const userActive = isUserHome || isUserAway;
+  const tempoPace = userActive ? 1 + (userTactics.tempo - 3) * 0.05 : 1;
+  const mentalityPace =
+    userActive && userTactics.mentality === 'Very Attacking'
+      ? 1.08
+      : userActive && userTactics.mentality === 'Cautious'
+        ? 0.9
+        : 1.0;
+  const matchPace = tempoPace * mentalityPace;
+
+  // Attack vs Opponent Defense + Midfield control + Overall quality delta
+  const homeEdge =
+    (homeProfile.attack - awayProfile.defense) * 0.55 +
+    (homeProfile.midfield - awayProfile.midfield) * 0.25 +
+    (homeProfile.overall - awayProfile.overall) * 0.2;
+  const awayEdge =
+    (awayProfile.attack - homeProfile.defense) * 0.55 +
+    (awayProfile.midfield - homeProfile.midfield) * 0.25 +
+    (awayProfile.overall - homeProfile.overall) * 0.2;
+
+  const clampExponent = (val: number) => Math.max(-1.35, Math.min(1.35, val));
+  // Neutral realistic home-field boost (~1.38 vs ~1.18) without hidden AI OVR inflation
+  const expectedHome = Math.max(
+    0.25,
+    1.38 * matchPace * Math.exp(clampExponent(homeEdge * 0.068))
+  );
+  const expectedAway = Math.max(
+    0.22,
+    1.18 * matchPace * Math.exp(clampExponent(awayEdge * 0.068))
+  );
+
+  const homeGoals = samplePoissonGoals(expectedHome);
+  const awayGoals = samplePoissonGoals(expectedAway);
 
   const events: MatchEvent[] = [
     {

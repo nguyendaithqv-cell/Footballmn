@@ -689,6 +689,18 @@ export function applyRankedMatchOutcome(
   };
 }
 
+function sampleOnlinePoissonGoals(lambda: number, maxGoals = 9): number {
+  const safeLambda = Math.max(0.15, Math.min(6.0, lambda));
+  const L = Math.exp(-safeLambda);
+  let k = 0;
+  let p = 1;
+  do {
+    k++;
+    p *= Math.random();
+  } while (p > L && k <= maxGoals);
+  return Math.min(maxGoals, k - 1);
+}
+
 export function simulateOnlineMatch(
   home: ArenaProfile,
   away: ArenaProfile,
@@ -698,22 +710,22 @@ export function simulateOnlineMatch(
     isKnockout?: boolean;
   }
 ): { summary: MatchResultSummary; winnerUid?: string } {
-  const diff = (home.squadOverall + 1 - away.squadOverall) * 0.085;
-  const expectedHome = Math.max(0.4, 1.42 + diff);
-  const expectedAway = Math.max(0.35, 1.32 - diff * 0.85);
+  const homeEdge =
+    (home.attackRating - away.defenseRating) * 0.55 +
+    (home.midfieldRating - away.midfieldRating) * 0.25 +
+    (home.squadOverall - away.squadOverall) * 0.2;
+  const awayEdge =
+    (away.attackRating - home.defenseRating) * 0.55 +
+    (away.midfieldRating - home.midfieldRating) * 0.25 +
+    (away.squadOverall - home.squadOverall) * 0.2;
 
-  const sampleGoals = (lambda: number) => {
-    let g = 0;
-    const steps = 6;
-    const p = Math.min(0.46, lambda / steps);
-    for (let i = 0; i < steps; i++) {
-      if (Math.random() < p) g++;
-    }
-    return g;
-  };
+  const clampExp = (v: number) => Math.max(-1.35, Math.min(1.35, v));
+  // Subtle neutral pitch advantage (1.36 vs 1.24) so stronger tactical squads reliably prevail
+  const expectedHome = Math.max(0.25, 1.36 * Math.exp(clampExp(homeEdge * 0.068)));
+  const expectedAway = Math.max(0.22, 1.24 * Math.exp(clampExp(awayEdge * 0.068)));
 
-  const homeGoals = sampleGoals(expectedHome);
-  const awayGoals = sampleGoals(expectedAway);
+  const homeGoals = sampleOnlinePoissonGoals(expectedHome);
+  const awayGoals = sampleOnlinePoissonGoals(expectedAway);
 
   const pickWeighted = <T,>(items: T[], weightFn: (item: T) => number): T | undefined => {
     if (items.length === 0) return undefined;
