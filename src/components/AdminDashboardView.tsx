@@ -23,7 +23,7 @@ import {
   UserCheck,
   Users,
 } from 'lucide-react';
-import { CLUBS, INITIAL_PLAYERS } from '../data/footballDatabase';
+import { ALL_CLUBS, CLUBS, INITIAL_PLAYERS } from '../data/footballDatabase';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   ActivityLog,
@@ -671,7 +671,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   onChange={(e) => setOvClubId(e.target.value)}
                   className="w-full h-11 px-3 rounded-xl bg-[#0B1117] border border-white/10 text-sm text-white"
                 >
-                  {CLUBS.map((c) => (
+                  {ALL_CLUBS.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>

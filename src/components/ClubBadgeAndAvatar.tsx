@@ -68,13 +68,20 @@ interface PlayerAvatarProps {
 
 export const PlayerAvatar: React.FC<PlayerAvatarProps> = React.memo(
   ({ player, club, size = 44, showNumber = true }) => {
-    const primary = club?.primaryColor ?? '#10B981';
-    const secondary = club?.secondaryColor ?? '#0F172A';
+    const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
+    const isGlobal = player.cardTier === 'global';
+    const primary = isIcon ? '#D97706' : club?.primaryColor ?? '#10B981';
+    const secondary = isIcon ? '#FDE68A' : club?.secondaryColor ?? '#0F172A';
     const { skin, hair, hairStyle } = player.appearance;
+    const borderCls = isIcon
+      ? 'border-2 border-amber-400 shadow-md shadow-amber-500/25'
+      : isGlobal
+        ? 'border-2 border-pink-400/75'
+        : 'border border-white/15';
 
     return (
       <div
-        className="relative shrink-0 rounded-full overflow-hidden border border-white/15 bg-slate-900"
+        className={`relative shrink-0 rounded-full overflow-hidden bg-slate-900 ${borderCls}`}
         style={{ width: size, height: size }}
       >
         <svg viewBox="0 0 64 64" className="w-full h-full" aria-label={player.name}>

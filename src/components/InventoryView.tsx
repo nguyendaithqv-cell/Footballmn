@@ -14,7 +14,7 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { CLUBS, INITIAL_PLAYERS } from '../data/footballDatabase';
+import { getClubById, INITIAL_PLAYERS } from '../data/footballDatabase';
 import {
   getCardDismantleShards,
   getCardRarityTier,
@@ -120,11 +120,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         if (cardFilter === 'squad' && !item.inSquad) return false;
         if (cardFilter === 'new' && item.inSquad) return false;
         if (q) {
-          const club = CLUBS.find((c) => c.id === item.player.clubId);
+          const club = getClubById(item.player.clubId);
           return (
             item.player.name.toLowerCase().includes(q) ||
             item.player.position.toLowerCase().includes(q) ||
-            (club?.name.toLowerCase().includes(q) ?? false)
+            club.name.toLowerCase().includes(q)
           );
         }
         return true;
@@ -379,13 +379,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 {PACK_CATALOG.filter((p) => (inventory.packs[p.id] ?? 0) > 0).map((pack) => {
                   const count = inventory.packs[pack.id] ?? 0;
                   const borderCls =
-                    pack.theme === 'violet'
-                      ? 'border-amber-400/45 bg-amber-500/5'
-                      : pack.theme === 'amber'
-                        ? 'border-amber-400/35 bg-[#0B1117]'
-                        : pack.theme === 'emerald'
-                          ? 'border-emerald-500/35 bg-[#0B1117]'
-                          : 'border-sky-400/35 bg-[#0B1117]';
+                    pack.theme === 'gold'
+                      ? 'border-amber-300/75 bg-gradient-to-br from-amber-500/20 via-yellow-500/10 to-[#0B1117]'
+                      : pack.theme === 'violet'
+                        ? 'border-amber-400/45 bg-amber-500/5'
+                        : pack.theme === 'amber'
+                          ? 'border-amber-400/35 bg-[#0B1117]'
+                          : pack.theme === 'emerald'
+                            ? 'border-emerald-500/35 bg-[#0B1117]'
+                            : 'border-sky-400/35 bg-[#0B1117]';
                   const isShaking = openingPack === pack.id;
                   return (
                     <div
@@ -525,9 +527,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {cardEntries.map(({ player, count, inSquad }) => {
-                const club = CLUBS.find((c) => c.id === player.clubId) ?? CLUBS[0];
-                const rarity = getCardRarityTier(player.rating);
-                const dismantleShards = getCardDismantleShards(player.rating);
+                const club = getClubById(player.clubId);
+                const rarity = getCardRarityTier(player.rating, player.cardTier);
+                const dismantleShards = getCardDismantleShards(player.rating, player.cardTier);
                 const plan = inSquad
                   ? getStarUpgradePlan(player, inventory, career.transferBudget)
                   : null;
@@ -635,7 +637,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {upgradeCandidates.map(({ player, plan }) => {
-              const club = CLUBS.find((c) => c.id === player.clubId) ?? CLUBS[0];
+              const club = getClubById(player.clubId);
               return (
                 <div
                   key={player.id}
@@ -749,15 +751,17 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {openingPack && (() => {
         const packMeta = PACK_CATALOG.find((p) => p.id === openingPack);
         const auraCls =
-          packMeta?.theme === 'violet'
-            ? 'from-amber-400/35 via-purple-500/30 to-amber-500/20 border-amber-400/70'
-            : packMeta?.theme === 'amber'
-              ? 'from-amber-400/35 via-yellow-500/25 to-orange-500/20 border-amber-400/70'
-              : packMeta?.theme === 'emerald'
-                ? 'from-emerald-400/35 via-teal-500/25 to-emerald-600/20 border-emerald-400/70'
-                : 'from-sky-400/35 via-cyan-500/25 to-blue-500/20 border-sky-400/70';
+          packMeta?.theme === 'gold'
+            ? 'from-amber-300/45 via-yellow-500/35 to-amber-600/25 border-amber-300/80'
+            : packMeta?.theme === 'violet'
+              ? 'from-amber-400/35 via-purple-500/30 to-amber-500/20 border-amber-400/70'
+              : packMeta?.theme === 'amber'
+                ? 'from-amber-400/35 via-yellow-500/25 to-orange-500/20 border-amber-400/70'
+                : packMeta?.theme === 'emerald'
+                  ? 'from-emerald-400/35 via-teal-500/25 to-emerald-600/20 border-emerald-400/70'
+                  : 'from-sky-400/35 via-cyan-500/25 to-blue-500/20 border-sky-400/70';
         const iconCls =
-          packMeta?.theme === 'violet' || packMeta?.theme === 'amber'
+          packMeta?.theme === 'gold' || packMeta?.theme === 'violet' || packMeta?.theme === 'amber'
             ? 'text-amber-300'
             : packMeta?.theme === 'emerald'
               ? 'text-emerald-300'
@@ -835,14 +839,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 }`}
               >
                 {revealResult.cards.map(({ player, isOwnedInSquad }, idx) => {
-                  const club = CLUBS.find((c) => c.id === player.clubId) ?? CLUBS[0];
-                  const rarity = getCardRarityTier(player.rating);
+                  const club = getClubById(player.clubId);
+                  const rarity = getCardRarityTier(player.rating, player.cardTier);
                   const delayCls = delayClasses[idx] ?? 'reveal-delay-2';
                   return (
                     <div
                       key={`${player.id}-${idx}`}
                       className={`rounded-2xl border p-3.5 text-center space-y-2 animate-card-reveal ${delayCls} ${rarity.bgClass} ${rarity.borderClass} ${
-                        player.rating >= 86 ? 'shadow-lg shadow-amber-500/20' : ''
+                        player.cardTier === 'icon' || player.rating >= 86
+                          ? 'shadow-lg shadow-amber-500/25'
+                          : ''
                       }`}
                     >
                       <p className={`text-[10px] font-extrabold uppercase ${rarity.textClass}`}>

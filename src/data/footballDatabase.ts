@@ -1,4 +1,4 @@
-import { Club, FormationId, Player, PlayerRole, Position, RealManager } from '../types/game';
+import { CardTier, Club, FormationId, Player, PlayerRole, Position, RealManager } from '../types/game';
 
 export const REAL_MANAGERS: RealManager[] = [
   {
@@ -626,6 +626,145 @@ export const CLUBS: Club[] = [
   },
 ];
 
+export const SPECIAL_CLUBS: Club[] = [
+  {
+    id: 'inter-miami',
+    name: 'Inter Miami CF',
+    shortName: 'MIA',
+    league: 'MLS',
+    country: 'Mỹ',
+    stadium: 'Chase Stadium',
+    capacity: 21550,
+    primaryColor: '#F472B6',
+    secondaryColor: '#0F172A',
+    accentColor: '#F8FAFC',
+    pattern: 'solid',
+    transferBudgetM: 90,
+    wageBudgetK: 2200,
+    reputation: 84,
+    managerId: 'pep-guardiola',
+  },
+  {
+    id: 'al-nassr',
+    name: 'Al-Nassr FC',
+    shortName: 'ALN',
+    league: 'Saudi Pro League',
+    country: 'Ả Rập Xê Út',
+    stadium: 'Al-Awwal Park',
+    capacity: 25000,
+    primaryColor: '#FACC15',
+    secondaryColor: '#1E3A8A',
+    accentColor: '#FFFFFF',
+    pattern: 'halves',
+    transferBudgetM: 180,
+    wageBudgetK: 4200,
+    reputation: 85,
+    managerId: 'carlo-ancelotti',
+  },
+  {
+    id: 'al-hilal',
+    name: 'Al-Hilal SFC',
+    shortName: 'ALH',
+    league: 'Saudi Pro League',
+    country: 'Ả Rập Xê Út',
+    stadium: 'Kingdom Arena',
+    capacity: 30000,
+    primaryColor: '#1D4ED8',
+    secondaryColor: '#F8FAFC',
+    accentColor: '#60A5FA',
+    pattern: 'solid',
+    transferBudgetM: 190,
+    wageBudgetK: 4400,
+    reputation: 86,
+    managerId: 'simone-inzaghi',
+  },
+  {
+    id: 'al-ittihad',
+    name: 'Al-Ittihad Club',
+    shortName: 'ALI',
+    league: 'Saudi Pro League',
+    country: 'Ả Rập Xê Út',
+    stadium: 'King Abdullah Sports City',
+    capacity: 62345,
+    primaryColor: '#F59E0B',
+    secondaryColor: '#09090B',
+    accentColor: '#FDE047',
+    pattern: 'stripes',
+    transferBudgetM: 165,
+    wageBudgetK: 3800,
+    reputation: 84,
+    managerId: 'luis-enrique',
+  },
+  {
+    id: 'santos-fc',
+    name: 'Santos FC',
+    shortName: 'SAN',
+    league: 'Brasileirão',
+    country: 'Brazil',
+    stadium: 'Vila Belmiro',
+    capacity: 16068,
+    primaryColor: '#F8FAFC',
+    secondaryColor: '#0F172A',
+    accentColor: '#94A3B8',
+    pattern: 'halves',
+    transferBudgetM: 55,
+    wageBudgetK: 1400,
+    reputation: 83,
+    managerId: 'carlo-ancelotti',
+  },
+  {
+    id: 'free-agent',
+    name: 'Cầu thủ Tự do',
+    shortName: 'TỰ DO',
+    league: 'Thị trường Tự do',
+    country: 'Quốc tế',
+    stadium: 'Sàn Chuyển Nhượng',
+    capacity: 50000,
+    primaryColor: '#334155',
+    secondaryColor: '#0F172A',
+    accentColor: '#38BDF8',
+    pattern: 'solid',
+    transferBudgetM: 0,
+    wageBudgetK: 0,
+    reputation: 80,
+    managerId: 'pep-guardiola',
+  },
+  {
+    id: 'icons-fc',
+    name: 'Huyền Thoại ICON',
+    shortName: 'ICON',
+    league: 'Hall of Legends',
+    country: 'Thế giới',
+    stadium: 'Đền Thờ Huyền Thoại',
+    capacity: 100000,
+    primaryColor: '#B45309',
+    secondaryColor: '#1E293B',
+    accentColor: '#FDE68A',
+    pattern: 'sash',
+    transferBudgetM: 500,
+    wageBudgetK: 9999,
+    reputation: 99,
+    managerId: 'carlo-ancelotti',
+  },
+];
+
+export const ALL_CLUBS: Club[] = [...CLUBS, ...SPECIAL_CLUBS];
+
+export function getClubById(clubId: string): Club {
+  return ALL_CLUBS.find((c) => c.id === clubId) ?? CLUBS[0];
+}
+
+export function getIconShardCost(
+  player: Pick<Player, 'rating' | 'cardTier' | 'clubId'>
+): number {
+  const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
+  if (!isIcon) return 0;
+  if (player.rating >= 94) return 65;
+  if (player.rating >= 92) return 50;
+  if (player.rating >= 90) return 40;
+  return 30;
+}
+
 type RawPlayerInput = [
   id: string,
   name: string,
@@ -642,7 +781,8 @@ type RawPlayerInput = [
   skin: string,
   hair: string,
   hairStyle: 'short' | 'fade' | 'curly' | 'long' | 'buzz',
-  attrs: [number, number, number, number, number, number]
+  attrs: [number, number, number, number, number, number],
+  cardTier?: CardTier
 ];
 
 const RAW_PLAYERS: RawPlayerInput[] = [
@@ -965,11 +1105,129 @@ const RAW_PLAYERS: RawPlayerInput[] = [
   ['trincao', 'Francisco Trincão', 'sporting-cp', 'RW', 17, 26, 'Bồ Đào Nha', 'PT', 83, 86, 35, 85, '#E5B89B', '#27201C', 'short', [85, 80, 82, 87, 44, 70]],
   ['harder', 'Conrad Harder', 'sporting-cp', 'ST', 19, 21, 'Đan Mạch', 'DK', 78, 87, 24, 50, '#F0C5AD', '#785A3A', 'short', [84, 80, 68, 77, 40, 82]],
   ['gyokeres', 'Viktor Gyökeres', 'sporting-cp', 'ST', 9, 28, 'Thụy Điển', 'SE', 88, 90, 95, 165, '#F0C5AD', '#4B3621', 'short', [90, 88, 78, 85, 48, 91]],
+
+  // GLOBAL STARS OUTSIDE TOP-5 EUROPE / FREE AGENTS (16)
+  ['messi', 'Lionel Messi', 'inter-miami', 'RW', 10, 39, 'Argentina', 'AR', 89, 89, 45, 420, '#E5B89B', '#27201C', 'short', [80, 89, 93, 94, 38, 66], 'global'],
+  ['cristiano-ronaldo', 'Cristiano Ronaldo', 'al-nassr', 'ST', 7, 41, 'Bồ Đào Nha', 'PT', 88, 88, 38, 450, '#E2B295', '#1F1A17', 'fade', [82, 92, 80, 85, 36, 79], 'global'],
+  ['neymar', 'Neymar Jr', 'santos-fc', 'LW', 10, 34, 'Brazil', 'BR', 87, 87, 42, 320, '#C98E6B', '#18181B', 'fade', [86, 84, 87, 94, 38, 64], 'global'],
+  ['benzema', 'Karim Benzema', 'al-ittihad', 'ST', 9, 38, 'Pháp', 'FR', 86, 86, 28, 310, '#E2B295', '#1F1A17', 'buzz', [77, 88, 84, 86, 40, 78], 'global'],
+  ['kante', "N'Golo Kanté", 'al-ittihad', 'CDM', 7, 35, 'Pháp', 'FR', 85, 85, 25, 260, '#593724', '#111827', 'buzz', [79, 68, 83, 82, 88, 85], 'global'],
+  ['cancelo', 'João Cancelo', 'al-hilal', 'RB', 20, 32, 'Bồ Đào Nha', 'PT', 85, 85, 36, 230, '#E5B89B', '#27201C', 'short', [84, 74, 86, 87, 79, 75], 'global'],
+  ['sergio-ramos', 'Sergio Ramos', 'free-agent', 'CB', 4, 40, 'Tây Ban Nha', 'ES', 84, 84, 18, 175, '#DFB094', '#27201C', 'short', [72, 70, 78, 74, 87, 86], 'global'],
+  ['mane', 'Sadio Mané', 'al-nassr', 'LW', 10, 34, 'Senegal', 'SN', 84, 84, 24, 240, '#593724', '#111827', 'fade', [89, 82, 79, 86, 45, 78], 'global'],
+  ['mahrez', 'Riyad Mahrez', 'al-hilal', 'RW', 26, 35, 'Algeria', 'DZ', 84, 84, 24, 235, '#DFB094', '#1F1A17', 'fade', [81, 82, 85, 89, 40, 65], 'global'],
+  ['ruben-neves', 'Rúben Neves', 'al-hilal', 'CDM', 8, 29, 'Bồ Đào Nha', 'PT', 84, 85, 42, 220, '#E5B89B', '#27201C', 'short', [66, 78, 88, 80, 81, 79], 'global'],
+  ['koulibaly', 'Kalidou Koulibaly', 'al-hilal', 'CB', 26, 35, 'Senegal', 'SN', 84, 84, 22, 215, '#593724', '#111827', 'buzz', [77, 45, 72, 70, 86, 89], 'global'],
+  ['mitrovic', 'Aleksandar Mitrović', 'al-hilal', 'ST', 9, 32, 'Serbia', 'RS', 84, 84, 34, 225, '#ECC2A8', '#27201C', 'short', [72, 86, 73, 76, 44, 90], 'global'],
+  ['di-maria', 'Ángel Di María', 'free-agent', 'RW', 11, 38, 'Argentina', 'AR', 83, 83, 15, 165, '#E5B89B', '#27201C', 'short', [80, 81, 87, 88, 46, 65], 'global'],
+  ['suarez', 'Luis Suárez', 'inter-miami', 'ST', 9, 39, 'Uruguay', 'UY', 82, 82, 12, 160, '#E5B89B', '#27201C', 'short', [70, 86, 80, 82, 42, 78], 'global'],
+  ['busquets', 'Sergio Busquets', 'inter-miami', 'CDM', 5, 38, 'Tây Ban Nha', 'ES', 82, 82, 11, 155, '#E5B89B', '#27201C', 'short', [52, 65, 89, 82, 83, 76], 'global'],
+  ['jordi-alba', 'Jordi Alba', 'inter-miami', 'LB', 18, 37, 'Tây Ban Nha', 'ES', 81, 81, 11, 145, '#E5B89B', '#27201C', 'short', [83, 68, 83, 82, 77, 70], 'global'],
+
+  // LEGENDARY ICONS — HALL OF LEGENDS (89)
+  // GK ICONS (8)
+  ['icon-yashin', 'Lev Yashin', 'icons-fc', 'GK', 1, 29, 'Nga', 'RU', 94, 94, 175, 480, '#F0C5AD', '#27201C', 'short', [64, 48, 86, 68, 52, 89], 'icon'],
+  ['icon-buffon', 'Gianluigi Buffon', 'icons-fc', 'GK', 1, 28, 'Ý', 'IT', 93, 93, 165, 450, '#ECC2A8', '#27201C', 'short', [60, 45, 84, 64, 50, 88], 'icon'],
+  ['icon-casillas', 'Iker Casillas', 'icons-fc', 'GK', 1, 27, 'Tây Ban Nha', 'ES', 92, 92, 150, 420, '#E5B89B', '#27201C', 'short', [62, 44, 83, 66, 48, 84], 'icon'],
+  ['icon-kahn', 'Oliver Kahn', 'icons-fc', 'GK', 1, 30, 'Đức', 'DE', 92, 92, 150, 420, '#F0C5AD', '#785A3A', 'short', [58, 46, 82, 62, 50, 91], 'icon'],
+  ['icon-schmeichel', 'Peter Schmeichel', 'icons-fc', 'GK', 1, 29, 'Đan Mạch', 'DK', 92, 92, 148, 410, '#F3CEB9', '#A16207', 'short', [58, 45, 84, 62, 50, 90], 'icon'],
+  ['icon-van-der-sar', 'Edwin van der Sar', 'icons-fc', 'GK', 1, 31, 'Hà Lan', 'NL', 91, 91, 138, 390, '#F0C5AD', '#4B3621', 'short', [56, 44, 86, 63, 48, 86], 'icon'],
+  ['icon-cech', 'Petr Čech', 'icons-fc', 'GK', 1, 28, 'CH Séc', 'CZ', 91, 91, 135, 385, '#F0C5AD', '#4B3621', 'buzz', [57, 44, 82, 61, 49, 88], 'icon'],
+  ['icon-dida', 'Dida Silva', 'icons-fc', 'GK', 1, 29, 'Brazil', 'BR', 90, 90, 122, 360, '#6E4730', '#111827', 'buzz', [58, 42, 81, 61, 48, 86], 'icon'],
+
+  // DEF ICONS (22)
+  ['icon-maldini', 'Paolo Maldini', 'icons-fc', 'CB', 3, 28, 'Ý', 'IT', 94, 94, 185, 500, '#E5B89B', '#27201C', 'long', [87, 60, 84, 80, 96, 89], 'icon'],
+  ['icon-beckenbauer', 'Franz Beckenbauer', 'icons-fc', 'CB', 5, 27, 'Đức', 'DE', 94, 94, 185, 500, '#F0C5AD', '#4B3621', 'short', [83, 74, 92, 86, 94, 86], 'icon'],
+  ['icon-baresi', 'Franco Baresi', 'icons-fc', 'CB', 6, 28, 'Ý', 'IT', 93, 93, 168, 460, '#ECC2A8', '#27201C', 'short', [82, 56, 85, 79, 95, 86], 'icon'],
+  ['icon-roberto-carlos', 'Roberto Carlos', 'icons-fc', 'LB', 3, 27, 'Brazil', 'BR', 92, 92, 155, 440, '#8A5D41', '#111827', 'buzz', [94, 88, 85, 86, 84, 89], 'icon'],
+  ['icon-cafu', 'Cafu Marcos', 'icons-fc', 'RB', 2, 28, 'Brazil', 'BR', 92, 92, 155, 435, '#8A5D41', '#18181B', 'short', [92, 72, 86, 87, 86, 87], 'icon'],
+  ['icon-lahm', 'Philipp Lahm', 'icons-fc', 'RB', 21, 28, 'Đức', 'DE', 92, 92, 152, 430, '#F0C5AD', '#4B3621', 'short', [86, 68, 89, 88, 90, 79], 'icon'],
+  ['icon-cannavaro', 'Fabio Cannavaro', 'icons-fc', 'CB', 5, 29, 'Ý', 'IT', 92, 92, 152, 430, '#ECC2A8', '#27201C', 'buzz', [82, 48, 76, 75, 95, 88], 'icon'],
+  ['icon-nesta', 'Alessandro Nesta', 'icons-fc', 'CB', 13, 27, 'Ý', 'IT', 92, 92, 152, 430, '#ECC2A8', '#27201C', 'long', [81, 46, 79, 75, 94, 88], 'icon'],
+  ['icon-moore', 'Bobby Moore', 'icons-fc', 'CB', 6, 27, 'Anh', 'GB', 92, 92, 150, 420, '#F3CEB9', '#A16207', 'short', [79, 54, 87, 81, 94, 86], 'icon'],
+  ['icon-zanetti', 'Javier Zanetti', 'icons-fc', 'RB', 4, 29, 'Argentina', 'AR', 91, 91, 140, 400, '#E5B89B', '#1F1A17', 'short', [86, 70, 87, 86, 89, 88], 'icon'],
+  ['icon-puyol', 'Carles Puyol', 'icons-fc', 'CB', 5, 28, 'Tây Ban Nha', 'ES', 91, 91, 142, 405, '#E5B89B', '#3F2E21', 'curly', [79, 52, 76, 73, 93, 92], 'icon'],
+  ['icon-vidic', 'Nemanja Vidić', 'icons-fc', 'CB', 15, 27, 'Serbia', 'RS', 91, 91, 140, 400, '#ECC2A8', '#3F2E21', 'buzz', [77, 54, 73, 70, 93, 93], 'icon'],
+  ['icon-ferdinand', 'Rio Ferdinand', 'icons-fc', 'CB', 5, 28, 'Anh', 'GB', 91, 91, 140, 400, '#9F6A4A', '#18181B', 'buzz', [83, 50, 81, 77, 92, 88], 'icon'],
+  ['icon-dani-alves', 'Dani Alves', 'icons-fc', 'RB', 2, 27, 'Brazil', 'BR', 91, 91, 138, 395, '#C68B66', '#18181B', 'fade', [90, 77, 87, 89, 82, 80], 'icon'],
+  ['icon-marcelo', 'Marcelo Vieira', 'icons-fc', 'LB', 12, 27, 'Brazil', 'BR', 90, 90, 128, 375, '#B57B57', '#18181B', 'curly', [87, 76, 86, 92, 80, 80], 'icon'],
+  ['icon-ashley-cole', 'Ashley Cole', 'icons-fc', 'LB', 3, 27, 'Anh', 'GB', 90, 90, 126, 370, '#8A5D41', '#111827', 'buzz', [88, 65, 83, 84, 89, 82], 'icon'],
+  ['icon-terry', 'John Terry', 'icons-fc', 'CB', 26, 28, 'Anh', 'GB', 90, 90, 126, 375, '#F0C5AD', '#3F2E21', 'short', [72, 58, 78, 72, 92, 91], 'icon'],
+  ['icon-stam', 'Jaap Stam', 'icons-fc', 'CB', 6, 27, 'Hà Lan', 'NL', 90, 90, 125, 370, '#F0C5AD', '#785A3A', 'buzz', [81, 50, 75, 71, 91, 94], 'icon'],
+  ['icon-desailly', 'Marcel Desailly', 'icons-fc', 'CB', 8, 28, 'Pháp', 'FR', 90, 90, 125, 370, '#593724', '#111827', 'buzz', [82, 56, 78, 76, 91, 92], 'icon'],
+  ['icon-koeman', 'Ronald Koeman', 'icons-fc', 'CB', 4, 27, 'Hà Lan', 'NL', 90, 90, 128, 375, '#F3CEB9', '#A16207', 'short', [74, 88, 88, 79, 89, 87], 'icon'],
+  ['icon-thuram', 'Lilian Thuram', 'icons-fc', 'RB', 15, 28, 'Pháp', 'FR', 90, 90, 124, 365, '#593724', '#111827', 'buzz', [87, 55, 80, 79, 91, 90], 'icon'],
+  ['icon-lucio', 'Lúcio Ferreira', 'icons-fc', 'CB', 3, 28, 'Brazil', 'BR', 89, 89, 115, 345, '#DFB094', '#27201C', 'short', [82, 68, 79, 78, 90, 90], 'icon'],
+
+  // MID ICONS (28)
+  ['icon-maradona', 'Diego Maradona', 'icons-fc', 'CAM', 10, 26, 'Argentina', 'AR', 95, 95, 205, 540, '#DFB094', '#1F1A17', 'curly', [91, 93, 94, 98, 42, 78], 'icon'],
+  ['icon-zidane', 'Zinedine Zidane', 'icons-fc', 'CAM', 5, 28, 'Pháp', 'FR', 94, 94, 190, 520, '#E5B89B', '#27201C', 'buzz', [82, 89, 95, 96, 68, 84], 'icon'],
+  ['icon-cruyff', 'Johan Cruyff', 'icons-fc', 'CAM', 14, 26, 'Hà Lan', 'NL', 94, 94, 190, 520, '#F0C5AD', '#4B3621', 'long', [91, 91, 93, 96, 46, 74], 'icon'],
+  ['icon-matthaus', 'Lothar Matthäus', 'icons-fc', 'CM', 10, 28, 'Đức', 'DE', 93, 93, 172, 470, '#ECC2A8', '#3F2E21', 'short', [86, 89, 91, 86, 88, 90], 'icon'],
+  ['icon-xavi', 'Xavi Hernández', 'icons-fc', 'CM', 6, 28, 'Tây Ban Nha', 'ES', 93, 93, 170, 465, '#E5B89B', '#27201C', 'short', [75, 76, 97, 93, 76, 72], 'icon'],
+  ['icon-iniesta', 'Andrés Iniesta', 'icons-fc', 'CM', 8, 27, 'Tây Ban Nha', 'ES', 93, 93, 170, 465, '#F0C5AD', '#27201C', 'short', [79, 80, 95, 96, 68, 70], 'icon'],
+  ['icon-platini', 'Michel Platini', 'icons-fc', 'CAM', 10, 28, 'Pháp', 'FR', 93, 93, 168, 460, '#ECC2A8', '#3F2E21', 'curly', [82, 92, 94, 91, 52, 74], 'icon'],
+  ['icon-zico', 'Zico Coimbra', 'icons-fc', 'CAM', 10, 27, 'Brazil', 'BR', 93, 93, 168, 460, '#DFB094', '#1F1A17', 'short', [84, 92, 94, 94, 46, 72], 'icon'],
+  ['icon-pirlo', 'Andrea Pirlo', 'icons-fc', 'CDM', 21, 29, 'Ý', 'IT', 92, 92, 155, 440, '#ECC2A8', '#27201C', 'long', [70, 84, 97, 91, 76, 72], 'icon'],
+  ['icon-vieira', 'Patrick Vieira', 'icons-fc', 'CDM', 4, 27, 'Pháp', 'FR', 92, 92, 158, 445, '#593724', '#111827', 'buzz', [83, 76, 87, 85, 91, 94], 'icon'],
+  ['icon-gullit', 'Ruud Gullit', 'icons-fc', 'CAM', 10, 26, 'Hà Lan', 'NL', 92, 92, 160, 450, '#784F37', '#18181B', 'long', [87, 89, 89, 89, 82, 92], 'icon'],
+  ['icon-kaka', 'Ricardo Kaká', 'icons-fc', 'CAM', 22, 25, 'Brazil', 'BR', 92, 92, 158, 445, '#E5B89B', '#27201C', 'short', [92, 88, 90, 93, 46, 77], 'icon'],
+  ['icon-baggio', 'Roberto Baggio', 'icons-fc', 'CAM', 10, 26, 'Ý', 'IT', 92, 92, 155, 435, '#ECC2A8', '#27201C', 'long', [86, 89, 91, 95, 40, 68], 'icon'],
+  ['icon-rivaldo', 'Rivaldo Borba', 'icons-fc', 'CAM', 10, 27, 'Brazil', 'BR', 92, 92, 154, 430, '#B57B57', '#18181B', 'short', [87, 92, 88, 92, 46, 79], 'icon'],
+  ['icon-gerrard', 'Steven Gerrard', 'icons-fc', 'CM', 8, 27, 'Anh', 'GB', 91, 91, 144, 415, '#F0C5AD', '#3F2E21', 'short', [80, 89, 91, 84, 82, 87], 'icon'],
+  ['icon-lampard', 'Frank Lampard', 'icons-fc', 'CM', 8, 28, 'Anh', 'GB', 91, 91, 142, 410, '#F0C5AD', '#4B3621', 'short', [76, 91, 89, 84, 76, 83], 'icon'],
+  ['icon-scholes', 'Paul Scholes', 'icons-fc', 'CM', 18, 28, 'Anh', 'GB', 91, 91, 140, 405, '#F3CEB9', '#B45309', 'short', [72, 88, 94, 86, 74, 77], 'icon'],
+  ['icon-seedorf', 'Clarence Seedorf', 'icons-fc', 'CM', 10, 27, 'Hà Lan', 'NL', 91, 91, 142, 405, '#593724', '#111827', 'long', [82, 87, 89, 89, 81, 88], 'icon'],
+  ['icon-kroos', 'Toni Kroos', 'icons-fc', 'CM', 8, 30, 'Đức', 'DE', 91, 91, 140, 405, '#F0C5AD', '#785A3A', 'short', [66, 84, 96, 86, 78, 76], 'icon'],
+  ['icon-socrates', 'Sócrates Brasileiro', 'icons-fc', 'CAM', 8, 28, 'Brazil', 'BR', 91, 91, 138, 395, '#C68B66', '#18181B', 'curly', [77, 88, 92, 89, 54, 84], 'icon'],
+  ['icon-bergkamp', 'Dennis Bergkamp', 'icons-fc', 'CAM', 10, 28, 'Hà Lan', 'NL', 91, 91, 142, 405, '#F0C5AD', '#785A3A', 'short', [81, 90, 90, 92, 42, 76], 'icon'],
+  ['icon-totti', 'Francesco Totti', 'icons-fc', 'CAM', 10, 28, 'Ý', 'IT', 91, 91, 142, 405, '#ECC2A8', '#4B3621', 'long', [78, 91, 92, 89, 44, 80], 'icon'],
+  ['icon-nedved', 'Pavel Nedvěd', 'icons-fc', 'CAM', 11, 29, 'CH Séc', 'CZ', 91, 91, 138, 395, '#F0C5AD', '#A16207', 'long', [88, 88, 88, 89, 64, 85], 'icon'],
+  ['icon-makelele', 'Claude Makélélé', 'icons-fc', 'CDM', 4, 29, 'Pháp', 'FR', 90, 90, 128, 375, '#593724', '#111827', 'buzz', [80, 56, 83, 81, 93, 88], 'icon'],
+  ['icon-keane', 'Roy Keane', 'icons-fc', 'CDM', 16, 28, 'Ireland', 'IE', 90, 90, 126, 370, '#F0C5AD', '#27201C', 'short', [76, 74, 85, 80, 90, 91], 'icon'],
+  ['icon-ballack', 'Michael Ballack', 'icons-fc', 'CM', 13, 28, 'Đức', 'DE', 90, 90, 128, 375, '#F0C5AD', '#3F2E21', 'short', [77, 87, 88, 83, 82, 88], 'icon'],
+  ['icon-schweinsteiger', 'Bastian Schweinsteiger', 'icons-fc', 'CM', 31, 28, 'Đức', 'DE', 90, 90, 125, 365, '#F0C5AD', '#785A3A', 'short', [76, 83, 89, 84, 83, 87], 'icon'],
+  ['icon-yaya-toure', 'Yaya Touré', 'icons-fc', 'CM', 42, 29, 'Bờ Biển Ngà', 'CI', 90, 90, 130, 380, '#593724', '#111827', 'buzz', [82, 87, 87, 85, 82, 93], 'icon'],
+
+  // WING & FORWARD ICONS (31)
+  ['icon-pele', 'Pelé Arantes', 'icons-fc', 'ST', 10, 25, 'Brazil', 'BR', 96, 96, 220, 580, '#6E4730', '#111827', 'short', [95, 96, 92, 96, 52, 84], 'icon'],
+  ['icon-r9', 'Ronaldo Nazário', 'icons-fc', 'ST', 9, 24, 'Brazil', 'BR', 95, 95, 210, 550, '#9F6A4A', '#18181B', 'buzz', [96, 96, 84, 96, 42, 85], 'icon'],
+  ['icon-ronaldinho', 'Ronaldinho Gaúcho', 'icons-fc', 'LW', 10, 25, 'Brazil', 'BR', 94, 94, 195, 530, '#9F6A4A', '#18181B', 'long', [92, 90, 92, 98, 40, 78], 'icon'],
+  ['icon-van-basten', 'Marco van Basten', 'icons-fc', 'ST', 9, 26, 'Hà Lan', 'NL', 94, 94, 188, 500, '#F0C5AD', '#3F2E21', 'short', [86, 96, 84, 90, 44, 85], 'icon'],
+  ['icon-di-stefano', 'Alfredo Di Stéfano', 'icons-fc', 'ST', 9, 27, 'Tây Ban Nha', 'ES', 94, 94, 185, 495, '#F0C5AD', '#785A3A', 'short', [89, 93, 91, 92, 65, 86], 'icon'],
+  ['icon-puskas', 'Ferenc Puskás', 'icons-fc', 'ST', 10, 27, 'Hungary', 'HU', 94, 94, 185, 495, '#ECC2A8', '#27201C', 'short', [88, 97, 90, 92, 44, 81], 'icon'],
+  ['icon-henry', 'Thierry Henry', 'icons-fc', 'ST', 14, 26, 'Pháp', 'FR', 93, 93, 175, 475, '#784F37', '#111827', 'buzz', [95, 93, 86, 92, 42, 82], 'icon'],
+  ['icon-eusebio', 'Eusébio da Silva', 'icons-fc', 'ST', 13, 25, 'Bồ Đào Nha', 'PT', 93, 93, 172, 470, '#6E4730', '#111827', 'short', [94, 94, 84, 92, 45, 84], 'icon'],
+  ['icon-gerd-muller', 'Gerd Müller', 'icons-fc', 'ST', 9, 26, 'Đức', 'DE', 93, 93, 170, 465, '#F0C5AD', '#27201C', 'short', [84, 96, 78, 87, 42, 83], 'icon'],
+  ['icon-romario', 'Romário Faria', 'icons-fc', 'ST', 11, 27, 'Brazil', 'BR', 93, 93, 168, 460, '#9F6A4A', '#18181B', 'buzz', [91, 95, 81, 93, 38, 74], 'icon'],
+  ['icon-best', 'George Best', 'icons-fc', 'RW', 7, 24, 'Bắc Ireland', 'GB', 93, 93, 170, 465, '#F0C5AD', '#27201C', 'long', [93, 90, 87, 96, 44, 74], 'icon'],
+  ['icon-garrincha', 'Garrincha Santos', 'icons-fc', 'RW', 7, 26, 'Brazil', 'BR', 93, 93, 168, 460, '#8A5D41', '#18181B', 'short', [92, 87, 88, 97, 42, 72], 'icon'],
+  ['icon-figo', 'Luís Figo', 'icons-fc', 'RW', 7, 27, 'Bồ Đào Nha', 'PT', 92, 92, 155, 440, '#E2B295', '#27201C', 'short', [88, 86, 91, 93, 46, 79], 'icon'],
+  ['icon-ibrahimovic', 'Zlatan Ibrahimović', 'icons-fc', 'ST', 10, 29, 'Thụy Điển', 'SE', 92, 92, 158, 445, '#ECC2A8', '#27201C', 'long', [82, 94, 85, 90, 42, 93], 'icon'],
+  ['icon-beckham', 'David Beckham', 'icons-fc', 'RW', 7, 26, 'Anh', 'GB', 91, 91, 145, 420, '#F0C5AD', '#A16207', 'short', [80, 88, 96, 86, 62, 78], 'icon'],
+  ['icon-robben', 'Arjen Robben', 'icons-fc', 'RW', 10, 28, 'Hà Lan', 'NL', 91, 91, 144, 415, '#F0C5AD', '#785A3A', 'buzz', [94, 90, 84, 93, 40, 72], 'icon'],
+  ['icon-ribery', 'Franck Ribéry', 'icons-fc', 'LW', 7, 28, 'Pháp', 'FR', 91, 91, 142, 410, '#E5B89B', '#27201C', 'short', [92, 85, 88, 94, 44, 74], 'icon'],
+  ['icon-bale', 'Gareth Bale', 'icons-fc', 'RW', 11, 26, 'Xứ Wales', 'GB', 91, 91, 145, 415, '#F0C5AD', '#4B3621', 'long', [95, 91, 84, 88, 56, 84], 'icon'],
+  ['icon-giggs', 'Ryan Giggs', 'icons-fc', 'LW', 11, 27, 'Xứ Wales', 'GB', 91, 91, 140, 405, '#E5B89B', '#27201C', 'short', [92, 82, 89, 92, 50, 74], 'icon'],
+  ['icon-stoichkov', 'Hristo Stoichkov', 'icons-fc', 'LW', 8, 27, 'Bulgaria', 'BG', 91, 91, 140, 405, '#ECC2A8', '#27201C', 'short', [89, 91, 86, 90, 48, 84], 'icon'],
+  ['icon-rooney', 'Wayne Rooney', 'icons-fc', 'ST', 10, 25, 'Anh', 'GB', 91, 91, 145, 420, '#F0C5AD', '#4B3621', 'short', [85, 92, 86, 87, 56, 89], 'icon'],
+  ['icon-drogba', 'Didier Drogba', 'icons-fc', 'ST', 11, 29, 'Bờ Biển Ngà', 'CI', 91, 91, 144, 415, '#593724', '#111827', 'long', [86, 92, 79, 84, 46, 93], 'icon'],
+  ['icon-batistuta', 'Gabriel Batistuta', 'icons-fc', 'ST', 9, 27, 'Argentina', 'AR', 91, 91, 142, 410, '#E5B89B', '#4B3621', 'long', [85, 95, 78, 84, 42, 88], 'icon'],
+  ['icon-van-nistelrooy', 'Ruud van Nistelrooy', 'icons-fc', 'ST', 10, 27, 'Hà Lan', 'NL', 91, 91, 140, 405, '#F0C5AD', '#3F2E21', 'short', [84, 94, 77, 84, 40, 84], 'icon'],
+  ['icon-raul', 'Raúl González', 'icons-fc', 'ST', 7, 26, 'Tây Ban Nha', 'ES', 91, 91, 142, 410, '#E5B89B', '#27201C', 'short', [84, 92, 85, 89, 46, 78], 'icon'],
+  ['icon-shevchenko', 'Andriy Shevchenko', 'icons-fc', 'ST', 7, 27, 'Ukraine', 'UA', 91, 91, 142, 410, '#F0C5AD', '#4B3621', 'short', [89, 93, 81, 88, 44, 82], 'icon'],
+  ['icon-etoo', "Samuel Eto'o", 'icons-fc', 'ST', 9, 27, 'Cameroon', 'CM', 91, 91, 142, 410, '#593724', '#111827', 'buzz', [94, 91, 80, 89, 44, 80], 'icon'],
+  ['icon-shearer', 'Alan Shearer', 'icons-fc', 'ST', 9, 27, 'Anh', 'GB', 91, 91, 138, 395, '#F0C5AD', '#785A3A', 'buzz', [82, 94, 78, 81, 45, 90], 'icon'],
+  ['icon-cantona', 'Eric Cantona', 'icons-fc', 'ST', 7, 28, 'Pháp', 'FR', 90, 90, 130, 380, '#ECC2A8', '#27201C', 'short', [80, 90, 87, 89, 48, 89], 'icon'],
+  ['icon-hazard', 'Eden Hazard', 'icons-fc', 'LW', 10, 26, 'Bỉ', 'BE', 90, 90, 132, 385, '#ECC2A8', '#27201C', 'fade', [91, 85, 87, 95, 38, 72], 'icon'],
+  ['icon-torres', 'Fernando Torres', 'icons-fc', 'ST', 9, 25, 'Tây Ban Nha', 'ES', 90, 90, 130, 380, '#F0C5AD', '#785A3A', 'long', [92, 90, 79, 87, 42, 80], 'icon'],
 ];
 
 export const INITIAL_PLAYERS: Player[] = RAW_PLAYERS.map((p) => {
   const parts = p[1].split(' ');
   const shortName = parts.length > 1 ? parts[parts.length - 1] : p[1];
+  const cardTier: CardTier = p[16] ?? 'standard';
+  const isIcon = cardTier === 'icon';
   return {
     id: p[0],
     name: p[1],
@@ -982,16 +1240,23 @@ export const INITIAL_PLAYERS: Player[] = RAW_PLAYERS.map((p) => {
     flagCode: p[7],
     rating: p[8],
     potential: p[9],
+    cardTier,
     marketValueM: p[10],
     wageK: p[11],
-    contractUntil: 2028 + (p[4] % 3),
+    contractUntil: isIcon ? 2099 : 2028 + (p[4] % 3),
     fitness: 95,
-    morale: 86,
-    form: 7.4,
+    morale: isIcon ? 92 : 86,
+    form: isIcon ? 8.0 : 7.4,
     goals: 0,
     assists: 0,
     appearances: 0,
-    transferStatus: p[8] >= 89 ? 'untouchable' : p[4] % 5 === 0 ? 'listed' : 'available',
+    transferStatus: isIcon
+      ? 'available'
+      : p[8] >= 89
+        ? 'untouchable'
+        : p[4] % 5 === 0
+          ? 'listed'
+          : 'available',
     attributes: {
       pac: p[15][0],
       sho: p[15][1],

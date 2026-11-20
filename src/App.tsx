@@ -34,7 +34,7 @@ import { ClubDashboardView } from './components/ClubDashboardView';
 import { PlayerDetailSheet } from './components/PlayerDetailSheet';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { TacticsView } from './components/TacticsView';
-import { CLUBS, INITIAL_PLAYERS } from './data/footballDatabase';
+import { CLUBS, getIconShardCost, INITIAL_PLAYERS } from './data/footballDatabase';
 import {
   applyCupMatchResults,
   applyMarketOverrides,
@@ -1047,6 +1047,9 @@ export default function App() {
         }
         if (trophiesAdded > 0) {
           nextPacks.legend_pack = (nextPacks.legend_pack ?? 0) + trophiesAdded;
+          if (competition === 'champions-cup') {
+            nextPacks.icon_pack = (nextPacks.icon_pack ?? 0) + 1;
+          }
           nextPacks.trophy_gift_box = (nextPacks.trophy_gift_box ?? 0) + trophiesAdded;
           shardsEarned += 25 * trophiesAdded;
         }
@@ -1285,6 +1288,15 @@ export default function App() {
         return { ok: false, message: 'Ngân sách chuyển nhượng không đủ.' };
       }
 
+      const iconShardCost = getIconShardCost(player);
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      if (iconShardCost > 0 && inv.universalShards < iconShardCost) {
+        return {
+          ok: false,
+          message: `Triệu hồi Huyền Thoại ${player.name} cần ${iconShardCost} Mảnh Ngôi Sao (hiện có ${inv.universalShards} Mảnh).`,
+        };
+      }
+
       const threshold =
         player.transferStatus === 'listed'
           ? player.marketValueM * 0.85
@@ -1312,10 +1324,19 @@ export default function App() {
         morale: 92,
       };
 
+      const nextInv =
+        iconShardCost > 0
+          ? normalizeInventory({
+              ...inv,
+              universalShards: inv.universalShards - iconShardCost,
+            })
+          : hydratedCareer.inventory;
+
       const nextCareer: CareerSave = {
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget - bidM).toFixed(1)),
         squad: [...hydratedCareer.squad, signedPlayer],
+        ...(nextInv ? { inventory: nextInv } : {}),
         transferHistory: [
           {
             id: `tr-${Date.now()}`,

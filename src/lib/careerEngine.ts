@@ -1785,9 +1785,22 @@ export function createNextSeasonCareer(career: CareerSave): {
   const nextSeason = getNextSeasonString(hydrated.season);
   const seasonStartYear = Number(nextSeason.slice(0, 4)) || 2027;
 
-  // Player progression & aging (+1 year, training boost for young talents, slight dip for 34+)
+  // Player progression & aging (+1 year, training boost for young talents, slight dip for 34+; Icons never age-decline)
   const intensityBonus = hydrated.trainingIntensity === 'intense' ? 1 : 0;
   const nextSquad = hydrated.squad.map((p) => {
+    const isIcon = p.cardTier === 'icon' || p.clubId === 'icons-fc';
+    if (isIcon) {
+      return {
+        ...p,
+        contractUntil: Math.max(2099, p.contractUntil),
+        fitness: 98,
+        morale: Math.min(100, Math.max(85, p.morale + 5)),
+        goals: 0,
+        assists: 0,
+        appearances: 0,
+      };
+    }
+
     const nextAge = p.age + 1;
     let delta = 0;
     if (nextAge <= 24 && p.rating < p.potential) {
@@ -1842,6 +1855,7 @@ export function createNextSeasonCareer(career: CareerSave): {
     packs: {
       ...prevInv.packs,
       legend_pack: prevInv.packs.legend_pack + 1,
+      icon_pack: (prevInv.packs.icon_pack ?? 0) + (championClubId === hydrated.clubId ? 1 : 0),
       elite_pack: prevInv.packs.elite_pack + 2,
       trophy_gift_box: prevInv.packs.trophy_gift_box + 1,
     },

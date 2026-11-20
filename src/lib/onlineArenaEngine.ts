@@ -146,7 +146,7 @@ export const RANK_TIERS: RankTierConfig[] = [
     badgeClass: 'bg-yellow-400/20',
     borderClass: 'border-yellow-300/70',
     textClass: 'text-yellow-300',
-    milestonePack: 'legend_pack',
+    milestonePack: 'icon_pack',
     milestoneShards: 100,
     milestoneBudgetM: 30.0,
   },

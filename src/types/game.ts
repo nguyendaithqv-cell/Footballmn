@@ -29,6 +29,8 @@ export interface PlayerAttributes {
   phy: number;
 }
 
+export type CardTier = 'standard' | 'global' | 'icon';
+
 export interface Player {
   id: string;
   name: string;
@@ -43,6 +45,7 @@ export interface Player {
   rating: number;
   potential: number;
   stars?: number; // 1-5 star upgrade tier
+  cardTier?: CardTier;
   marketValueM: number; // € Millions
   wageK: number; // € Thousands/week
   contractUntil: number;
@@ -340,6 +343,7 @@ export type PackTier =
   | 'scout_pack'
   | 'elite_pack'
   | 'legend_pack'
+  | 'icon_pack'
   | 'trophy_gift_box';
 
 export interface InventoryState {

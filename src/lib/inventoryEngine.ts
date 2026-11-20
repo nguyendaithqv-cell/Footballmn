@@ -1,4 +1,5 @@
 import {
+  CardTier,
   InventoryState,
   OpenedCardReward,
   PackOpenResult,
@@ -14,7 +15,7 @@ export interface PackCatalogItem {
   buyPriceM: number; // 0 means gift-only (not sold in shop)
   cardCount: number;
   badgeText: string;
-  theme: 'emerald' | 'sky' | 'amber' | 'violet';
+  theme: 'emerald' | 'sky' | 'amber' | 'violet' | 'gold';
 }
 
 export const PACK_CATALOG: PackCatalogItem[] = [
@@ -51,12 +52,22 @@ export const PACK_CATALOG: PackCatalogItem[] = [
   {
     id: 'legend_pack',
     name: 'Gói Siêu Sao 86+',
-    subtitle: 'Đảm bảo ít nhất 1 siêu sao 86+',
-    description: 'Mở 3 thẻ cầu thủ đỉnh cao (1+ siêu sao OVR 86+), kèm 25–40 Mảnh Ngôi Sao & Bình Thể Lực.',
+    subtitle: 'Đảm bảo 1 siêu sao 86+ · 15% ra ICON',
+    description: 'Mở 3 thẻ cầu thủ đỉnh cao (1+ siêu sao OVR 86+ kèm 15% cơ hội nổ Huyền Thoại ICON), +25–40 Mảnh & Bình Thể Lực.',
     buyPriceM: 28,
     cardCount: 3,
     badgeText: 'SIÊU SAO',
     theme: 'violet',
+  },
+  {
+    id: 'icon_pack',
+    name: 'Gói Huyền Thoại ICON',
+    subtitle: 'Đảm bảo chắc chắn 1 Huyền Thoại 89–96',
+    description: 'Triệu hồi 1 Huyền Thoại ICON bất tử (Pelé, Maradona, R9, Zidane...) + 2 thẻ 80–82+, +40–65 Mảnh Ngôi Sao & 2 Bình Thể Lực.',
+    buyPriceM: 65,
+    cardCount: 3,
+    badgeText: 'HUYỀN THOẠI',
+    theme: 'gold',
   },
   {
     id: 'trophy_gift_box',
@@ -153,6 +164,7 @@ export function createStarterInventory(): InventoryState {
       scout_pack: 2,
       elite_pack: 1,
       legend_pack: 0,
+      icon_pack: 0,
       trophy_gift_box: 1,
     },
     playerCards: {},
@@ -178,6 +190,7 @@ export function normalizeInventory(inv?: Partial<InventoryState>): InventoryStat
       scout_pack: Math.max(0, Math.floor(Number(rawPacks.scout_pack) || 0)),
       elite_pack: Math.max(0, Math.floor(Number(rawPacks.elite_pack) || 0)),
       legend_pack: Math.max(0, Math.floor(Number(rawPacks.legend_pack) || 0)),
+      icon_pack: Math.max(0, Math.floor(Number(rawPacks.icon_pack) || 0)),
       trophy_gift_box: Math.max(0, Math.floor(Number(rawPacks.trophy_gift_box) || 0)),
     },
     playerCards: cleanCards,
@@ -197,12 +210,31 @@ export function getTotalCardsCount(inv?: InventoryState): number {
   return Object.values(inv.playerCards).reduce((sum, n) => sum + (Number(n) || 0), 0);
 }
 
-export function getCardRarityTier(rating: number): {
+export function getCardRarityTier(
+  rating: number,
+  cardTier?: CardTier
+): {
   label: string;
   textClass: string;
   borderClass: string;
   bgClass: string;
 } {
+  if (cardTier === 'icon') {
+    return {
+      label: 'Huyền Thoại ICON',
+      textClass: 'text-amber-300',
+      borderClass: 'border-amber-400/75',
+      bgClass: 'bg-gradient-to-br from-amber-500/20 via-yellow-500/10 to-[#121B24]',
+    };
+  }
+  if (cardTier === 'global') {
+    return {
+      label: 'Siêu Sao Quốc Tế',
+      textClass: 'text-pink-300',
+      borderClass: 'border-pink-400/55',
+      bgClass: 'bg-pink-500/10',
+    };
+  }
   if (rating >= 86) {
     return {
       label: 'Siêu Sao',
@@ -227,7 +259,8 @@ export function getCardRarityTier(rating: number): {
   };
 }
 
-export function getCardDismantleShards(rating: number): number {
+export function getCardDismantleShards(rating: number, cardTier?: CardTier): number {
+  if (cardTier === 'icon') return 55;
   if (rating >= 86) return 35;
   if (rating >= 81) return 18;
   return 10;
@@ -346,14 +379,18 @@ export function openPackFromInventory(
   const pickedIds = new Set<string>();
   const drawnPlayers: Player[] = [];
 
-  const pool74 = allPlayers.filter((p) => p.rating >= 74);
-  const pool78 = allPlayers.filter((p) => p.rating >= 78);
-  const pool80 = allPlayers.filter((p) => p.rating >= 80);
-  const pool82 = allPlayers.filter((p) => p.rating >= 82);
-  const pool86 = allPlayers.filter((p) => p.rating >= 86);
+  const iconPool = allPlayers.filter((p) => p.cardTier === 'icon' || p.clubId === 'icons-fc');
+  const regularPool = allPlayers.filter((p) => p.cardTier !== 'icon' && p.clubId !== 'icons-fc');
+
+  const pool74 = regularPool.filter((p) => p.rating >= 74);
+  const pool78 = regularPool.filter((p) => p.rating >= 78);
+  const pool80 = regularPool.filter((p) => p.rating >= 80);
+  const pool82 = regularPool.filter((p) => p.rating >= 82);
+  const pool86 = regularPool.filter((p) => p.rating >= 86);
 
   const pickFrom = (pool: Player[]) => {
-    const pl = pickWeightedPlayer(pool.length > 0 ? pool : allPlayers, squadIds, pickedIds);
+    const active = pool.length > 0 ? pool : regularPool.length > 0 ? regularPool : allPlayers;
+    const pl = pickWeightedPlayer(active, squadIds, pickedIds);
     pickedIds.add(pl.id);
     drawnPlayers.push(pl);
   };
@@ -376,17 +413,35 @@ export function openPackFromInventory(
     shardsGained = 8 + Math.floor(Math.random() * 7);
     boostersGained = Math.random() < 0.3 ? 1 : 0;
   } else if (packTier === 'elite_pack') {
-    pickFrom(pool82);
+    if (iconPool.length > 0 && Math.random() < 0.04) {
+      pickFrom(iconPool);
+    } else {
+      pickFrom(pool82);
+    }
     pickFrom(pool80);
     pickFrom(pool78);
     shardsGained = 15 + Math.floor(Math.random() * 10);
     boostersGained = Math.random() < 0.5 ? 1 : 0;
   } else if (packTier === 'legend_pack') {
-    pickFrom(pool86);
+    if (iconPool.length > 0 && Math.random() < 0.15) {
+      pickFrom(iconPool);
+    } else {
+      pickFrom(pool86);
+    }
     pickFrom(pool82);
     pickFrom(pool80);
     shardsGained = 25 + Math.floor(Math.random() * 16);
     boostersGained = 1;
+  } else if (packTier === 'icon_pack') {
+    pickFrom(iconPool.length > 0 ? iconPool : pool86);
+    if (iconPool.length > 1 && Math.random() < 0.1) {
+      pickFrom(iconPool);
+    } else {
+      pickFrom(pool82);
+    }
+    pickFrom(pool80);
+    shardsGained = 40 + Math.floor(Math.random() * 26);
+    boostersGained = 2;
   } else {
     // trophy_gift_box
     pickFrom(pool80);

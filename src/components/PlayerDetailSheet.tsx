@@ -3,6 +3,7 @@ import {
   ArrowLeftRight,
   ArrowUpCircle,
   CheckCircle2,
+  Crown,
   DollarSign,
   HeartPulse,
   Shield,
@@ -10,7 +11,7 @@ import {
   Star,
   X,
 } from 'lucide-react';
-import { CLUBS } from '../data/footballDatabase';
+import { getClubById, getIconShardCost } from '../data/footballDatabase';
 import { getPlayerRecoveryCostM } from '../lib/careerEngine';
 import { getStarUpgradePlan, normalizeInventory } from '../lib/inventoryEngine';
 import { InventoryState, Player } from '../types/game';
@@ -45,7 +46,10 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   onUpgradeStar,
   onMakeOffer,
 }) => {
-  const club = CLUBS.find((c) => c.id === player.clubId) ?? CLUBS[0];
+  const club = getClubById(player.clubId);
+  const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
+  const isGlobal = player.cardTier === 'global';
+  const iconShardCost = getIconShardCost(player);
   const minAskM =
     player.transferStatus === 'listed'
       ? Math.max(1, Math.round(player.marketValueM * 0.85))
@@ -62,6 +66,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   const recoveryCostM = getPlayerRecoveryCostM(player.fitness);
   const normInventory = normalizeInventory(inventory);
   const upgradePlan = getStarUpgradePlan(player, normInventory, transferBudgetM);
+  const hasEnoughIconShards = normInventory.universalShards >= iconShardCost;
 
   const attrList = [
     { label: 'Tốc độ (PAC)', val: player.attributes.pac },
@@ -95,12 +100,26 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
             <PlayerAvatar player={player} club={club} size={64} />
             <div className="min-w-0">
               <p className="text-xs text-slate-400">
-                {player.position} · #{player.number} · {player.nationality} ({player.age} tuổi)
+                {player.position} · #{player.number} · {player.nationality} (
+                {isIcon ? 'Bất tử ICON' : `${player.age} tuổi`})
               </p>
-              <h3 className="font-display text-2xl font-bold text-white truncate">{player.name}</h3>
+              <div className="flex items-center gap-1.5 min-w-0">
+                {isIcon && <Crown className="w-4 h-4 text-amber-400 shrink-0" />}
+                <h3 className="font-display text-2xl font-bold text-white truncate">{player.name}</h3>
+              </div>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <ClubCrest club={club} size={20} />
                 <span className="text-xs font-medium text-slate-300">{club.name}</span>
+                {isIcon && (
+                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-[10px] font-extrabold text-amber-300">
+                    HUYỀN THOẠI
+                  </span>
+                )}
+                {isGlobal && (
+                  <span className="px-1.5 py-0.5 rounded bg-pink-500/20 border border-pink-400/50 text-[10px] font-extrabold text-pink-300">
+                    SIÊU SAO QUỐC TẾ
+                  </span>
+                )}
                 {isOwnPlayer && (
                   <span className="inline-flex items-center gap-0.5 ml-1">
                     {[1, 2, 3, 4, 5].map((n) => (
@@ -432,17 +451,43 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                 />
               </div>
 
+              {iconShardCost > 0 && (
+                <div
+                  className={`rounded-xl border px-3 py-2.5 text-xs flex items-center justify-between gap-2 ${
+                    hasEnoughIconShards
+                      ? 'bg-amber-500/10 border-amber-400/40 text-amber-200'
+                      : 'bg-red-500/10 border-red-500/35 text-red-200'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 font-semibold">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    Mảnh Ngôi Sao triệu hồi ICON
+                  </span>
+                  <span className="font-mono-num font-bold shrink-0">
+                    {normInventory.universalShards} / {iconShardCost} Mảnh
+                  </span>
+                </div>
+              )}
+
               <button
                 type="button"
-                disabled={negotiating || bidM > transferBudgetM}
+                disabled={negotiating || bidM > transferBudgetM || !hasEnoughIconShards}
                 onClick={handleBidSubmit}
-                className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm disabled:opacity-50"
+                className={`w-full h-12 rounded-xl font-bold text-sm disabled:opacity-50 ${
+                  isIcon
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                }`}
               >
                 {bidM > transferBudgetM
                   ? 'Vượt quá ngân sách chuyển nhượng'
-                  : negotiating
-                    ? 'Đang đàm phán với CLB chủ quản...'
-                    : `Gửi đề nghị €${bidM}M`}
+                  : !hasEnoughIconShards
+                    ? `Cần ${iconShardCost} Mảnh Ngôi Sao (Thiếu ${iconShardCost - normInventory.universalShards})`
+                    : negotiating
+                      ? 'Đang đàm phán...'
+                      : iconShardCost > 0
+                        ? `Chiêu mộ ICON (-€${bidM}M & ${iconShardCost} Mảnh)`
+                        : `Gửi đề nghị €${bidM}M`}
               </button>
             </div>
           )
