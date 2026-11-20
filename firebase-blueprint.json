@@ -60,6 +60,8 @@
         "competitions": { "type": "object" },
         "trophyCabinet": { "type": "array" },
         "seasonHistory": { "type": "array" },
+        "inventory": { "type": "object", "description": "Manager bag containing packs, player cards, universal shards, and fitness boosters." },
+        "onlineTournament": { "type": "object", "description": "Current online knockout tournament bracket state for the user." },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "clubId", "season", "matchweek", "transferBudget", "wageBudget", "boardConfidence", "tactics", "squad", "standings", "fixtures", "updatedAt"]
@@ -148,12 +150,93 @@
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "category": { "type": "string", "enum": ["match", "transfer", "tactics", "medical", "training", "season", "trophy", "contract"] },
+        "category": { "type": "string", "enum": ["match", "transfer", "tactics", "medical", "training", "season", "trophy", "contract", "inventory", "upgrade", "online"] },
         "title": { "type": "string", "minLength": 2, "maxLength": 140 },
         "body": { "type": "string", "minLength": 2, "maxLength": 400 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "uid", "category", "title", "body", "createdAt"]
+    },
+    "ArenaProfile": {
+      "title": "ArenaProfile",
+      "description": "Public online arena profile and squad snapshot (zero PII) for real players and bots.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "isBot": { "type": "boolean" },
+        "managerName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "nationality": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "clubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clubName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "formation": { "type": "string", "enum": ["4-3-3", "4-2-3-1", "3-4-2-1", "3-5-2", "4-4-2", "5-3-2"] },
+        "squadOverall": { "type": "integer" },
+        "attackRating": { "type": "integer" },
+        "midfieldRating": { "type": "integer" },
+        "defenseRating": { "type": "integer" },
+        "rankTier": { "type": "string", "enum": ["dong", "bac", "vang", "bach_kim", "kim_cuong", "tinh_anh", "cao_thu", "chien_tuong", "thach_dau"] },
+        "rankDivision": { "type": "integer" },
+        "rankStars": { "type": "integer" },
+        "bravePoints": { "type": "integer" },
+        "eloPoints": { "type": "integer" },
+        "winStreak": { "type": "integer" },
+        "highestRankIndex": { "type": "integer" },
+        "matchesPlayed": { "type": "integer" },
+        "wins": { "type": "integer" },
+        "draws": { "type": "integer" },
+        "losses": { "type": "integer" },
+        "tournamentTitles": { "type": "integer" },
+        "starters": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "visibility", "isBot", "managerName", "nationality", "clubId", "clubName", "formation", "squadOverall", "attackRating", "midfieldRating", "defenseRating", "rankTier", "rankDivision", "rankStars", "bravePoints", "eloPoints", "winStreak", "highestRankIndex", "matchesPlayed", "wins", "draws", "losses", "tournamentTitles", "starters", "updatedAt"]
+    },
+    "ArenaChallenge": {
+      "title": "ArenaChallenge",
+      "description": "Online 1v1 challenge, ranked, friend match, or tournament match record/invitation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "participants": { "type": "array" },
+        "fromUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fromManagerName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "fromClubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "toUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "toManagerName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "toClubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mode": { "type": "string", "enum": ["duel", "ranked", "friendly", "tournament"] },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "cancelled", "completed"] },
+        "homeGoals": { "type": "integer" },
+        "awayGoals": { "type": "integer" },
+        "penaltiesHome": { "type": "integer" },
+        "penaltiesAway": { "type": "integer" },
+        "winnerUid": { "type": "string", "maxLength": 128 },
+        "note": { "type": "string", "maxLength": 160 },
+        "report": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "participants", "fromUid", "fromManagerName", "fromClubId", "toUid", "toManagerName", "toClubId", "mode", "status", "createdAt", "updatedAt"]
+    },
+    "Friendship": {
+      "title": "Friendship",
+      "description": "Friend relationship or pending friend request between two managers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "participants": { "type": "array" },
+        "requesterUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requesterName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "requesterClubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "recipientClubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientIsBot": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "participants", "requesterUid", "recipientUid", "requesterName", "requesterClubId", "recipientName", "recipientClubId", "recipientIsBot", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -192,6 +275,18 @@
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminRegistry" },
       "description": "Admin role registry."
+    },
+    "/arenaProfiles/{profileId}": {
+      "schema": { "$ref": "#/entities/ArenaProfile" },
+      "description": "Public online arena leaderboard and squad snapshots."
+    },
+    "/arenaChallenges/{challengeId}": {
+      "schema": { "$ref": "#/entities/ArenaChallenge" },
+      "description": "Online PvP challenges, invitations, and match logs."
+    },
+    "/friendships/{friendshipId}": {
+      "schema": { "$ref": "#/entities/Friendship" },
+      "description": "Friend relationships and pending requests."
     }
   }
 }

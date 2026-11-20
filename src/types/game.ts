@@ -42,6 +42,7 @@ export interface Player {
   flagCode: string;
   rating: number;
   potential: number;
+  stars?: number; // 1-5 star upgrade tier
   marketValueM: number; // € Millions
   wageK: number; // € Thousands/week
   contractUntil: number;
@@ -334,6 +335,167 @@ export interface TransferRecord {
   date: string;
 }
 
+export type PackTier =
+  | 'starter_pack'
+  | 'scout_pack'
+  | 'elite_pack'
+  | 'legend_pack'
+  | 'trophy_gift_box';
+
+export interface InventoryState {
+  packs: Record<PackTier, number>;
+  playerCards: Record<string, number>;
+  universalShards: number;
+  fitnessBoosters: number;
+  totalPacksOpened?: number;
+}
+
+export interface OpenedCardReward {
+  player: Player;
+  isOwnedInSquad: boolean;
+  isNewToBag: boolean;
+}
+
+export interface PackOpenResult {
+  packTier: PackTier;
+  cards: OpenedCardReward[];
+  shardsGained: number;
+  boostersGained: number;
+  budgetGainedM: number;
+}
+
+export type RankTierId =
+  | 'dong'
+  | 'bac'
+  | 'vang'
+  | 'bach_kim'
+  | 'kim_cuong'
+  | 'tinh_anh'
+  | 'cao_thu'
+  | 'chien_tuong'
+  | 'thach_dau';
+
+export interface ArenaStarterSnapshot {
+  id: string;
+  name: string;
+  shortName: string;
+  position: Position;
+  rating: number;
+  stars: number;
+  pac: number;
+  sho: number;
+  pas: number;
+  dri: number;
+  def: number;
+  phy: number;
+}
+
+export interface ArenaProfile {
+  uid: string;
+  visibility: 'public';
+  isBot: boolean;
+  managerName: string;
+  nationality: string;
+  clubId: string;
+  clubName: string;
+  formation: FormationId;
+  squadOverall: number;
+  attackRating: number;
+  midfieldRating: number;
+  defenseRating: number;
+  rankTier: RankTierId;
+  rankDivision: number;
+  rankStars: number;
+  bravePoints: number;
+  eloPoints: number;
+  winStreak: number;
+  highestRankIndex: number;
+  matchesPlayed: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  tournamentTitles: number;
+  starters: ArenaStarterSnapshot[];
+  updatedAt?: unknown;
+}
+
+export type OnlineMatchMode = 'duel' | 'ranked' | 'friendly' | 'tournament';
+
+export interface ArenaChallenge {
+  id: string;
+  participants: string[];
+  fromUid: string;
+  fromManagerName: string;
+  fromClubId: string;
+  toUid: string;
+  toManagerName: string;
+  toClubId: string;
+  mode: OnlineMatchMode;
+  status: 'pending' | 'accepted' | 'declined' | 'cancelled' | 'completed';
+  homeGoals?: number;
+  awayGoals?: number;
+  penaltiesHome?: number;
+  penaltiesAway?: number;
+  winnerUid?: string;
+  note?: string;
+  report?: CompactMatchReport;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface Friendship {
+  id: string;
+  participants: string[];
+  requesterUid: string;
+  recipientUid: string;
+  requesterName: string;
+  requesterClubId: string;
+  recipientName: string;
+  recipientClubId: string;
+  recipientIsBot: boolean;
+  status: 'pending' | 'accepted' | 'declined';
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface OnlineTournamentParticipant {
+  uid: string;
+  managerName: string;
+  clubId: string;
+  clubName: string;
+  squadOverall: number;
+  isBot: boolean;
+  rankTier: RankTierId;
+  rankDivision: number;
+}
+
+export interface OnlineTournamentMatch {
+  id: string;
+  round: number; // 1 = R16/QF, etc.
+  roundLabel: string;
+  homeUid: string;
+  awayUid: string;
+  played: boolean;
+  homeGoals?: number;
+  awayGoals?: number;
+  penaltiesHome?: number;
+  penaltiesAway?: number;
+  winnerUid?: string;
+  report?: CompactMatchReport;
+}
+
+export interface OnlineTournamentState {
+  id: string;
+  title: string;
+  size: 8 | 16;
+  currentRound: number;
+  status: 'active' | 'eliminated' | 'champion';
+  participants: OnlineTournamentParticipant[];
+  matches: OnlineTournamentMatch[];
+  championUid?: string;
+  startedAt: string;
+}
+
 export interface CareerSave {
   uid: string;
   clubId: string;
@@ -354,6 +516,8 @@ export interface CareerSave {
   competitions?: CompetitionsState;
   trophyCabinet?: TrophyItem[];
   seasonHistory?: SeasonRecord[];
+  inventory?: InventoryState;
+  onlineTournament?: OnlineTournamentState;
   updatedAt?: unknown;
 }
 
@@ -410,7 +574,10 @@ export type ClubNotificationCategory =
   | 'training'
   | 'season'
   | 'trophy'
-  | 'contract';
+  | 'contract'
+  | 'inventory'
+  | 'upgrade'
+  | 'online';
 
 export interface ClubNotificationItem {
   id: string;

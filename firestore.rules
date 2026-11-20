@@ -96,7 +96,7 @@ service cloud.firestore {
         'uid', 'clubId', 'season', 'matchweek', 'transferBudget', 'wageBudget',
         'boardConfidence', 'fanSupport', 'trainingFocus', 'trainingIntensity',
         'tactics', 'squad', 'standings', 'fixtures', 'recentResults',
-        'transferHistory', 'competitions', 'trophyCabinet', 'seasonHistory', 'updatedAt'
+        'transferHistory', 'competitions', 'trophyCabinet', 'seasonHistory', 'inventory', 'onlineTournament', 'updatedAt'
       ]) &&
       isValidId(data.uid) &&
       isValidId(data.clubId) &&
@@ -117,6 +117,17 @@ service cloud.firestore {
       (!('competitions' in data) || data.competitions is map) &&
       (!('trophyCabinet' in data) || (data.trophyCabinet is list && data.trophyCabinet.size() <= 60 && (data.trophyCabinet.size() == 0 || data.trophyCabinet[0] is map))) &&
       (!('seasonHistory' in data) || (data.seasonHistory is list && data.seasonHistory.size() <= 30 && (data.seasonHistory.size() == 0 || data.seasonHistory[0] is map))) &&
+      (!('inventory' in data) || (
+        data.inventory is map &&
+        data.inventory.keys().hasAll(['packs', 'playerCards', 'universalShards', 'fitnessBoosters']) &&
+        data.inventory.keys().hasOnly(['packs', 'playerCards', 'universalShards', 'fitnessBoosters', 'totalPacksOpened']) &&
+        data.inventory.packs is map && data.inventory.packs.size() <= 20 &&
+        data.inventory.playerCards is map && data.inventory.playerCards.size() <= 400 &&
+        data.inventory.universalShards is int && data.inventory.universalShards >= 0 && data.inventory.universalShards <= 100000 &&
+        data.inventory.fitnessBoosters is int && data.inventory.fitnessBoosters >= 0 && data.inventory.fitnessBoosters <= 5000 &&
+        (!('totalPacksOpened' in data.inventory) || (data.inventory.totalPacksOpened is int && data.inventory.totalPacksOpened >= 0 && data.inventory.totalPacksOpened <= 100000))
+      )) &&
+      (!('onlineTournament' in data) || data.onlineTournament is map) &&
       data.updatedAt is timestamp;
     }
 
@@ -193,10 +204,112 @@ service cloud.firestore {
       data.keys().hasOnly(['id', 'uid', 'category', 'title', 'body', 'createdAt']) &&
       isValidId(data.id) &&
       isValidId(data.uid) &&
-      data.category in ['match', 'transfer', 'tactics', 'medical', 'training', 'season', 'trophy', 'contract'] &&
+      data.category in ['match', 'transfer', 'tactics', 'medical', 'training', 'season', 'trophy', 'contract', 'inventory', 'upgrade', 'online'] &&
       data.title is string && data.title.size() >= 2 && data.title.size() <= 140 &&
       data.body is string && data.body.size() >= 2 && data.body.size() <= 400 &&
       data.createdAt is timestamp;
+    }
+
+    function isValidArenaProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'visibility', 'isBot', 'managerName', 'nationality', 'clubId', 'clubName',
+        'formation', 'squadOverall', 'attackRating', 'midfieldRating', 'defenseRating',
+        'rankTier', 'rankDivision', 'rankStars', 'bravePoints', 'eloPoints', 'winStreak',
+        'highestRankIndex', 'matchesPlayed', 'wins', 'draws', 'losses', 'tournamentTitles',
+        'starters', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'visibility', 'isBot', 'managerName', 'nationality', 'clubId', 'clubName',
+        'formation', 'squadOverall', 'attackRating', 'midfieldRating', 'defenseRating',
+        'rankTier', 'rankDivision', 'rankStars', 'bravePoints', 'eloPoints', 'winStreak',
+        'highestRankIndex', 'matchesPlayed', 'wins', 'draws', 'losses', 'tournamentTitles',
+        'starters', 'updatedAt'
+      ]) &&
+      isValidId(data.uid) &&
+      data.visibility == 'public' &&
+      data.isBot is bool &&
+      data.managerName is string && data.managerName.size() >= 2 && data.managerName.size() <= 60 &&
+      data.nationality is string && data.nationality.size() >= 2 && data.nationality.size() <= 40 &&
+      isValidId(data.clubId) &&
+      data.clubName is string && data.clubName.size() >= 2 && data.clubName.size() <= 80 &&
+      isValidFormation(data.formation) &&
+      data.squadOverall is int && data.squadOverall >= 40 && data.squadOverall <= 99 &&
+      data.attackRating is int && data.attackRating >= 40 && data.attackRating <= 99 &&
+      data.midfieldRating is int && data.midfieldRating >= 40 && data.midfieldRating <= 99 &&
+      data.defenseRating is int && data.defenseRating >= 40 && data.defenseRating <= 99 &&
+      data.rankTier in ['dong', 'bac', 'vang', 'bach_kim', 'kim_cuong', 'tinh_anh', 'cao_thu', 'chien_tuong', 'thach_dau'] &&
+      data.rankDivision is int && data.rankDivision >= 1 && data.rankDivision <= 5 &&
+      data.rankStars is int && data.rankStars >= 0 && data.rankStars <= 999 &&
+      data.bravePoints is int && data.bravePoints >= 0 && data.bravePoints <= 100 &&
+      data.eloPoints is int && data.eloPoints >= 0 && data.eloPoints <= 10000 &&
+      data.winStreak is int && data.winStreak >= 0 && data.winStreak <= 500 &&
+      data.highestRankIndex is int && data.highestRankIndex >= 0 && data.highestRankIndex <= 50 &&
+      data.matchesPlayed is int && data.matchesPlayed >= 0 && data.matchesPlayed <= 50000 &&
+      data.wins is int && data.wins >= 0 && data.wins <= 50000 &&
+      data.draws is int && data.draws >= 0 && data.draws <= 50000 &&
+      data.losses is int && data.losses >= 0 && data.losses <= 50000 &&
+      data.tournamentTitles is int && data.tournamentTitles >= 0 && data.tournamentTitles <= 5000 &&
+      data.starters is list && data.starters.size() >= 1 && data.starters.size() <= 11 && data.starters[0] is map &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidArenaChallenge(data) {
+      return data.keys().hasAll([
+        'id', 'participants', 'fromUid', 'fromManagerName', 'fromClubId',
+        'toUid', 'toManagerName', 'toClubId', 'mode', 'status', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'participants', 'fromUid', 'fromManagerName', 'fromClubId',
+        'toUid', 'toManagerName', 'toClubId', 'mode', 'status',
+        'homeGoals', 'awayGoals', 'penaltiesHome', 'penaltiesAway',
+        'winnerUid', 'note', 'report', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.participants is list && data.participants.size() == 2 &&
+      data.participants[0] is string && data.participants[1] is string &&
+      isValidId(data.fromUid) &&
+      data.fromManagerName is string && data.fromManagerName.size() >= 2 && data.fromManagerName.size() <= 60 &&
+      isValidId(data.fromClubId) &&
+      isValidId(data.toUid) &&
+      data.toManagerName is string && data.toManagerName.size() >= 2 && data.toManagerName.size() <= 60 &&
+      isValidId(data.toClubId) &&
+      data.mode in ['duel', 'ranked', 'friendly', 'tournament'] &&
+      data.status in ['pending', 'accepted', 'declined', 'cancelled', 'completed'] &&
+      (!('homeGoals' in data) || (data.homeGoals is int && data.homeGoals >= 0 && data.homeGoals <= 30)) &&
+      (!('awayGoals' in data) || (data.awayGoals is int && data.awayGoals >= 0 && data.awayGoals <= 30)) &&
+      (!('penaltiesHome' in data) || (data.penaltiesHome is int && data.penaltiesHome >= 0 && data.penaltiesHome <= 30)) &&
+      (!('penaltiesAway' in data) || (data.penaltiesAway is int && data.penaltiesAway >= 0 && data.penaltiesAway <= 30)) &&
+      (!('winnerUid' in data) || (data.winnerUid is string && data.winnerUid.size() <= 128)) &&
+      (!('note' in data) || (data.note is string && data.note.size() <= 160)) &&
+      (!('report' in data) || data.report is map) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidFriendship(data) {
+      return data.keys().hasAll([
+        'id', 'participants', 'requesterUid', 'recipientUid',
+        'requesterName', 'requesterClubId', 'recipientName', 'recipientClubId',
+        'recipientIsBot', 'status', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'participants', 'requesterUid', 'recipientUid',
+        'requesterName', 'requesterClubId', 'recipientName', 'recipientClubId',
+        'recipientIsBot', 'status', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.participants is list && data.participants.size() == 2 &&
+      data.participants[0] is string && data.participants[1] is string &&
+      isValidId(data.requesterUid) &&
+      isValidId(data.recipientUid) &&
+      data.requesterName is string && data.requesterName.size() >= 2 && data.requesterName.size() <= 60 &&
+      isValidId(data.requesterClubId) &&
+      data.recipientName is string && data.recipientName.size() >= 2 && data.recipientName.size() <= 60 &&
+      isValidId(data.recipientClubId) &&
+      data.recipientIsBot is bool &&
+      data.status in ['pending', 'accepted', 'declined'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
     }
 
     // --- Collection Match Rules ---
@@ -284,7 +397,7 @@ service cloud.firestore {
               'clubId', 'season', 'matchweek', 'transferBudget', 'wageBudget',
               'boardConfidence', 'fanSupport', 'trainingFocus', 'trainingIntensity',
               'tactics', 'squad', 'standings', 'fixtures', 'recentResults',
-              'transferHistory', 'competitions', 'trophyCabinet', 'seasonHistory', 'updatedAt'
+              'transferHistory', 'competitions', 'trophyCabinet', 'seasonHistory', 'inventory', 'onlineTournament', 'updatedAt'
             ])
           )
         );
@@ -368,6 +481,115 @@ service cloud.firestore {
         incoming().grantedBy == request.auth.uid &&
         incoming().createdAt == request.time;
       allow delete: if isValidId(uid) && isAdmin() && uid != request.auth.uid;
+    }
+
+    // 8. Public Online Arena Profiles (Real Players & Bots - No PII)
+    match /arenaProfiles/{profileId} {
+      allow get: if isValidId(profileId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.visibility == 'public';
+      allow create: if isValidId(profileId) && isVerified() &&
+        isValidArenaProfile(incoming()) &&
+        incoming().uid == profileId &&
+        incoming().updatedAt == request.time && (
+          (isOwner(profileId) && incoming().isBot == false) ||
+          (isAdmin() && incoming().isBot == true)
+        );
+      allow update: if isValidId(profileId) && isVerified() &&
+        isValidArenaProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().isBot == existing().isBot &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            isOwner(profileId) &&
+            existing().isBot == false &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'visibility', 'managerName', 'nationality', 'clubId', 'clubName',
+              'formation', 'squadOverall', 'attackRating', 'midfieldRating', 'defenseRating',
+              'rankTier', 'rankDivision', 'rankStars', 'bravePoints', 'eloPoints',
+              'winStreak', 'highestRankIndex', 'matchesPlayed', 'wins', 'draws', 'losses',
+              'tournamentTitles', 'starters', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(profileId) && isAdmin();
+    }
+
+    // 9. Online Challenges & PvP Match History
+    match /arenaChallenges/{challengeId} {
+      allow get: if isValidId(challengeId) && isSignedIn() &&
+        (request.auth.uid in existing().participants || isAdmin());
+      allow list: if isSignedIn() &&
+        (request.auth.uid in resource.data.participants || isAdmin());
+      allow create: if isValidId(challengeId) && isVerified() &&
+        isValidArenaChallenge(incoming()) &&
+        incoming().id == challengeId &&
+        incoming().fromUid == request.auth.uid &&
+        request.auth.uid in incoming().participants &&
+        incoming().status in ['pending', 'completed'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(challengeId) && isVerified() &&
+        isValidArenaChallenge(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().participants == existing().participants &&
+        incoming().fromUid == existing().fromUid &&
+        incoming().toUid == existing().toUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            existing().status == 'pending' && (
+              (
+                request.auth.uid == existing().toUid &&
+                incoming().status in ['accepted', 'declined', 'completed'] &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'homeGoals', 'awayGoals', 'penaltiesHome', 'penaltiesAway',
+                  'winnerUid', 'report', 'updatedAt'
+                ])
+              ) || (
+                request.auth.uid == existing().fromUid &&
+                incoming().status == 'cancelled' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              )
+            )
+          )
+        );
+      allow delete: if isValidId(challengeId) && isVerified() &&
+        (request.auth.uid in existing().participants || isAdmin());
+    }
+
+    // 10. Online Friendships
+    match /friendships/{friendshipId} {
+      allow get: if isValidId(friendshipId) && isSignedIn() &&
+        (request.auth.uid in existing().participants || isAdmin());
+      allow list: if isSignedIn() &&
+        (request.auth.uid in resource.data.participants || isAdmin());
+      allow create: if isValidId(friendshipId) && isVerified() &&
+        isValidFriendship(incoming()) &&
+        incoming().id == friendshipId &&
+        incoming().requesterUid == request.auth.uid &&
+        request.auth.uid in incoming().participants &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          incoming().status == 'pending' ||
+          (incoming().recipientIsBot == true && incoming().status == 'accepted')
+        );
+      allow update: if isValidId(friendshipId) && isVerified() &&
+        isValidFriendship(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().participants == existing().participants &&
+        incoming().requesterUid == existing().requesterUid &&
+        incoming().recipientUid == existing().recipientUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            existing().status == 'pending' &&
+            request.auth.uid == existing().recipientUid &&
+            incoming().status in ['accepted', 'declined'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(friendshipId) && isVerified() &&
+        (request.auth.uid in existing().participants || isAdmin());
     }
   }
 }

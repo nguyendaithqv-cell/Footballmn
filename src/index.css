@@ -53,3 +53,108 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.4);
 }
+
+@keyframes packShake {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+  12% {
+    transform: translate3d(-4px, -2px, 0) rotate(-3deg) scale(1.02);
+  }
+  24% {
+    transform: translate3d(5px, 1px, 0) rotate(3deg) scale(1.04);
+  }
+  36% {
+    transform: translate3d(-6px, -2px, 0) rotate(-4deg) scale(1.06);
+  }
+  48% {
+    transform: translate3d(6px, 2px, 0) rotate(4deg) scale(1.08);
+  }
+  60% {
+    transform: translate3d(-7px, -1px, 0) rotate(-5deg) scale(1.09);
+  }
+  72% {
+    transform: translate3d(7px, 2px, 0) rotate(5deg) scale(1.11);
+  }
+  84% {
+    transform: translate3d(-4px, -2px, 0) rotate(-3deg) scale(1.13);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1.16);
+  }
+}
+
+@keyframes packBurst {
+  0% {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cardRevealPop {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.84) rotateX(14deg);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.04) rotateX(0deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotateX(0deg);
+  }
+}
+
+@keyframes auraPulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.08);
+  }
+}
+
+.animate-pack-shake {
+  animation: packShake 0.9s cubic-bezier(0.36, 0.07, 0.19, 0.97) infinite;
+}
+
+.animate-pack-burst {
+  animation: packBurst 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-card-reveal {
+  animation: cardRevealPop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-aura-pulse {
+  animation: auraPulse 0.95s ease-in-out infinite;
+}
+
+.reveal-delay-0 {
+  animation-delay: 60ms;
+}
+
+.reveal-delay-1 {
+  animation-delay: 200ms;
+}
+
+.reveal-delay-2 {
+  animation-delay: 340ms;
+}
+
+.reveal-delay-3 {
+  animation-delay: 460ms;
+}
+

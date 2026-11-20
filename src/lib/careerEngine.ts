@@ -25,6 +25,7 @@ import {
   TacticSlot,
   TrophyItem,
 } from '../types/game';
+import { createStarterInventory, normalizeInventory } from './inventoryEngine';
 
 const POSITION_COMPATIBILITY: Record<Position, Position[]> = {
   GK: ['GK'],
@@ -396,15 +397,34 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     };
   }
 
-  if (hasComps && career.competitions?.leaderboards && career.trophyCabinet && career.seasonHistory) {
+  const hasInventory = Boolean(
+    career.inventory &&
+      career.inventory.packs &&
+      career.inventory.playerCards &&
+      typeof career.inventory.universalShards === 'number'
+  );
+  const hasAllStars = career.squad.every((p) => typeof p.stars === 'number');
+
+  if (
+    hasComps &&
+    career.competitions?.leaderboards &&
+    career.trophyCabinet &&
+    career.seasonHistory &&
+    hasInventory &&
+    hasAllStars
+  ) {
     return career;
   }
 
   return {
     ...career,
+    squad: hasAllStars ? career.squad : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 })),
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
     seasonHistory: career.seasonHistory ?? [],
+    inventory: career.inventory
+      ? normalizeInventory(career.inventory)
+      : createStarterInventory(),
   };
 }
 
@@ -416,7 +436,9 @@ export function createInitialCareer(
   const club = CLUBS.find((c) => c.id === clubId) ?? CLUBS[0];
   const manager = REAL_MANAGERS.find((m) => m.id === club.managerId) ?? REAL_MANAGERS[0];
   const allPlayers = applyMarketOverrides(INITIAL_PLAYERS, overrides);
-  const clubSquad = allPlayers.filter((p) => p.clubId === club.id);
+  const clubSquad = allPlayers
+    .filter((p) => p.clubId === club.id)
+    .map((p) => ({ ...p, stars: p.stars ?? 1 }));
   const formation = manager.preferredFormation;
 
   const tactics: TacticSettings = {
@@ -458,6 +480,7 @@ export function createInitialCareer(
     competitions,
     trophyCabinet: [],
     seasonHistory: [],
+    inventory: createStarterInventory(),
   };
 }
 
@@ -1687,6 +1710,18 @@ export function createNextSeasonCareer(career: CareerSave): {
     ncWinner
   );
 
+  const prevInv = normalizeInventory(hydrated.inventory);
+  const nextInventory = {
+    ...prevInv,
+    packs: {
+      ...prevInv.packs,
+      legend_pack: prevInv.packs.legend_pack + 1,
+      elite_pack: prevInv.packs.elite_pack + 2,
+      trophy_gift_box: prevInv.packs.trophy_gift_box + 1,
+    },
+    universalShards: prevInv.universalShards + 30,
+  };
+
   const nextCareer: CareerSave = {
     ...hydrated,
     season: nextSeason,
@@ -1701,6 +1736,7 @@ export function createNextSeasonCareer(career: CareerSave): {
     competitions,
     trophyCabinet: existingCabinet.slice(0, 60),
     seasonHistory: [summary, ...(hydrated.seasonHistory ?? [])].slice(0, 30),
+    inventory: nextInventory,
   };
 
   return { nextCareer, summary, prizeM, newTrophiesCount };

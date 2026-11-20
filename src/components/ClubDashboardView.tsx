@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Bell, Calendar, ChevronRight, Dumbbell, HeartPulse, RefreshCw, Shield, Trophy, Wallet } from 'lucide-react';
+import { Bell, Calendar, ChevronRight, Dumbbell, HeartPulse, PackageOpen, RefreshCw, Shield, Star, Trophy, Wallet } from 'lucide-react';
 import { CLUBS, REAL_MANAGERS } from '../data/footballDatabase';
 import {
   calculateTacticalProfile,
@@ -8,6 +8,7 @@ import {
   getSquadRecoveryCostM,
   sortStandings,
 } from '../lib/careerEngine';
+import { getTotalUnopenedPacks } from '../lib/inventoryEngine';
 import { CareerSave, NewsArticle, Player, UserProfile } from '../types/game';
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 
@@ -17,7 +18,7 @@ interface ClubDashboardViewProps {
   news: NewsArticle[];
   pushPermission: NotificationPermission | 'unsupported';
   onEnablePush: () => Promise<void>;
-  onNavigateTab: (tab: 'home' | 'tactics' | 'match' | 'transfers' | 'club') => void;
+  onNavigateTab: (tab: 'home' | 'tactics' | 'match' | 'transfers' | 'inventory' | 'club') => void;
   onSelectPlayer: (player: Player) => void;
   onUpdateTraining: (
     focus: CareerSave['trainingFocus'],
@@ -235,6 +236,27 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
 
           {/* Right Column: Push Alerts Opt-In, News Preview, Quick Tactics */}
           <div className="lg:col-span-5 space-y-4">
+            {getTotalUnopenedPacks(career.inventory) > 0 && (
+              <div className="rounded-2xl bg-amber-500/10 border border-amber-400/35 p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <PackageOpen className="w-4 h-4 text-amber-400" />
+                    Có {getTotalUnopenedPacks(career.inventory)} gói thẻ &amp; quà trong Túi đồ
+                  </p>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Mở thẻ cầu thủ, nhận Mảnh Ngôi Sao và ghép nâng sao cho đội hình!
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigateTab('inventory')}
+                  className="h-10 px-3.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shrink-0"
+                >
+                  Mở túi đồ
+                </button>
+              </div>
+            )}
+
             {pushPermission !== 'granted' && pushPermission !== 'unsupported' && (
               <div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/30 p-4 flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -357,7 +379,13 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                 <div className="flex items-center gap-3 min-w-0">
                   <PlayerAvatar player={p} club={club} size={46} />
                   <div className="min-w-0">
-                    <p className="text-sm font-bold text-white truncate">{p.name}</p>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <p className="text-sm font-bold text-white truncate">{p.name}</p>
+                      <span className="inline-flex items-center gap-0.5 text-[11px] font-mono-num font-bold text-amber-400 shrink-0">
+                        {p.stars ?? 1}
+                        <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                      </span>
+                    </div>
                     <p className="text-xs text-slate-400 truncate">
                       {p.position} · {p.age}t · Thể lực{' '}
                       <span className="font-mono-num text-emerald-400">{p.fitness}%</span> · Phong độ{' '}

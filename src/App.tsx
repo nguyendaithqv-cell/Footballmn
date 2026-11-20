@@ -12,6 +12,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import {
   ArrowLeftRight,
@@ -19,9 +20,11 @@ import {
   Compass,
   Home,
   LogOut,
+  PackageOpen,
   Play,
   ShieldCheck,
   Sliders,
+  Swords,
   Trash2,
   X,
 } from 'lucide-react';
@@ -34,6 +37,7 @@ import { TacticsView } from './components/TacticsView';
 import { CLUBS, INITIAL_PLAYERS } from './data/footballDatabase';
 import {
   applyCupMatchResults,
+  applyMarketOverrides,
   applyMatchToStandings,
   createInitialCareer,
   createNextSeasonCareer,
@@ -44,21 +48,57 @@ import {
   sortStandings,
   toCompactMatchReport,
 } from './lib/careerEngine';
-import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import {
+  applyPlayerStarUpgrade,
+  getCardDismantleShards,
+  getStarUpgradePlan,
+  getTotalUnopenedPacks,
+  normalizeInventory,
+  openPackFromInventory,
+  PACK_CATALOG,
+} from './lib/inventoryEngine';
+import {
+  auth,
+  db,
+  FIRESTORE_QUOTA_UPGRADE_URL,
+  handleFirestoreError,
+  hasFirestoreQuotaExceeded,
+  OperationType,
+  subscribeFirestoreQuota,
+} from './lib/firebase';
 import {
   getPushPermission,
   requestPushPermission,
   triggerDeviceNotification,
 } from './lib/notifications';
 import {
+  applyRankedMatchOutcome,
+  buildArenaProfileFromCareer,
+  createDefaultBotProfiles,
+  createOnlineTournament,
+  formatRankLabel,
+  getFriendshipDocId,
+  getRankScore,
+  mergeLeaderboardWithBots,
+  playOnlineTournamentRound,
+  RankedOutcomeResult,
+  simulateOnlineMatch,
+} from './lib/onlineArenaEngine';
+import {
+  ArenaChallenge,
+  ArenaProfile,
   CareerSave,
   ClubNotificationCategory,
   ClubNotificationItem,
   FormationId,
+  Friendship,
   MarketOverride,
   MatchResultSummary,
   Mentality,
   NewsArticle,
+  OnlineMatchMode,
+  PackOpenResult,
+  PackTier,
   Player,
   PushNotificationItem,
   TacticSettings,
@@ -72,11 +112,17 @@ const MatchdayView = lazy(() =>
 const TransfersView = lazy(() =>
   import('./components/TransfersView').then((m) => ({ default: m.TransfersView }))
 );
+const InventoryView = lazy(() =>
+  import('./components/InventoryView').then((m) => ({ default: m.InventoryView }))
+);
+const OnlineArenaView = lazy(() =>
+  import('./components/OnlineArenaView').then((m) => ({ default: m.OnlineArenaView }))
+);
 const AdminDashboardView = lazy(() =>
   import('./components/AdminDashboardView').then((m) => ({ default: m.AdminDashboardView }))
 );
 
-type MainTab = 'home' | 'tactics' | 'match' | 'transfers' | 'admin';
+type MainTab = 'home' | 'tactics' | 'match' | 'transfers' | 'inventory' | 'online' | 'admin';
 
 const ADMIN_EMAIL = 'nguyendai.thqv@gmail.com';
 
@@ -95,6 +141,9 @@ export default function App() {
   const [notifications, setNotifications] = useState<PushNotificationItem[]>([]);
   const [clubNotifications, setClubNotifications] = useState<ClubNotificationItem[]>([]);
   const [marketOverrides, setMarketOverrides] = useState<Record<string, MarketOverride>>({});
+  const [cloudArenaProfiles, setCloudArenaProfiles] = useState<ArenaProfile[]>([]);
+  const [arenaChallenges, setArenaChallenges] = useState<ArenaChallenge[]>([]);
+  const [friendships, setFriendships] = useState<Friendship[]>([]);
 
   // Push Notification & Drawer State
   const [pushPermission, setPushPermission] = useState<NotificationPermission | 'unsupported'>(() =>
@@ -106,12 +155,21 @@ export default function App() {
     null
   );
   const [unreadCount, setUnreadCount] = useState(0);
+  const [quotaExceeded, setQuotaExceeded] = useState<boolean>(() => hasFirestoreQuotaExceeded());
+  const [quotaBannerDismissed, setQuotaBannerDismissed] = useState(false);
   const initialNotifLoadedRef = useRef(false);
   const seenNotifIdsRef = useRef<Set<string>>(new Set());
   const initialClubNotifLoadedRef = useRef(false);
   const seenClubNotifIdsRef = useRef<Set<string>>(new Set());
   const tacticsNotifTimerRef = useRef<number | null>(null);
+  const tacticsSaveTimerRef = useRef<number | null>(null);
+  const arenaSyncTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const arenaLoadedRef = useRef(false);
+  const lastSyncedArenaSigRef = useRef('');
+  const prevCareerRef = useRef<CareerSave | null>(null);
+
+  useEffect(() => subscribeFirestoreQuota(setQuotaExceeded), []);
 
   const isAdmin = useMemo(() => {
     if (!firebaseUser?.emailVerified) return false;
@@ -132,11 +190,16 @@ export default function App() {
         setCareer(null);
         setClubNotifications([]);
         setNotifications([]);
+        setCloudArenaProfiles([]);
+        setArenaChallenges([]);
+        setFriendships([]);
         setUnreadCount(0);
         initialNotifLoadedRef.current = false;
         initialClubNotifLoadedRef.current = false;
         seenNotifIdsRef.current.clear();
         seenClubNotifIdsRef.current.clear();
+        arenaLoadedRef.current = false;
+        lastSyncedArenaSigRef.current = '';
         setNeedsProfile(false);
         setAuthReady(true);
         return;
@@ -175,7 +238,9 @@ export default function App() {
       doc(db, 'careers', uid),
       (snap) => {
         if (snap.exists()) {
-          setCareer(snap.data() as CareerSave);
+          const data = snap.data() as CareerSave;
+          prevCareerRef.current = data;
+          setCareer(data);
         }
       },
       (err) => handleFirestoreError(err, OperationType.GET, `careers/${uid}`)
@@ -282,6 +347,69 @@ export default function App() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'marketOverrides')
     );
 
+    const arenaProfilesQuery = query(
+      collection(db, 'arenaProfiles'),
+      where('visibility', '==', 'public'),
+      limit(100)
+    );
+    const unsubArenaProfiles = onSnapshot(
+      arenaProfilesQuery,
+      (snap) => {
+        const list: ArenaProfile[] = [];
+        snap.forEach((d) => list.push(d.data() as ArenaProfile));
+        arenaLoadedRef.current = true;
+        setCloudArenaProfiles(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'arenaProfiles')
+    );
+
+    const toTimeMs = (ts: unknown): number => {
+      if (ts && typeof (ts as { toMillis?: () => number }).toMillis === 'function') {
+        return (ts as { toMillis: () => number }).toMillis();
+      }
+      return 0;
+    };
+
+    const challengesQuery = query(
+      collection(db, 'arenaChallenges'),
+      where('participants', 'array-contains', uid),
+      limit(60)
+    );
+    const unsubChallenges = onSnapshot(
+      challengesQuery,
+      (snap) => {
+        const list: ArenaChallenge[] = [];
+        snap.forEach((d) => list.push(d.data() as ArenaChallenge));
+        list.sort(
+          (a, b) =>
+            (toTimeMs(b.updatedAt) || toTimeMs(b.createdAt)) -
+            (toTimeMs(a.updatedAt) || toTimeMs(a.createdAt))
+        );
+        setArenaChallenges(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'arenaChallenges')
+    );
+
+    const friendshipsQuery = query(
+      collection(db, 'friendships'),
+      where('participants', 'array-contains', uid),
+      limit(80)
+    );
+    const unsubFriendships = onSnapshot(
+      friendshipsQuery,
+      (snap) => {
+        const list: Friendship[] = [];
+        snap.forEach((d) => list.push(d.data() as Friendship));
+        list.sort(
+          (a, b) =>
+            (toTimeMs(b.updatedAt) || toTimeMs(b.createdAt)) -
+            (toTimeMs(a.updatedAt) || toTimeMs(a.createdAt))
+        );
+        setFriendships(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'friendships')
+    );
+
     return () => {
       unsubCareer();
       unsubProfile();
@@ -289,12 +417,17 @@ export default function App() {
       unsubNotifs();
       unsubClubNotifs();
       unsubOverrides();
+      unsubArenaProfiles();
+      unsubChallenges();
+      unsubFriendships();
     };
   }, [firebaseUser, needsProfile]);
 
   useEffect(() => {
     return () => {
       if (tacticsNotifTimerRef.current) window.clearTimeout(tacticsNotifTimerRef.current);
+      if (tacticsSaveTimerRef.current) window.clearTimeout(tacticsSaveTimerRef.current);
+      if (arenaSyncTimerRef.current) window.clearTimeout(arenaSyncTimerRef.current);
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     };
   }, []);
@@ -308,6 +441,7 @@ export default function App() {
     ) => {
       const uid = targetUid ?? firebaseUser?.uid;
       if (!uid) return;
+      if (hasFirestoreQuotaExceeded()) return;
       const safeTitle = (title.trim() || 'Cập nhật CLB').slice(0, 140);
       const safeBody = (body.trim() || 'Dữ liệu câu lạc bộ đã được đồng bộ.').slice(0, 400);
       const notifId = `cn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -431,29 +565,57 @@ export default function App() {
   const saveCareerCloud = useCallback(
     async (nextCareer: CareerSave) => {
       if (!firebaseUser) return;
+      const prev = prevCareerRef.current;
+      prevCareerRef.current = nextCareer;
       setCareer(nextCareer);
+      if (hasFirestoreQuotaExceeded()) return;
       try {
-        const payload: Record<string, unknown> = {
-          clubId: nextCareer.clubId,
-          season: nextCareer.season,
-          matchweek: nextCareer.matchweek,
-          transferBudget: nextCareer.transferBudget,
-          wageBudget: nextCareer.wageBudget,
-          boardConfidence: nextCareer.boardConfidence,
-          fanSupport: nextCareer.fanSupport,
-          trainingFocus: nextCareer.trainingFocus,
-          trainingIntensity: nextCareer.trainingIntensity,
-          tactics: nextCareer.tactics,
-          squad: nextCareer.squad,
-          standings: nextCareer.standings,
-          fixtures: nextCareer.fixtures,
-          recentResults: nextCareer.recentResults,
-          transferHistory: nextCareer.transferHistory ?? [],
-          updatedAt: serverTimestamp(),
-        };
-        if (nextCareer.competitions) payload.competitions = nextCareer.competitions;
-        if (nextCareer.trophyCabinet) payload.trophyCabinet = nextCareer.trophyCabinet;
-        if (nextCareer.seasonHistory) payload.seasonHistory = nextCareer.seasonHistory;
+        const normalizedInv = nextCareer.inventory
+          ? normalizeInventory(nextCareer.inventory)
+          : undefined;
+        const candidateFields: Array<[string, unknown, unknown]> = [
+          ['clubId', nextCareer.clubId, prev?.clubId],
+          ['season', nextCareer.season, prev?.season],
+          ['matchweek', nextCareer.matchweek, prev?.matchweek],
+          ['transferBudget', nextCareer.transferBudget, prev?.transferBudget],
+          ['wageBudget', nextCareer.wageBudget, prev?.wageBudget],
+          ['boardConfidence', nextCareer.boardConfidence, prev?.boardConfidence],
+          ['fanSupport', nextCareer.fanSupport, prev?.fanSupport],
+          ['trainingFocus', nextCareer.trainingFocus, prev?.trainingFocus],
+          ['trainingIntensity', nextCareer.trainingIntensity, prev?.trainingIntensity],
+          ['tactics', nextCareer.tactics, prev?.tactics],
+          ['squad', nextCareer.squad, prev?.squad],
+          ['standings', nextCareer.standings, prev?.standings],
+          ['fixtures', nextCareer.fixtures, prev?.fixtures],
+          ['recentResults', nextCareer.recentResults, prev?.recentResults],
+          ['transferHistory', nextCareer.transferHistory ?? [], prev?.transferHistory ?? []],
+          ['competitions', nextCareer.competitions, prev?.competitions],
+          ['trophyCabinet', nextCareer.trophyCabinet, prev?.trophyCabinet],
+          ['seasonHistory', nextCareer.seasonHistory, prev?.seasonHistory],
+          ['inventory', normalizedInv, prev?.inventory ? normalizeInventory(prev.inventory) : undefined],
+          ['onlineTournament', nextCareer.onlineTournament, prev?.onlineTournament],
+        ];
+
+        const payload: Record<string, unknown> = {};
+        let changedCount = 0;
+        for (const [key, nextVal, prevVal] of candidateFields) {
+          if (nextVal === undefined) continue;
+          if (!prev || nextVal !== prevVal) {
+            // Confirm serialized change for non-primitive fields to skip massive unchanged blobs
+            if (
+              prev &&
+              prevVal !== undefined &&
+              typeof nextVal === 'object' &&
+              JSON.stringify(nextVal) === JSON.stringify(prevVal)
+            ) {
+              continue;
+            }
+            payload[key] = nextVal;
+            changedCount++;
+          }
+        }
+        if (changedCount === 0) return;
+        payload.updatedAt = serverTimestamp();
 
         await updateDoc(
           doc(db, 'careers', firebaseUser.uid),
@@ -469,15 +631,20 @@ export default function App() {
   const handleUpdateTactics = useCallback(
     (nextTactics: TacticSettings) => {
       if (!hydratedCareer) return;
-      saveCareerCloud({ ...hydratedCareer, tactics: nextTactics });
+      const updatedCareer: CareerSave = { ...hydratedCareer, tactics: nextTactics };
+      setCareer(updatedCareer);
+      if (tacticsSaveTimerRef.current) window.clearTimeout(tacticsSaveTimerRef.current);
+      tacticsSaveTimerRef.current = window.setTimeout(() => {
+        void saveCareerCloud(updatedCareer);
+      }, 850);
       if (tacticsNotifTimerRef.current) window.clearTimeout(tacticsNotifTimerRef.current);
       tacticsNotifTimerRef.current = window.setTimeout(() => {
-        pushClubNotification(
+        void pushClubNotification(
           'tactics',
           `Cập nhật chiến thuật (${nextTactics.formation})`,
           `Áp dụng sơ đồ ${nextTactics.formation}, tâm lý ${nextTactics.mentality}, pressing mức ${nextTactics.pressingIntensity}/5.`
         );
-      }, 1500);
+      }, 1800);
     },
     [hydratedCareer, saveCareerCloud, pushClubNotification]
   );
@@ -620,6 +787,27 @@ export default function App() {
           }
         : undefined;
 
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const nextPacks = { ...inv.packs };
+      let shardsEarned = won ? 5 : drawn ? 2 : 1;
+      if (won) {
+        if (myGoals - oppGoals >= 3) {
+          nextPacks.elite_pack = (nextPacks.elite_pack ?? 0) + 1;
+        } else {
+          nextPacks.scout_pack = (nextPacks.scout_pack ?? 0) + 1;
+        }
+      }
+      if (awardedLeagueTrophy > 0) {
+        nextPacks.legend_pack = (nextPacks.legend_pack ?? 0) + 1;
+        nextPacks.trophy_gift_box = (nextPacks.trophy_gift_box ?? 0) + 1;
+        shardsEarned += 25;
+      }
+      const nextInv = normalizeInventory({
+        ...inv,
+        packs: nextPacks,
+        universalShards: inv.universalShards + shardsEarned,
+      });
+
       const nextCareer: CareerSave = {
         ...hydratedCareer,
         matchweek: hydratedCareer.matchweek + 1,
@@ -635,6 +823,7 @@ export default function App() {
         fixtures: nextFixtures,
         competitions: nextComps,
         trophyCabinet: nextCabinet,
+        inventory: nextInv,
         recentResults: [
           userMatch,
           ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
@@ -642,6 +831,7 @@ export default function App() {
       };
 
       await saveCareerCloud(nextCareer);
+      if (hasFirestoreQuotaExceeded()) return;
 
       try {
         await updateDoc(doc(db, 'users', firebaseUser.uid), {
@@ -821,6 +1011,45 @@ export default function App() {
         },
       };
 
+      let nextInv = normalizeInventory(hydratedCareer.inventory);
+      if (userMatch || trophiesAdded > 0) {
+        const nextPacks = { ...nextInv.packs };
+        let shardsEarned = 0;
+        if (userMatch) {
+          const isUserHome = userMatch.homeClubId === hydratedCareer.clubId;
+          const myGoals = isUserHome ? userMatch.homeGoals : userMatch.awayGoals;
+          const oppGoals = isUserHome ? userMatch.awayGoals : userMatch.homeGoals;
+          const isKnockout =
+            competition === 'national-cup' ||
+            competition === 'super-cup' ||
+            (userMatch.roundLabel?.toLowerCase().includes('chung kết') ?? false) ||
+            (userMatch.roundLabel?.toLowerCase().includes('bán kết') ?? false) ||
+            (userMatch.roundLabel?.toLowerCase().includes('tứ kết') ?? false);
+          if (wonMatch) {
+            shardsEarned += 6;
+            if (isKnockout || myGoals - oppGoals >= 3) {
+              nextPacks.elite_pack = (nextPacks.elite_pack ?? 0) + 1;
+            } else {
+              nextPacks.scout_pack = (nextPacks.scout_pack ?? 0) + 1;
+            }
+          } else if (drawnMatch) {
+            shardsEarned += 3;
+          } else {
+            shardsEarned += 1;
+          }
+        }
+        if (trophiesAdded > 0) {
+          nextPacks.legend_pack = (nextPacks.legend_pack ?? 0) + trophiesAdded;
+          nextPacks.trophy_gift_box = (nextPacks.trophy_gift_box ?? 0) + trophiesAdded;
+          shardsEarned += 25 * trophiesAdded;
+        }
+        nextInv = normalizeInventory({
+          ...nextInv,
+          packs: nextPacks,
+          universalShards: nextInv.universalShards + shardsEarned,
+        });
+      }
+
       const nextCareer: CareerSave = {
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + budgetBonus).toFixed(1)),
@@ -828,6 +1057,7 @@ export default function App() {
         squad: nextSquad,
         competitions: nextCompsWithStats,
         trophyCabinet: nextCabinet,
+        inventory: nextInv,
         recentResults: userMatch
           ? [userMatch, ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id)].slice(
               0,
@@ -952,11 +1182,18 @@ export default function App() {
           }
         : undefined;
 
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const nextInv = normalizeInventory({
+        ...inv,
+        universalShards: inv.universalShards + (won ? 3 : 1),
+      });
+
       const nextCareer: CareerSave = {
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + (won ? 3.0 : 2.0)).toFixed(1)),
         squad: nextSquad,
         competitions: nextComps,
+        inventory: nextInv,
         recentResults: [
           userMatch,
           ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
@@ -964,6 +1201,7 @@ export default function App() {
       };
 
       await saveCareerCloud(nextCareer);
+      if (hasFirestoreQuotaExceeded()) return;
 
       try {
         await updateDoc(doc(db, 'users', firebaseUser.uid), {
@@ -993,6 +1231,7 @@ export default function App() {
     if (!hydratedCareer || !firebaseUser || !profile) return;
     const { nextCareer, summary, prizeM, newTrophiesCount } = createNextSeasonCareer(hydratedCareer);
     await saveCareerCloud(nextCareer);
+    if (hasFirestoreQuotaExceeded()) return;
 
     try {
       await updateDoc(doc(db, 'users', firebaseUser.uid), {
@@ -1079,6 +1318,9 @@ export default function App() {
       };
 
       await saveCareerCloud(nextCareer);
+      if (hasFirestoreQuotaExceeded()) {
+        return { ok: true, message: `Đã chiêu mộ ${player.name} (chế độ cục bộ do hết quota Firestore).` };
+      }
 
       try {
         const logId = `tr-${firebaseUser.uid}-${Date.now()}`;
@@ -1319,6 +1561,331 @@ export default function App() {
     };
   }, [hydratedCareer, saveCareerCloud, pushClubNotification]);
 
+  const handleOpenPack = useCallback(
+    async (
+      packTier: PackTier
+    ): Promise<{ ok: boolean; message: string; result?: PackOpenResult }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const mergedPlayers = applyMarketOverrides(INITIAL_PLAYERS, marketOverrides);
+      const opened = openPackFromInventory(packTier, inv, hydratedCareer.squad, mergedPlayers);
+      if (!opened) {
+        return { ok: false, message: 'Bạn không còn gói này trong túi đồ.' };
+      }
+
+      const packMeta = PACK_CATALOG.find((p) => p.id === packTier);
+      const nextBudget = Number(
+        (hydratedCareer.transferBudget + opened.result.budgetGainedM).toFixed(1)
+      );
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        transferBudget: nextBudget,
+        inventory: opened.nextInventory,
+      });
+
+      const cardNames = opened.result.cards.map((c) => `${c.player.shortName} (${c.player.rating})`).join(', ');
+      await pushClubNotification(
+        'inventory',
+        `Mở ${packMeta?.name ?? 'Gói thẻ'}`,
+        `Nhận ${cardNames}${opened.result.shardsGained > 0 ? `, +${opened.result.shardsGained} Mảnh Ngôi Sao` : ''}${opened.result.boostersGained > 0 ? `, +${opened.result.boostersGained} Bình Thể Lực` : ''}${opened.result.budgetGainedM > 0 ? `, +€${opened.result.budgetGainedM}M` : ''}.`
+      );
+
+      return {
+        ok: true,
+        message: `Đã mở ${packMeta?.name ?? 'gói quà'} thành công!`,
+        result: opened.result,
+      };
+    },
+    [hydratedCareer, marketOverrides, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleBuyPack = useCallback(
+    async (packTier: PackTier): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      const pack = PACK_CATALOG.find((p) => p.id === packTier);
+      if (!pack || pack.buyPriceM <= 0) {
+        return { ok: false, message: 'Gói quà này không được bán trong cửa hàng.' };
+      }
+      if (hydratedCareer.transferBudget < pack.buyPriceM) {
+        return {
+          ok: false,
+          message: `Ngân sách không đủ (Cần €${pack.buyPriceM}M, hiện có €${hydratedCareer.transferBudget.toFixed(1)}M).`,
+        };
+      }
+
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const nextInv = normalizeInventory({
+        ...inv,
+        packs: {
+          ...inv.packs,
+          [packTier]: (inv.packs[packTier] ?? 0) + 1,
+        },
+      });
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        transferBudget: Number((hydratedCareer.transferBudget - pack.buyPriceM).toFixed(1)),
+        inventory: nextInv,
+      });
+
+      await pushClubNotification(
+        'inventory',
+        `Mua ${pack.name}`,
+        `Đã mua thêm 1 ${pack.name} vào túi đồ (-€${pack.buyPriceM}M).`
+      );
+
+      return {
+        ok: true,
+        message: `Đã mua 1 ${pack.name} (-€${pack.buyPriceM}M). Hãy mở ngay trong Túi đồ!`,
+      };
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleUpgradePlayerStar = useCallback(
+    async (playerId: string): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      const target = hydratedCareer.squad.find((p) => p.id === playerId);
+      if (!target) {
+        return { ok: false, message: 'Cầu thủ không có trong đội hình CLB.' };
+      }
+
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const plan = getStarUpgradePlan(target, inv, hydratedCareer.transferBudget);
+      if (plan.isMax) {
+        return { ok: false, message: `${target.name} đã đạt tối đa 5★.` };
+      }
+      if (!plan.canAffordMaterials) {
+        return {
+          ok: false,
+          message: `Thiếu phôi nâng sao (Cần thêm ${plan.shardsToUse - inv.universalShards} Mảnh Ngôi Sao hoặc thẻ bản sao của ${target.shortName}).`,
+        };
+      }
+      if (!plan.canAffordBudget) {
+        return {
+          ok: false,
+          message: `Không đủ ngân sách ghép sao (Cần €${plan.feeM}M).`,
+        };
+      }
+
+      const upgraded = applyPlayerStarUpgrade(target, plan);
+      const nextSquad = hydratedCareer.squad.map((p) => (p.id === playerId ? upgraded : p));
+      const nextCards = { ...inv.playerCards };
+      const remCards = (nextCards[playerId] ?? 0) - plan.cardsToUse;
+      if (remCards > 0) {
+        nextCards[playerId] = remCards;
+      } else {
+        delete nextCards[playerId];
+      }
+
+      const nextInv = normalizeInventory({
+        ...inv,
+        playerCards: nextCards,
+        universalShards: inv.universalShards - plan.shardsToUse,
+      });
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        transferBudget: Number((hydratedCareer.transferBudget - plan.feeM).toFixed(1)),
+        squad: nextSquad,
+        inventory: nextInv,
+      });
+
+      setSelectedPlayer((prev) => (prev && prev.id === playerId ? upgraded : prev));
+
+      await pushClubNotification(
+        'upgrade',
+        `Đột phá ${plan.nextStars}★: ${target.name}`,
+        `Ghép thẻ thành công ${target.name} lên ${plan.nextStars}★ · OVR ${target.rating} → ${upgraded.rating} (+${plan.step?.attrGain} toàn bộ chỉ số).`
+      );
+
+      return {
+        ok: true,
+        message: `Ghép sao thành công! ${target.name} đạt ${plan.nextStars}★ (OVR ${upgraded.rating}).`,
+      };
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleRecruitFromCard = useCallback(
+    async (playerId: string): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      if (hydratedCareer.squad.some((p) => p.id === playerId)) {
+        return { ok: false, message: 'Cầu thủ này đã nằm trong đội hình chính.' };
+      }
+      if (hydratedCareer.squad.length >= 45) {
+        return { ok: false, message: 'Đội hình đã đạt giới hạn tối đa 45 cầu thủ.' };
+      }
+
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const cardCount = inv.playerCards[playerId] ?? 0;
+      if (cardCount < 1) {
+        return { ok: false, message: 'Không tìm thấy thẻ cầu thủ này trong túi đồ.' };
+      }
+
+      const mergedPlayers = applyMarketOverrides(INITIAL_PLAYERS, marketOverrides);
+      const sourcePlayer = mergedPlayers.find((p) => p.id === playerId);
+      if (!sourcePlayer) {
+        return { ok: false, message: 'Không tìm thấy dữ liệu gốc của cầu thủ.' };
+      }
+
+      const nextCards = { ...inv.playerCards };
+      if (cardCount - 1 > 0) {
+        nextCards[playerId] = cardCount - 1;
+      } else {
+        delete nextCards[playerId];
+      }
+
+      const recruitedPlayer: Player = {
+        ...sourcePlayer,
+        clubId: hydratedCareer.clubId,
+        stars: 1,
+        transferStatus: 'available',
+        morale: 92,
+        fitness: 100,
+        appearances: 0,
+        goals: 0,
+        assists: 0,
+      };
+
+      const nextInv = normalizeInventory({
+        ...inv,
+        playerCards: nextCards,
+      });
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        squad: [...hydratedCareer.squad, recruitedPlayer],
+        inventory: nextInv,
+      });
+
+      await pushClubNotification(
+        'transfer',
+        `Chiêu mộ từ Thẻ: ${recruitedPlayer.name}`,
+        `Kích hoạt thẻ cầu thủ ${recruitedPlayer.name} (${recruitedPlayer.position}, OVR ${recruitedPlayer.rating}) gia nhập đội hình miễn phí.`
+      );
+
+      return {
+        ok: true,
+        message: `Đã chiêu mộ ${recruitedPlayer.name} (OVR ${recruitedPlayer.rating}) từ túi thẻ vào đội hình!`,
+      };
+    },
+    [hydratedCareer, marketOverrides, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleDismantleCard = useCallback(
+    async (playerId: string, count = 1): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const owned = inv.playerCards[playerId] ?? 0;
+      if (owned < count || count <= 0) {
+        return { ok: false, message: 'Số lượng thẻ trong túi không đủ để phân giải.' };
+      }
+
+      const mergedPlayers = applyMarketOverrides(INITIAL_PLAYERS, marketOverrides);
+      const sourcePlayer =
+        hydratedCareer.squad.find((p) => p.id === playerId) ??
+        mergedPlayers.find((p) => p.id === playerId);
+      const shardsPerCard = getCardDismantleShards(sourcePlayer?.rating ?? 78);
+      const gainedShards = shardsPerCard * count;
+
+      const nextCards = { ...inv.playerCards };
+      const rem = owned - count;
+      if (rem > 0) {
+        nextCards[playerId] = rem;
+      } else {
+        delete nextCards[playerId];
+      }
+
+      const nextInv = normalizeInventory({
+        ...inv,
+        playerCards: nextCards,
+        universalShards: inv.universalShards + gainedShards,
+      });
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        inventory: nextInv,
+      });
+
+      await pushClubNotification(
+        'inventory',
+        `Phân giải thẻ ${sourcePlayer?.shortName ?? 'cầu thủ'}`,
+        `Thu về +${gainedShards} Mảnh Ngôi Sao dùng để bù phôi ghép sao đội hình.`
+      );
+
+      return {
+        ok: true,
+        message: `Đã tách ${count} thẻ ${sourcePlayer?.shortName ?? ''}, nhận +${gainedShards} Mảnh Ngôi Sao.`,
+      };
+    },
+    [hydratedCareer, marketOverrides, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleUseFitnessBooster = useCallback(
+    async (playerId: string): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      if (inv.fitnessBoosters <= 0) {
+        return { ok: false, message: 'Túi đồ đã hết Bình Thể Lực.' };
+      }
+      const target = hydratedCareer.squad.find((p) => p.id === playerId);
+      if (!target) {
+        return { ok: false, message: 'Không tìm thấy cầu thủ trong đội hình.' };
+      }
+      if (target.fitness >= 100) {
+        return { ok: false, message: `${target.name} đã đạt 100% thể lực.` };
+      }
+
+      const nextSquad = hydratedCareer.squad.map((p) =>
+        p.id === playerId
+          ? { ...p, fitness: 100, morale: Math.min(100, p.morale + 3) }
+          : p
+      );
+      const nextInv = normalizeInventory({
+        ...inv,
+        fitnessBoosters: inv.fitnessBoosters - 1,
+      });
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        squad: nextSquad,
+        inventory: nextInv,
+      });
+
+      setSelectedPlayer((prev) =>
+        prev && prev.id === playerId
+          ? { ...prev, fitness: 100, morale: Math.min(100, prev.morale + 3) }
+          : prev
+      );
+
+      await pushClubNotification(
+        'medical',
+        `Dùng Bình Thể Lực: ${target.name}`,
+        `Hồi phục miễn phí ${target.name} từ ${target.fitness}% lên 100% bằng vật phẩm Túi đồ.`
+      );
+
+      return {
+        ok: true,
+        message: `Đã dùng 1 Bình Thể Lực cho ${target.name}: Thể lực 100% (Miễn phí)!`,
+      };
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
   const handleEnablePush = useCallback(async () => {
     const res = await requestPushPermission();
     setPushPermission(res);
@@ -1337,6 +1904,712 @@ export default function App() {
       }
     }
   }, [firebaseUser]);
+
+  // --- ONLINE ARENA STATE & HANDLERS ---
+  const existingUserArena = useMemo(
+    () => (firebaseUser ? cloudArenaProfiles.find((p) => p.uid === firebaseUser.uid) ?? null : null),
+    [cloudArenaProfiles, firebaseUser]
+  );
+
+  const userArena = useMemo(() => {
+    if (!profile || !hydratedCareer) return null;
+    return buildArenaProfileFromCareer(profile, hydratedCareer, existingUserArena);
+  }, [profile, hydratedCareer, existingUserArena]);
+
+  const leaderboard = useMemo(
+    () => mergeLeaderboardWithBots(cloudArenaProfiles),
+    [cloudArenaProfiles]
+  );
+
+  const saveArenaProfileCloud = useCallback(async (nextArena: ArenaProfile) => {
+    if (hasFirestoreQuotaExceeded()) return;
+    const { updatedAt: _omitUpdatedAt, ...rest } = nextArena;
+    try {
+      await setDoc(
+        doc(db, 'arenaProfiles', nextArena.uid),
+        sanitizeForFirestore({
+          ...rest,
+          visibility: 'public',
+          updatedAt: serverTimestamp(),
+        }) as Record<string, unknown>
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `arenaProfiles/${nextArena.uid}`);
+    }
+  }, []);
+
+  // Sync user's tactical squad snapshot only when viewing Online Arena and squad differs from cloud
+  useEffect(() => {
+    if (
+      activeTab !== 'online' ||
+      !firebaseUser?.emailVerified ||
+      !arenaLoadedRef.current ||
+      !userArena ||
+      hasFirestoreQuotaExceeded()
+    ) {
+      return;
+    }
+    const buildSig = (a: ArenaProfile) =>
+      `${a.uid}|${a.managerName}|${a.clubId}|${a.formation}|${a.squadOverall}|${a.attackRating}|${a.midfieldRating}|${a.defenseRating}|${a.starters.map((s) => `${s.id}:${s.rating}:${s.stars}`).join(',')}`;
+
+    const desiredSig = buildSig(userArena);
+    if (existingUserArena && buildSig(existingUserArena) === desiredSig) {
+      lastSyncedArenaSigRef.current = desiredSig;
+      return;
+    }
+    if (lastSyncedArenaSigRef.current === desiredSig) return;
+
+    if (arenaSyncTimerRef.current) window.clearTimeout(arenaSyncTimerRef.current);
+    arenaSyncTimerRef.current = window.setTimeout(() => {
+      if (hasFirestoreQuotaExceeded()) return;
+      lastSyncedArenaSigRef.current = desiredSig;
+      if (existingUserArena) {
+        void updateDoc(
+          doc(db, 'arenaProfiles', userArena.uid),
+          sanitizeForFirestore({
+            managerName: userArena.managerName,
+            nationality: userArena.nationality,
+            clubId: userArena.clubId,
+            clubName: userArena.clubName,
+            formation: userArena.formation,
+            squadOverall: userArena.squadOverall,
+            attackRating: userArena.attackRating,
+            midfieldRating: userArena.midfieldRating,
+            defenseRating: userArena.defenseRating,
+            starters: userArena.starters,
+            updatedAt: serverTimestamp(),
+          }) as Record<string, unknown>
+        ).catch((err) => {
+          handleFirestoreError(err, OperationType.UPDATE, `arenaProfiles/${userArena.uid}`);
+        });
+      } else {
+        void saveArenaProfileCloud(userArena);
+      }
+    }, 1500);
+  }, [activeTab, firebaseUser, userArena, existingUserArena, saveArenaProfileCloud]);
+
+  const recordCompletedArenaMatch = useCallback(
+    async (
+      from: ArenaProfile,
+      to: ArenaProfile,
+      mode: OnlineMatchMode,
+      summary: MatchResultSummary,
+      winnerUid?: string,
+      note?: string
+    ) => {
+      if (!firebaseUser || hasFirestoreQuotaExceeded()) return;
+      const chId = `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const safeName = (n: string) => {
+        const s = (n || 'HLV').trim().slice(0, 60);
+        return s.length < 2 ? `${s} XI` : s;
+      };
+      const docData: Record<string, unknown> = {
+        id: chId,
+        participants: [from.uid, to.uid],
+        fromUid: from.uid,
+        fromManagerName: safeName(from.managerName),
+        fromClubId: from.clubId,
+        toUid: to.uid,
+        toManagerName: safeName(to.managerName),
+        toClubId: to.clubId,
+        mode,
+        status: 'completed',
+        homeGoals: summary.homeGoals,
+        awayGoals: summary.awayGoals,
+        report: toCompactMatchReport(summary),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (summary.penaltiesHome !== undefined) docData.penaltiesHome = summary.penaltiesHome;
+      if (summary.penaltiesAway !== undefined) docData.penaltiesAway = summary.penaltiesAway;
+      if (winnerUid) docData.winnerUid = winnerUid.slice(0, 128);
+      if (note) docData.note = note.slice(0, 160);
+
+      try {
+        await setDoc(doc(db, 'arenaChallenges', chId), sanitizeForFirestore(docData) as Record<string, unknown>);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `arenaChallenges/${chId}`);
+      }
+    },
+    [firebaseUser]
+  );
+
+  const handlePlayRankedMatch = useCallback(async (): Promise<{
+    ok: boolean;
+    message: string;
+    opponent?: ArenaProfile;
+    summary?: MatchResultSummary;
+    rankedResult?: RankedOutcomeResult;
+  }> => {
+    if (!firebaseUser || !hydratedCareer || !userArena) {
+      return { ok: false, message: 'Chưa sẵn sàng dữ liệu Đấu Hạng.' };
+    }
+    const candidates = leaderboard.filter((p) => p.uid !== userArena.uid);
+    if (candidates.length === 0) {
+      return { ok: false, message: 'Chưa tìm thấy đối thủ phù hợp.' };
+    }
+    const myRankScore = getRankScore(
+      userArena.rankTier,
+      userArena.rankDivision,
+      userArena.rankStars
+    );
+    const closestPool = [...candidates]
+      .sort(
+        (a, b) =>
+          Math.abs(getRankScore(a.rankTier, a.rankDivision, a.rankStars) - myRankScore) -
+          Math.abs(getRankScore(b.rankTier, b.rankDivision, b.rankStars) - myRankScore)
+      )
+      .slice(0, 5);
+    const opponent = closestPool[Math.floor(Math.random() * closestPool.length)] ?? candidates[0];
+
+    const { summary, winnerUid } = simulateOnlineMatch(userArena, opponent, {
+      mode: 'ranked',
+      roundLabel: `Đấu Hạng · ${formatRankLabel(userArena.rankTier, userArena.rankDivision, userArena.rankStars)}`,
+      isKnockout: true,
+    });
+    const userWon = winnerUid === userArena.uid;
+    const goalDiffAbs = Math.abs(summary.homeGoals - summary.awayGoals);
+    const rankedResult = applyRankedMatchOutcome(userArena, userWon, goalDiffAbs);
+
+    await saveArenaProfileCloud(rankedResult.nextProfile);
+    await recordCompletedArenaMatch(
+      userArena,
+      opponent,
+      'ranked',
+      summary,
+      winnerUid,
+      `Đấu Hạng vs ${opponent.managerName}`
+    );
+
+    // Career rewards from ranked match + first-time promotion milestone
+    const inv = normalizeInventory(hydratedCareer.inventory);
+    const nextPacks = { ...inv.packs };
+    let shardsBonus = userWon ? 4 : 1;
+    let budgetBonusM = userWon ? 0.8 : 0.2;
+
+    const milestone = rankedResult.milestoneReward;
+    if (milestone) {
+      shardsBonus += milestone.shards;
+      budgetBonusM += milestone.budgetM;
+      if (milestone.packTier) {
+        nextPacks[milestone.packTier] = (nextPacks[milestone.packTier] ?? 0) + 1;
+      }
+    }
+
+    const nextInv = normalizeInventory({
+      ...inv,
+      packs: nextPacks,
+      universalShards: inv.universalShards + shardsBonus,
+    });
+
+    await saveCareerCloud({
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget + budgetBonusM).toFixed(2)),
+      inventory: nextInv,
+    });
+
+    const rankSummaryText = `${formatRankLabel(
+      rankedResult.nextProfile.rankTier,
+      rankedResult.nextProfile.rankDivision,
+      rankedResult.nextProfile.rankStars
+    )}`;
+
+    await pushClubNotification(
+      'online',
+      userWon
+        ? `Thắng Đấu Hạng vs ${opponent.managerName} (${summary.homeGoals}-${summary.awayGoals})`
+        : `Thua Đấu Hạng vs ${opponent.managerName} (${summary.homeGoals}-${summary.awayGoals})`,
+      milestone
+        ? `Thăng hạng ${milestone.tierName}! Nhận thưởng mốc lần đầu: +€${milestone.budgetM}M, +${milestone.shards} Mảnh${milestone.packTier ? ` & +1 ${PACK_CATALOG.find((pk) => pk.id === milestone.packTier)?.name ?? milestone.packTier}` : ''}.`
+        : `${
+            rankedResult.starDelta > 0
+              ? `+${rankedResult.starDelta}★`
+              : rankedResult.shieldUsed
+                ? 'Khiên Bảo Vệ giữ nguyên Sao'
+                : `${rankedResult.starDelta}★`
+          } · Rank hiện tại: ${rankSummaryText}.`
+    );
+
+    return {
+      ok: true,
+      message: milestone
+        ? `Chúc mừng đạt bậc ${milestone.tierName} lần đầu! Rank: ${rankSummaryText}.`
+        : userWon
+          ? `Chiến thắng ${summary.homeGoals}-${summary.awayGoals}! Rank hiện tại: ${rankSummaryText}.`
+          : rankedResult.shieldUsed
+            ? `Thất bại ${summary.homeGoals}-${summary.awayGoals} nhưng Khiên Bảo Vệ đã giữ nguyên Sao!`
+            : `Thất bại ${summary.homeGoals}-${summary.awayGoals}. Rank hiện tại: ${rankSummaryText}.`,
+      opponent,
+      summary,
+      rankedResult,
+    };
+  }, [
+    firebaseUser,
+    hydratedCareer,
+    userArena,
+    leaderboard,
+    saveArenaProfileCloud,
+    recordCompletedArenaMatch,
+    saveCareerCloud,
+    pushClubNotification,
+  ]);
+
+  const handlePlayInstantMatch = useCallback(
+    async (
+      opponent: ArenaProfile,
+      mode: 'duel' | 'friendly'
+    ): Promise<{ ok: boolean; message: string; summary?: MatchResultSummary }> => {
+      if (!firebaseUser || !hydratedCareer || !userArena) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu Đấu Online.' };
+      }
+      const { summary, winnerUid } = simulateOnlineMatch(userArena, opponent, {
+        mode,
+        roundLabel: mode === 'friendly' ? 'Giao Hữu Bạn Bè' : 'Tỷ Thí 1v1',
+        isKnockout: false,
+      });
+
+      const won = summary.homeGoals > summary.awayGoals;
+      const drawn = summary.homeGoals === summary.awayGoals;
+      const nextArena: ArenaProfile = {
+        ...userArena,
+        eloPoints: Math.max(
+          800,
+          Math.min(10000, userArena.eloPoints + (won ? 14 : drawn ? 2 : -10))
+        ),
+        matchesPlayed: userArena.matchesPlayed + 1,
+        wins: userArena.wins + (won ? 1 : 0),
+        draws: userArena.draws + (drawn ? 1 : 0),
+        losses: userArena.losses + (!won && !drawn ? 1 : 0),
+      };
+      await saveArenaProfileCloud(nextArena);
+      await recordCompletedArenaMatch(
+        userArena,
+        opponent,
+        mode,
+        summary,
+        winnerUid,
+        mode === 'friendly' ? 'Giao hữu bạn bè' : 'Tỷ thí chiến thuật 1v1'
+      );
+
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      const shardsGain = won ? 3 : drawn ? 2 : 1;
+      await saveCareerCloud({
+        ...hydratedCareer,
+        inventory: normalizeInventory({
+          ...inv,
+          universalShards: inv.universalShards + shardsGain,
+        }),
+      });
+
+      const modeLabel = mode === 'friendly' ? 'Giao hữu' : 'Tỷ thí';
+      await pushClubNotification(
+        'online',
+        `${modeLabel}: ${userArena.managerName} ${summary.homeGoals}-${summary.awayGoals} ${opponent.managerName}`,
+        `Nhận +${shardsGain} Mảnh Ngôi Sao từ trận ${modeLabel.toLowerCase()} Online.`
+      );
+
+      return {
+        ok: true,
+        message: `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (+${shardsGain} Mảnh Ngôi Sao).`,
+        summary,
+      };
+    },
+    [
+      firebaseUser,
+      hydratedCareer,
+      userArena,
+      saveArenaProfileCloud,
+      recordCompletedArenaMatch,
+      saveCareerCloud,
+      pushClubNotification,
+    ]
+  );
+
+  const handleSendChallengeInvite = useCallback(
+    async (opponent: ArenaProfile): Promise<{ ok: boolean; message: string }> => {
+      if (!firebaseUser || !userArena) {
+        return { ok: false, message: 'Cần đăng nhập để gửi lời mời.' };
+      }
+      if (opponent.isBot) {
+        return { ok: false, message: 'Hãy bấm "Đá ngay" để tỷ thí trực tiếp với Bot AI.' };
+      }
+      if (hasFirestoreQuotaExceeded()) {
+        return {
+          ok: false,
+          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore. Hạn mức sẽ tự đặt lại vào ngày mai.',
+        };
+      }
+      const chId = `inv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        await setDoc(doc(db, 'arenaChallenges', chId), {
+          id: chId,
+          participants: [userArena.uid, opponent.uid],
+          fromUid: userArena.uid,
+          fromManagerName: userArena.managerName.slice(0, 60),
+          fromClubId: userArena.clubId,
+          toUid: opponent.uid,
+          toManagerName: opponent.managerName.slice(0, 60),
+          toClubId: opponent.clubId,
+          mode: 'duel',
+          status: 'pending',
+          note: `Tỷ thí chiến thuật (${userArena.formation} · OVR ${userArena.squadOverall})`,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        await pushClubNotification(
+          'online',
+          `Đã gửi lời mời tỷ thí tới ${opponent.managerName}`,
+          `Khi ${opponent.managerName} chấp nhận lời mời trong mục Đấu Online, kết quả trận đấu sẽ được cập nhật.`
+        );
+        return { ok: true, message: `Đã gửi lời mời tỷ thí tới ${opponent.managerName}!` };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `arenaChallenges/${chId}`);
+        return { ok: false, message: 'Không thể gửi lời mời tỷ thí lúc này.' };
+      }
+    },
+    [firebaseUser, userArena, pushClubNotification]
+  );
+
+  const handleRespondChallengeInvite = useCallback(
+    async (
+      ch: ArenaChallenge,
+      accept: boolean
+    ): Promise<{ ok: boolean; message: string; summary?: MatchResultSummary }> => {
+      if (!firebaseUser || !userArena || !hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu.' };
+      }
+      if (hasFirestoreQuotaExceeded()) {
+        return {
+          ok: false,
+          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore. Hạn mức sẽ tự đặt lại vào ngày mai.',
+        };
+      }
+      if (!accept) {
+        try {
+          await updateDoc(doc(db, 'arenaChallenges', ch.id), {
+            status: 'declined',
+            updatedAt: serverTimestamp(),
+          });
+          return { ok: true, message: `Đã từ chối lời mời từ ${ch.fromManagerName}.` };
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `arenaChallenges/${ch.id}`);
+          return { ok: false, message: 'Không thể cập nhật lời mời.' };
+        }
+      }
+
+      const challenger =
+        leaderboard.find((p) => p.uid === ch.fromUid) ?? createDefaultBotProfiles()[0];
+      const challengerProfile: ArenaProfile = {
+        ...challenger,
+        uid: ch.fromUid,
+        managerName: ch.fromManagerName,
+        clubId: ch.fromClubId,
+      };
+      const { summary, winnerUid } = simulateOnlineMatch(challengerProfile, userArena, {
+        mode: 'duel',
+        roundLabel: 'Tỷ Thí Trực Tiếp 1v1',
+        isKnockout: false,
+      });
+
+      const updatePayload: Record<string, unknown> = {
+        status: 'completed',
+        homeGoals: summary.homeGoals,
+        awayGoals: summary.awayGoals,
+        report: toCompactMatchReport(summary),
+        updatedAt: serverTimestamp(),
+      };
+      if (summary.penaltiesHome !== undefined) updatePayload.penaltiesHome = summary.penaltiesHome;
+      if (summary.penaltiesAway !== undefined) updatePayload.penaltiesAway = summary.penaltiesAway;
+      if (winnerUid) updatePayload.winnerUid = winnerUid;
+
+      try {
+        await updateDoc(
+          doc(db, 'arenaChallenges', ch.id),
+          sanitizeForFirestore(updatePayload) as Record<string, unknown>
+        );
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `arenaChallenges/${ch.id}`);
+        return { ok: false, message: 'Lỗi khi lưu kết quả trận tỷ thí.' };
+      }
+
+      // Note: userArena is AWAY in challenger -> userArena simulation
+      const userWon = summary.awayGoals > summary.homeGoals;
+      const drawn = summary.awayGoals === summary.homeGoals;
+      await saveArenaProfileCloud({
+        ...userArena,
+        eloPoints: Math.max(
+          800,
+          Math.min(10000, userArena.eloPoints + (userWon ? 16 : drawn ? 3 : -10))
+        ),
+        matchesPlayed: userArena.matchesPlayed + 1,
+        wins: userArena.wins + (userWon ? 1 : 0),
+        draws: userArena.draws + (drawn ? 1 : 0),
+        losses: userArena.losses + (!userWon && !drawn ? 1 : 0),
+      });
+
+      await pushClubNotification(
+        'online',
+        `Kết quả Tỷ thí: ${ch.fromManagerName} ${summary.homeGoals}-${summary.awayGoals} ${userArena.managerName}`,
+        `Đã hoàn thành trận thách đấu với ${ch.fromManagerName}.`
+      );
+
+      return {
+        ok: true,
+        message: `Trận tỷ thí kết thúc: ${ch.fromManagerName} ${summary.homeGoals} - ${summary.awayGoals} ${userArena.managerName}!`,
+        summary,
+      };
+    },
+    [
+      firebaseUser,
+      userArena,
+      hydratedCareer,
+      leaderboard,
+      saveArenaProfileCloud,
+      pushClubNotification,
+    ]
+  );
+
+  const handleCancelChallengeInvite = useCallback(
+    async (challengeId: string): Promise<{ ok: boolean; message: string }> => {
+      if (hasFirestoreQuotaExceeded()) {
+        return {
+          ok: false,
+          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore.',
+        };
+      }
+      try {
+        await updateDoc(doc(db, 'arenaChallenges', challengeId), {
+          status: 'cancelled',
+          updatedAt: serverTimestamp(),
+        });
+        return { ok: true, message: 'Đã hủy lời mời tỷ thí.' };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `arenaChallenges/${challengeId}`);
+        return { ok: false, message: 'Không thể hủy lời mời.' };
+      }
+    },
+    []
+  );
+
+  const handleStartOnlineTournament = useCallback(
+    async (size: 8 | 16): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer || !userArena) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu giải đấu.' };
+      }
+      const nextTournament = createOnlineTournament(userArena, leaderboard, size);
+      await saveCareerCloud({
+        ...hydratedCareer,
+        onlineTournament: nextTournament,
+      });
+      await pushClubNotification(
+        'online',
+        `Khởi tranh ${nextTournament.title}`,
+        `Giải đấu loại trực tiếp ${size} HLV đã bốc thăm nhánh đấu. Sẵn sàng cho vòng đầu tiên!`
+      );
+      return {
+        ok: true,
+        message: `Đã bốc thăm ${nextTournament.title} gồm ${size} HLV!`,
+      };
+    },
+    [hydratedCareer, userArena, leaderboard, saveCareerCloud, pushClubNotification]
+  );
+
+  const handlePlayOnlineTournamentRound = useCallback(async (): Promise<{
+    ok: boolean;
+    message: string;
+    summary?: MatchResultSummary;
+  }> => {
+    if (!hydratedCareer || !userArena || !hydratedCareer.onlineTournament) {
+      return { ok: false, message: 'Không có giải đấu Online đang diễn ra.' };
+    }
+    const profileMap = new Map(leaderboard.map((p) => [p.uid, p]));
+    const { nextTournament, userMatchSummary, userWon, wonTitle } = playOnlineTournamentRound(
+      hydratedCareer.onlineTournament,
+      userArena,
+      profileMap
+    );
+
+    const inv = normalizeInventory(hydratedCareer.inventory);
+    const nextPacks = { ...inv.packs };
+    let budgetBonusM = userWon ? 2.5 : 0.8;
+    let shardsBonus = userWon ? 8 : 3;
+    let nextCabinet = [...(hydratedCareer.trophyCabinet ?? [])];
+
+    if (wonTitle) {
+      const is16 = nextTournament.size === 16;
+      budgetBonusM += is16 ? 25 : 15;
+      shardsBonus += is16 ? 50 : 30;
+      if (is16) {
+        nextPacks.legend_pack = (nextPacks.legend_pack ?? 0) + 1;
+      } else {
+        nextPacks.elite_pack = (nextPacks.elite_pack ?? 0) + 1;
+      }
+      nextPacks.trophy_gift_box = (nextPacks.trophy_gift_box ?? 0) + 1;
+
+      const trophy: TrophyItem = {
+        id: `trophy-online-${nextTournament.id}`,
+        title: `Vô địch ${nextTournament.title}`,
+        competition: 'super-cup',
+        season: hydratedCareer.season,
+        clubId: hydratedCareer.clubId,
+        awardedAt: new Date().toISOString(),
+      };
+      nextCabinet = [trophy, ...nextCabinet].slice(0, 60);
+    }
+
+    const nextInv = normalizeInventory({
+      ...inv,
+      packs: nextPacks,
+      universalShards: inv.universalShards + shardsBonus,
+    });
+
+    await saveCareerCloud({
+      ...hydratedCareer,
+      onlineTournament: nextTournament,
+      transferBudget: Number((hydratedCareer.transferBudget + budgetBonusM).toFixed(2)),
+      inventory: nextInv,
+      trophyCabinet: nextCabinet,
+    });
+
+    await saveArenaProfileCloud({
+      ...userArena,
+      eloPoints: Math.min(10000, userArena.eloPoints + (wonTitle ? 45 : userWon ? 18 : 2)),
+      matchesPlayed: userArena.matchesPlayed + 1,
+      wins: userArena.wins + (userWon ? 1 : 0),
+      losses: userArena.losses + (userWon ? 0 : 1),
+      tournamentTitles: userArena.tournamentTitles + (wonTitle ? 1 : 0),
+    });
+
+    if (wonTitle) {
+      await pushClubNotification(
+        'trophy',
+        `VÔ ĐỊCH ${nextTournament.title.toUpperCase()}!`,
+        `Nâng cúp giải đấu Online ${nextTournament.size} HLV! Nhận +€${budgetBonusM}M, +${shardsBonus} Mảnh, Gói Thẻ Cao Cấp & Rương Quà Vinh Quang.`
+      );
+    } else {
+      await pushClubNotification(
+        'online',
+        userWon
+          ? `Vượt qua vòng ${hydratedCareer.onlineTournament.currentRound} · ${nextTournament.title}`
+          : `Dừng bước tại ${nextTournament.title}`,
+        userWon
+          ? `Thắng trận và tiến vào vòng tiếp theo (+€${budgetBonusM}M, +${shardsBonus} Mảnh).`
+          : `Đội bóng đã bị loại ở vòng ${hydratedCareer.onlineTournament.currentRound} (+€${budgetBonusM}M, +${shardsBonus} Mảnh an ủi).`
+      );
+    }
+
+    return {
+      ok: true,
+      message: wonTitle
+        ? `CHÚC MỪNG VÔ ĐỊCH ${nextTournament.title}! (+€${budgetBonusM}M, +${shardsBonus} Mảnh & Gói Cao Cấp)`
+        : userWon
+          ? `Chiến thắng vòng ${hydratedCareer.onlineTournament.currentRound}! Tiến vào vòng tiếp theo.`
+          : `Rất tiếc, bạn đã dừng bước ở vòng ${hydratedCareer.onlineTournament.currentRound}.`,
+      summary: userMatchSummary ?? undefined,
+    };
+  }, [
+    hydratedCareer,
+    userArena,
+    leaderboard,
+    saveCareerCloud,
+    saveArenaProfileCloud,
+    pushClubNotification,
+  ]);
+
+  const handleSendFriendRequest = useCallback(
+    async (target: ArenaProfile): Promise<{ ok: boolean; message: string }> => {
+      if (!firebaseUser || !userArena) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu tài khoản.' };
+      }
+      if (target.uid === userArena.uid) {
+        return { ok: false, message: 'Không thể kết bạn với chính mình.' };
+      }
+      if (hasFirestoreQuotaExceeded()) {
+        return {
+          ok: false,
+          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore. Hạn mức sẽ tự đặt lại vào ngày mai.',
+        };
+      }
+      const fId = getFriendshipDocId(userArena.uid, target.uid);
+      const status = target.isBot ? 'accepted' : 'pending';
+      try {
+        await setDoc(doc(db, 'friendships', fId), {
+          id: fId,
+          participants: [userArena.uid, target.uid],
+          requesterUid: userArena.uid,
+          recipientUid: target.uid,
+          requesterName: userArena.managerName.slice(0, 60),
+          requesterClubId: userArena.clubId,
+          recipientName: target.managerName.slice(0, 60),
+          recipientClubId: target.clubId,
+          recipientIsBot: Boolean(target.isBot),
+          status,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        await pushClubNotification(
+          'online',
+          target.isBot
+            ? `Đã kết bạn với ${target.managerName}`
+            : `Đã gửi lời mời kết bạn tới ${target.managerName}`,
+          target.isBot
+            ? `HLV Bot ${target.managerName} đã trở thành bạn bè Online của bạn.`
+            : `Đang chờ ${target.managerName} phản hồi lời mời kết bạn.`
+        );
+        return {
+          ok: true,
+          message: target.isBot
+            ? `Đã thêm ${target.managerName} vào danh sách bạn bè!`
+            : `Đã gửi lời mời kết bạn tới ${target.managerName}!`,
+        };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `friendships/${fId}`);
+        return { ok: false, message: 'Không thể gửi lời mời kết bạn lúc này.' };
+      }
+    },
+    [firebaseUser, userArena, pushClubNotification]
+  );
+
+  const handleRespondFriendRequest = useCallback(
+    async (friendship: Friendship, accept: boolean): Promise<{ ok: boolean; message: string }> => {
+      try {
+        await updateDoc(doc(db, 'friendships', friendship.id), {
+          status: accept ? 'accepted' : 'declined',
+          updatedAt: serverTimestamp(),
+        });
+        if (accept) {
+          await pushClubNotification(
+            'online',
+            `Kết bạn thành công với ${friendship.requesterName}`,
+            `Hai bạn đã có thể mời nhau đá giao hữu trong tab Bạn Bè.`
+          );
+        }
+        return {
+          ok: true,
+          message: accept
+            ? `Đã đồng ý kết bạn với ${friendship.requesterName}!`
+            : `Đã từ chối lời mời kết bạn từ ${friendship.requesterName}.`,
+        };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `friendships/${friendship.id}`);
+        return { ok: false, message: 'Không thể phản hồi lời mời kết bạn.' };
+      }
+    },
+    [pushClubNotification]
+  );
+
+  const handleRemoveFriendship = useCallback(
+    async (friendshipId: string): Promise<{ ok: boolean; message: string }> => {
+      try {
+        await deleteDoc(doc(db, 'friendships', friendshipId));
+        return { ok: true, message: 'Đã cập nhật danh sách bạn bè.' };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `friendships/${friendshipId}`);
+        return { ok: false, message: 'Không thể xóa kết nối bạn bè.' };
+      }
+    },
+    []
+  );
 
   if (!authReady) {
     return (
@@ -1407,6 +2680,14 @@ export default function App() {
   }
 
   const currentClub = CLUBS.find((c) => c.id === hydratedCareer.clubId) ?? CLUBS[0];
+  const unopenedPackCount = getTotalUnopenedPacks(hydratedCareer.inventory);
+  const onlineBadgeCount =
+    arenaChallenges.filter(
+      (c) => c.toUid === firebaseUser.uid && c.status === 'pending'
+    ).length +
+    friendships.filter(
+      (f) => f.recipientUid === firebaseUser.uid && f.status === 'pending'
+    ).length;
 
   return (
     <div className="min-h-screen bg-[#0B1117] text-[#F1F5F9] flex flex-col">
@@ -1420,12 +2701,20 @@ export default function App() {
         </div>
 
         {/* Desktop Nav Links */}
-        <nav className="hidden lg:flex items-center gap-6 text-sm font-medium text-slate-300">
+        <nav className="hidden lg:flex items-center gap-5 text-sm font-medium text-slate-300">
           {[
             { id: 'home', label: 'Trang chủ' },
             { id: 'tactics', label: 'Chiến thuật' },
             { id: 'match', label: 'Trận đấu' },
+            {
+              id: 'online',
+              label: onlineBadgeCount > 0 ? `Đấu Online (${onlineBadgeCount})` : 'Đấu Online',
+            },
             { id: 'transfers', label: 'Chuyển nhượng' },
+            {
+              id: 'inventory',
+              label: unopenedPackCount > 0 ? `Túi đồ (${unopenedPackCount})` : 'Túi đồ',
+            },
             ...(isAdmin ? [{ id: 'admin', label: 'Quản trị' }] : []),
           ].map((item) => (
             <button
@@ -1475,6 +2764,47 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Firestore Daily Write Quota Notice Banner */}
+      {quotaExceeded && !quotaBannerDismissed && (
+        <div className="bg-amber-500/15 border-b border-amber-400/40 px-4 py-2.5 text-xs text-amber-100">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="space-y-0.5">
+              <p className="font-bold text-amber-300">
+                Đã chạm hạn mức ghi dữ liệu miễn phí hằng ngày của Firestore (Free daily write units).
+              </p>
+              <p className="text-[11px] text-amber-100/90">
+                Hạn mức sẽ tự động đặt lại vào ngày hôm sau. Bạn vẫn có thể chơi cục bộ trong phiên hiện tại (thay đổi mới tạm chưa lưu lên đám mây). Xem chi tiết gói{' '}
+                <a
+                  href="https://firebase.google.com/pricing#cloud-firestore"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline font-semibold text-white"
+                >
+                  Spark / Enterprise tại đây
+                </a>{' '}
+                hoặc mở{' '}
+                <a
+                  href={FIRESTORE_QUOTA_UPGRADE_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline font-semibold text-white"
+                >
+                  Firebase Console
+                </a>
+                .
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setQuotaBannerDismissed(true)}
+              className="self-start sm:self-center px-2.5 py-1 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 font-semibold shrink-0"
+            >
+              Ẩn thông báo
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 pt-4 pb-24 lg:pb-10">
@@ -1529,6 +2859,41 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'inventory' && (
+            <InventoryView
+              career={hydratedCareer}
+              marketOverrides={marketOverrides}
+              onSelectPlayer={setSelectedPlayer}
+              onOpenPack={handleOpenPack}
+              onBuyPack={handleBuyPack}
+              onUpgradePlayerStar={handleUpgradePlayerStar}
+              onRecruitFromCard={handleRecruitFromCard}
+              onDismantleCard={handleDismantleCard}
+              onUseFitnessBooster={handleUseFitnessBooster}
+            />
+          )}
+
+          {activeTab === 'online' && userArena && (
+            <OnlineArenaView
+              currentUid={firebaseUser.uid}
+              career={hydratedCareer}
+              userArena={userArena}
+              leaderboard={leaderboard}
+              challenges={arenaChallenges}
+              friendships={friendships}
+              onPlayRankedMatch={handlePlayRankedMatch}
+              onPlayInstantMatch={handlePlayInstantMatch}
+              onSendChallengeInvite={handleSendChallengeInvite}
+              onRespondChallengeInvite={handleRespondChallengeInvite}
+              onCancelChallengeInvite={handleCancelChallengeInvite}
+              onStartTournament={handleStartOnlineTournament}
+              onPlayTournamentRound={handlePlayOnlineTournamentRound}
+              onSendFriendRequest={handleSendFriendRequest}
+              onRespondFriendRequest={handleRespondFriendRequest}
+              onRemoveFriendship={handleRemoveFriendship}
+            />
+          )}
+
           {activeTab === 'admin' && isAdmin && (
             <AdminDashboardView
               currentAdminUid={firebaseUser.uid}
@@ -1542,7 +2907,7 @@ export default function App() {
 
       {/* Mobile Bottom Thumb-Zone Navigation (58px height) */}
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0B1117]/95 backdrop-blur-md border-t border-white/10 pb-safe">
-        <div className={`grid ${isAdmin ? 'grid-cols-5' : 'grid-cols-4'} h-[58px] items-center`}>
+        <div className={`grid ${isAdmin ? 'grid-cols-7' : 'grid-cols-6'} h-[58px] items-center`}>
           <button
             type="button"
             onClick={() => setActiveTab('home')}
@@ -1550,8 +2915,8 @@ export default function App() {
               activeTab === 'home' ? 'text-emerald-400' : 'text-slate-400'
             }`}
           >
-            <Home className="w-5 h-5" />
-            <span className="text-[10px] font-semibold mt-0.5">CLB</span>
+            <Home className="w-4 h-4" />
+            <span className="text-[9px] font-semibold mt-0.5">CLB</span>
           </button>
 
           <button
@@ -1561,8 +2926,8 @@ export default function App() {
               activeTab === 'tactics' ? 'text-emerald-400' : 'text-slate-400'
             }`}
           >
-            <Sliders className="w-5 h-5" />
-            <span className="text-[10px] font-semibold mt-0.5">Chiến thuật</span>
+            <Sliders className="w-4 h-4" />
+            <span className="text-[9px] font-semibold mt-0.5">Chiến thuật</span>
           </button>
 
           <button
@@ -1572,8 +2937,24 @@ export default function App() {
               activeTab === 'match' ? 'text-emerald-400' : 'text-slate-400'
             }`}
           >
-            <Play className="w-5 h-5" />
-            <span className="text-[10px] font-semibold mt-0.5">Trận đấu</span>
+            <Play className="w-4 h-4" />
+            <span className="text-[9px] font-semibold mt-0.5">Trận đấu</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('online')}
+            className={`relative flex flex-col items-center justify-center min-h-[48px] ${
+              activeTab === 'online' ? 'text-emerald-400' : 'text-slate-400'
+            }`}
+          >
+            <Swords className="w-4 h-4" />
+            {onlineBadgeCount > 0 && (
+              <span className="absolute top-1 right-1.5 min-w-[15px] h-3.5 px-1 rounded-full bg-amber-400 text-slate-950 font-mono-num text-[9px] font-extrabold flex items-center justify-center">
+                {onlineBadgeCount}
+              </span>
+            )}
+            <span className="text-[9px] font-semibold mt-0.5">Online</span>
           </button>
 
           <button
@@ -1583,8 +2964,24 @@ export default function App() {
               activeTab === 'transfers' ? 'text-emerald-400' : 'text-slate-400'
             }`}
           >
-            <ArrowLeftRight className="w-5 h-5" />
-            <span className="text-[10px] font-semibold mt-0.5">Chuyển nhượng</span>
+            <ArrowLeftRight className="w-4 h-4" />
+            <span className="text-[9px] font-semibold mt-0.5">Chuyển nhượng</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('inventory')}
+            className={`relative flex flex-col items-center justify-center min-h-[48px] ${
+              activeTab === 'inventory' ? 'text-emerald-400' : 'text-slate-400'
+            }`}
+          >
+            <PackageOpen className="w-4 h-4" />
+            {unopenedPackCount > 0 && (
+              <span className="absolute top-1 right-1.5 min-w-[15px] h-3.5 px-1 rounded-full bg-emerald-500 text-slate-950 font-mono-num text-[9px] font-extrabold flex items-center justify-center">
+                {unopenedPackCount}
+              </span>
+            )}
+            <span className="text-[9px] font-semibold mt-0.5">Túi đồ</span>
           </button>
 
           {isAdmin && (
@@ -1595,8 +2992,8 @@ export default function App() {
                 activeTab === 'admin' ? 'text-amber-400' : 'text-slate-400'
               }`}
             >
-              <ShieldCheck className="w-5 h-5" />
-              <span className="text-[10px] font-semibold mt-0.5">Admin</span>
+              <ShieldCheck className="w-4 h-4" />
+              <span className="text-[9px] font-semibold mt-0.5">Admin</span>
             </button>
           )}
         </div>
@@ -1608,11 +3005,14 @@ export default function App() {
           player={selectedPlayer}
           isOwnPlayer={hydratedCareer.squad.some((p) => p.id === selectedPlayer.id)}
           transferBudgetM={hydratedCareer.transferBudget}
+          inventory={hydratedCareer.inventory}
           onClose={() => setSelectedPlayer(null)}
           onToggleTransferList={handleToggleTransferList}
           onRenewContract={handleRenewContract}
           onSellPlayer={handleSellPlayer}
           onRecoverFitness={handleRecoverPlayerFitness}
+          onUseFitnessBooster={handleUseFitnessBooster}
+          onUpgradeStar={handleUpgradePlayerStar}
           onMakeOffer={handleMakeOffer}
         />
       )}
@@ -1664,6 +3064,9 @@ export default function App() {
           season: 'Mùa giải',
           trophy: 'Danh hiệu',
           contract: 'Hợp đồng',
+          inventory: 'Túi đồ',
+          upgrade: 'Ghép sao',
+          online: 'Đấu Online',
           matchday: 'Lịch đấu',
           system: 'Hệ thống',
           urgent: 'Khẩn cấp',

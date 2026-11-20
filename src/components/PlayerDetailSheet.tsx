@@ -1,19 +1,33 @@
 import React, { useState } from 'react';
-import { ArrowLeftRight, CheckCircle2, DollarSign, HeartPulse, Shield, X } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  ArrowUpCircle,
+  CheckCircle2,
+  DollarSign,
+  HeartPulse,
+  Shield,
+  Sparkles,
+  Star,
+  X,
+} from 'lucide-react';
 import { CLUBS } from '../data/footballDatabase';
 import { getPlayerRecoveryCostM } from '../lib/careerEngine';
-import { Player } from '../types/game';
+import { getStarUpgradePlan, normalizeInventory } from '../lib/inventoryEngine';
+import { InventoryState, Player } from '../types/game';
 import { ClubCrest, PlayerAvatar } from './ClubBadgeAndAvatar';
 
 interface PlayerDetailSheetProps {
   player: Player;
   isOwnPlayer: boolean;
   transferBudgetM: number;
+  inventory?: InventoryState;
   onClose: () => void;
   onToggleTransferList?: (playerId: string) => void;
   onSellPlayer?: (playerId: string) => void;
   onRenewContract?: (playerId: string) => void;
   onRecoverFitness?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onUseFitnessBooster?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onUpgradeStar?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onMakeOffer?: (player: Player, bidM: number, wageK: number) => Promise<{ ok: boolean; message: string }>;
 }
 
@@ -21,11 +35,14 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   player,
   isOwnPlayer,
   transferBudgetM,
+  inventory,
   onClose,
   onToggleTransferList,
   onSellPlayer,
   onRenewContract,
   onRecoverFitness,
+  onUseFitnessBooster,
+  onUpgradeStar,
   onMakeOffer,
 }) => {
   const club = CLUBS.find((c) => c.id === player.clubId) ?? CLUBS[0];
@@ -40,8 +57,11 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   const [wageK, setWageK] = useState<number>(Math.round(player.wageK * 1.15));
   const [negotiating, setNegotiating] = useState(false);
   const [recovering, setRecovering] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const recoveryCostM = getPlayerRecoveryCostM(player.fitness);
+  const normInventory = normalizeInventory(inventory);
+  const upgradePlan = getStarUpgradePlan(player, normInventory, transferBudgetM);
 
   const attrList = [
     { label: 'Tốc độ (PAC)', val: player.attributes.pac },
@@ -78,9 +98,23 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                 {player.position} · #{player.number} · {player.nationality} ({player.age} tuổi)
               </p>
               <h3 className="font-display text-2xl font-bold text-white truncate">{player.name}</h3>
-              <div className="flex items-center gap-2 mt-1">
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <ClubCrest club={club} size={20} />
                 <span className="text-xs font-medium text-slate-300">{club.name}</span>
+                {isOwnPlayer && (
+                  <span className="inline-flex items-center gap-0.5 ml-1">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Star
+                        key={n}
+                        className={`w-3.5 h-3.5 ${
+                          n <= upgradePlan.currentStars
+                            ? 'text-amber-400 fill-amber-400'
+                            : 'text-slate-600'
+                        }`}
+                      />
+                    ))}
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -195,7 +229,103 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
 
         {/* Actions */}
         {isOwnPlayer ? (
-          <div className="space-y-2.5 pt-1">
+          <div className="space-y-3 pt-1">
+            {/* Star Upgrade / Card Merging Panel */}
+            {onUpgradeStar && (
+              <div className="rounded-2xl bg-[#0B1117] border border-amber-400/30 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    Ghép Thẻ Nâng Sao
+                  </span>
+                  <span className="font-mono-num text-xs font-bold text-amber-400">
+                    {upgradePlan.isMax
+                      ? '5★ Tối đa'
+                      : `${upgradePlan.currentStars}★ → ${upgradePlan.nextStars}★ (OVR ${player.rating} → ${upgradePlan.previewRating})`}
+                  </span>
+                </div>
+
+                {upgradePlan.isMax ? (
+                  <p className="text-[11px] text-amber-300">
+                    Cầu thủ đã đạt cấp tối đa 5★ Siêu Sao Đột Phá.
+                  </p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-3 gap-2 text-[11px] text-center">
+                      <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
+                        <p className="text-slate-400">Thẻ bản sao</p>
+                        <p className="font-mono-num font-bold text-white mt-0.5">
+                          {upgradePlan.cardsToUse}/{upgradePlan.step?.cardsRequired} (Có {upgradePlan.ownedDuplicateCards})
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
+                        <p className="text-slate-400">Mảnh bù</p>
+                        <p
+                          className={`font-mono-num font-bold mt-0.5 ${
+                            upgradePlan.canAffordMaterials ? 'text-amber-400' : 'text-red-400'
+                          }`}
+                        >
+                          {upgradePlan.shardsToUse} / {normInventory.universalShards}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
+                        <p className="text-slate-400">Phí ghép</p>
+                        <p
+                          className={`font-mono-num font-bold mt-0.5 ${
+                            upgradePlan.canAffordBudget ? 'text-emerald-400' : 'text-red-400'
+                          }`}
+                        >
+                          €{upgradePlan.feeM}M
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={!upgradePlan.canUpgrade || upgrading}
+                      onClick={async () => {
+                        setUpgrading(true);
+                        setFeedback(null);
+                        try {
+                          const res = await onUpgradeStar(player.id);
+                          setFeedback({ ok: res.ok, text: res.message });
+                        } finally {
+                          setUpgrading(false);
+                        }
+                      }}
+                      className="w-full h-10 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-40"
+                    >
+                      <ArrowUpCircle className="w-4 h-4" />
+                      {upgrading
+                        ? 'Đang ghép nâng sao...'
+                        : `Ghép lên ${upgradePlan.nextStars}★ (+${upgradePlan.step?.ovrGain} OVR, +${upgradePlan.step?.attrGain} tất cả chỉ số)`}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {onUseFitnessBooster && normInventory.fitnessBoosters > 0 && player.fitness < 100 && (
+              <button
+                type="button"
+                disabled={recovering}
+                onClick={async () => {
+                  setRecovering(true);
+                  setFeedback(null);
+                  try {
+                    const res = await onUseFitnessBooster(player.id);
+                    setFeedback({ ok: res.ok, text: res.message });
+                  } finally {
+                    setRecovering(false);
+                  }
+                }}
+                className="w-full h-11 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/45 text-sky-300 text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <HeartPulse className="w-4 h-4 text-sky-400" />
+                Dùng Bình Thể Lực trong túi (Miễn phí · Còn {normInventory.fitnessBoosters})
+              </button>
+            )}
+
             {onRecoverFitness && (
               <button
                 type="button"
