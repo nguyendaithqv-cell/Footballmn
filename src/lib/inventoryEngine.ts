@@ -227,6 +227,14 @@ export function getCardRarityTier(
       bgClass: 'bg-gradient-to-br from-amber-500/20 via-yellow-500/10 to-[#121B24]',
     };
   }
+  if (cardTier === 'ucl17') {
+    return {
+      label: "Vô Địch C1 '17",
+      textClass: 'text-indigo-200',
+      borderClass: 'border-indigo-400/75',
+      bgClass: 'bg-gradient-to-br from-indigo-500/20 via-amber-500/10 to-[#121B24]',
+    };
+  }
   if (cardTier === 'global') {
     return {
       label: 'Siêu Sao Quốc Tế',
@@ -261,6 +269,7 @@ export function getCardRarityTier(
 
 export function getCardDismantleShards(rating: number, cardTier?: CardTier): number {
   if (cardTier === 'icon') return 55;
+  if (cardTier === 'ucl17') return 45;
   if (rating >= 86) return 35;
   if (rating >= 81) return 18;
   return 10;

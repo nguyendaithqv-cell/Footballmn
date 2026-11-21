@@ -9,6 +9,7 @@ import {
   Shield,
   Sparkles,
   Star,
+  Trophy,
   X,
 } from 'lucide-react';
 import { getClubById, getIconShardCost } from '../data/footballDatabase';
@@ -48,6 +49,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
 }) => {
   const club = getClubById(player.clubId);
   const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
+  const isUcl17 = player.cardTier === 'ucl17' || player.clubId === 'rma-ucl-2017';
   const isGlobal = player.cardTier === 'global';
   const iconShardCost = getIconShardCost(player);
   const minAskM =
@@ -101,10 +103,11 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
             <div className="min-w-0">
               <p className="text-xs text-slate-400">
                 {player.position} · #{player.number} · {player.nationality} (
-                {isIcon ? 'Bất tử ICON' : `${player.age} tuổi`})
+                {isIcon ? 'Bất tử ICON' : isUcl17 ? `C1 2017 · ${player.age} tuổi` : `${player.age} tuổi`})
               </p>
               <div className="flex items-center gap-1.5 min-w-0">
                 {isIcon && <Crown className="w-4 h-4 text-amber-400 shrink-0" />}
+                {isUcl17 && <Trophy className="w-4 h-4 text-indigo-300 shrink-0" />}
                 <h3 className="font-display text-2xl font-bold text-white truncate">{player.name}</h3>
               </div>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -113,6 +116,11 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                 {isIcon && (
                   <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-[10px] font-extrabold text-amber-300">
                     HUYỀN THOẠI
+                  </span>
+                )}
+                {isUcl17 && (
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-500/25 border border-indigo-400/60 text-[10px] font-extrabold text-indigo-200">
+                    VÔ ĐỊCH C1 2017
                   </span>
                 )}
                 {isGlobal && (

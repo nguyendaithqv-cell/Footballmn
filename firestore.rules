@@ -122,7 +122,7 @@ service cloud.firestore {
         data.inventory.keys().hasAll(['packs', 'playerCards', 'universalShards', 'fitnessBoosters']) &&
         data.inventory.keys().hasOnly(['packs', 'playerCards', 'universalShards', 'fitnessBoosters', 'totalPacksOpened']) &&
         data.inventory.packs is map && data.inventory.packs.size() <= 20 &&
-        data.inventory.playerCards is map && data.inventory.playerCards.size() <= 400 &&
+        data.inventory.playerCards is map && data.inventory.playerCards.size() <= 500 &&
         data.inventory.universalShards is int && data.inventory.universalShards >= 0 && data.inventory.universalShards <= 100000 &&
         data.inventory.fitnessBoosters is int && data.inventory.fitnessBoosters >= 0 && data.inventory.fitnessBoosters <= 5000 &&
         (!('totalPacksOpened' in data.inventory) || (data.inventory.totalPacksOpened is int && data.inventory.totalPacksOpened >= 0 && data.inventory.totalPacksOpened <= 100000))

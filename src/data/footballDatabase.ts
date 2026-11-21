@@ -746,6 +746,23 @@ export const SPECIAL_CLUBS: Club[] = [
     reputation: 99,
     managerId: 'carlo-ancelotti',
   },
+  {
+    id: 'rma-ucl-2017',
+    name: 'Real Madrid C1 2017',
+    shortName: 'RMA17',
+    league: 'Champions League 2017',
+    country: 'Tây Ban Nha',
+    stadium: 'Millennium Cardiff · Bernabéu',
+    capacity: 81044,
+    primaryColor: '#F8FAFC',
+    secondaryColor: '#312E81',
+    accentColor: '#F59E0B',
+    pattern: 'sash',
+    transferBudgetM: 350,
+    wageBudgetK: 6000,
+    reputation: 98,
+    managerId: 'carlo-ancelotti',
+  },
 ];
 
 export const ALL_CLUBS: Club[] = [...CLUBS, ...SPECIAL_CLUBS];
@@ -782,7 +799,8 @@ type RawPlayerInput = [
   hair: string,
   hairStyle: 'short' | 'fade' | 'curly' | 'long' | 'buzz',
   attrs: [number, number, number, number, number, number],
-  cardTier?: CardTier
+  cardTier?: CardTier,
+  shortNameOverride?: string
 ];
 
 const RAW_PLAYERS: RawPlayerInput[] = [
@@ -1221,13 +1239,34 @@ const RAW_PLAYERS: RawPlayerInput[] = [
   ['icon-cantona', 'Eric Cantona', 'icons-fc', 'ST', 7, 28, 'Pháp', 'FR', 90, 90, 130, 380, '#ECC2A8', '#27201C', 'short', [80, 90, 87, 89, 48, 89], 'icon'],
   ['icon-hazard', 'Eden Hazard', 'icons-fc', 'LW', 10, 26, 'Bỉ', 'BE', 90, 90, 132, 385, '#ECC2A8', '#27201C', 'fade', [91, 85, 87, 95, 38, 72], 'icon'],
   ['icon-torres', 'Fernando Torres', 'icons-fc', 'ST', 9, 25, 'Tây Ban Nha', 'ES', 90, 90, 130, 380, '#F0C5AD', '#785A3A', 'long', [92, 90, 79, 87, 42, 80], 'icon'],
+
+  // REAL MADRID CHAMPIONS LEAGUE 2017 — LA DUODÉCIMA (16)
+  ['rma17-ronaldo', "Cristiano Ronaldo · Hoàng Đế Cardiff '17", 'rma-ucl-2017', 'ST', 7, 32, 'Bồ Đào Nha', 'PT', 95, 95, 125, 380, '#E2B295', '#1F1A17', 'fade', [93, 96, 85, 92, 38, 86], 'ucl17', "CR7 '17"],
+  ['rma17-ramos', "Sergio Ramos · Chiến Thần 92:48 '17", 'rma-ucl-2017', 'CB', 4, 31, 'Tây Ban Nha', 'ES', 92, 92, 85, 260, '#DFB094', '#27201C', 'short', [81, 74, 83, 79, 94, 92], 'ucl17', "Ramos '17"],
+  ['rma17-modric', "Luka Modrić · Ma Thuật Sân Cỏ '17", 'rma-ucl-2017', 'CM', 19, 31, 'Croatia', 'HR', 92, 92, 85, 250, '#F0C5AD', '#785A3A', 'long', [78, 80, 95, 94, 77, 74], 'ucl17', "Modrić '17"],
+  ['rma17-kroos', "Toni Kroos · Xạ Thủ Bất Bại '17", 'rma-ucl-2017', 'CM', 8, 27, 'Đức', 'DE', 91, 91, 80, 240, '#F0C5AD', '#785A3A', 'short', [69, 85, 96, 87, 78, 77], 'ucl17', "Kroos '17"],
+  ['rma17-bale', "Gareth Bale · Tia Chớp Xứ Wales '17", 'rma-ucl-2017', 'RW', 11, 27, 'Xứ Wales', 'GB', 91, 91, 88, 280, '#F0C5AD', '#4B3621', 'long', [96, 91, 85, 89, 55, 85], 'ucl17', "Bale '17"],
+  ['rma17-marcelo', "Marcelo · Vũ Công Hoàng Gia '17", 'rma-ucl-2017', 'LB', 12, 29, 'Brazil', 'BR', 91, 91, 78, 220, '#B57B57', '#18181B', 'curly', [88, 77, 88, 93, 81, 81], 'ucl17', "Marcelo '17"],
+  ['rma17-benzema', "Karim Benzema · Mèo Lớn Bất Tử '17", 'rma-ucl-2017', 'ST', 9, 29, 'Pháp', 'FR', 90, 90, 75, 230, '#E2B295', '#1F1A17', 'buzz', [83, 89, 86, 89, 42, 82], 'ucl17', "Benzema '17"],
+  ['rma17-casemiro', "Casemiro · Lá Chắn Thép C1 '17", 'rma-ucl-2017', 'CDM', 14, 25, 'Brazil', 'BR', 90, 90, 72, 195, '#C68B66', '#18181B', 'short', [74, 79, 83, 79, 91, 92], 'ucl17', "Casemiro '17"],
+  ['rma17-isco', "Isco Alarcón · Phù Thủy Đường Cong '17", 'rma-ucl-2017', 'CAM', 22, 25, 'Tây Ban Nha', 'ES', 90, 90, 74, 190, '#E5B89B', '#27201C', 'short', [79, 83, 90, 95, 62, 72], 'ucl17', "Isco '17"],
+  ['rma17-navas', "Keylor Navas · Thần Hộ Mệnh Bernabéu '17", 'rma-ucl-2017', 'GK', 1, 30, 'Costa Rica', 'CR', 90, 90, 65, 180, '#DFB094', '#1F1A17', 'short', [62, 42, 82, 66, 48, 83], 'ucl17', "Navas '17"],
+  ['rma17-carvajal', "Dani Carvajal · Động Cơ Vĩnh Cửu '17", 'rma-ucl-2017', 'RB', 2, 25, 'Tây Ban Nha', 'ES', 89, 89, 64, 175, '#E5B89B', '#27201C', 'short', [86, 66, 84, 83, 86, 85], 'ucl17', "Carvajal '17"],
+  ['rma17-varane', "Raphaël Varane · Tường Thành Hoàng Gia '17", 'rma-ucl-2017', 'CB', 5, 24, 'Pháp', 'FR', 89, 91, 68, 180, '#B57B57', '#18181B', 'fade', [88, 52, 78, 75, 90, 86], 'ucl17', "Varane '17"],
+  ['rma17-pepe', "Pepe Ferreira · Thiết Giáp Bất Khuất '17", 'rma-ucl-2017', 'CB', 3, 34, 'Bồ Đào Nha', 'PT', 89, 89, 52, 165, '#C68B66', '#18181B', 'buzz', [79, 54, 75, 72, 92, 92], 'ucl17', "Pepe '17"],
+  ['rma17-asensio', "Marco Asensio · Sát Thủ Đêm Cardiff '17", 'rma-ucl-2017', 'RW', 20, 21, 'Tây Ban Nha', 'ES', 88, 92, 62, 145, '#ECC2A8', '#27201C', 'short', [87, 87, 86, 89, 46, 72], 'ucl17', "Asensio '17"],
+  ['rma17-james', "James Rodríguez · Kèo Trái Hoàng Kim '17", 'rma-ucl-2017', 'CAM', 10, 25, 'Colombia', 'CO', 88, 89, 60, 165, '#E2B295', '#27201C', 'short', [79, 88, 91, 88, 48, 70], 'ucl17', "James '17"],
+  ['rma17-morata', "Álvaro Morata · Mũi Nhọn Thép '17", 'rma-ucl-2017', 'ST', 21, 24, 'Tây Ban Nha', 'ES', 87, 89, 55, 140, '#ECC2A8', '#27201C', 'short', [86, 87, 76, 83, 44, 84], 'ucl17', "Morata '17"],
 ];
 
 export const INITIAL_PLAYERS: Player[] = RAW_PLAYERS.map((p) => {
   const parts = p[1].split(' ');
-  const shortName = parts.length > 1 ? parts[parts.length - 1] : p[1];
+  const defaultShortName = parts.length > 1 ? parts[parts.length - 1] : p[1];
+  const shortName = p[17] ?? defaultShortName;
   const cardTier: CardTier = p[16] ?? 'standard';
   const isIcon = cardTier === 'icon';
+  const isUcl17 = cardTier === 'ucl17';
+  const isLegendTier = isIcon || isUcl17;
   return {
     id: p[0],
     name: p[1],
@@ -1243,14 +1282,14 @@ export const INITIAL_PLAYERS: Player[] = RAW_PLAYERS.map((p) => {
     cardTier,
     marketValueM: p[10],
     wageK: p[11],
-    contractUntil: isIcon ? 2099 : 2028 + (p[4] % 3),
+    contractUntil: isLegendTier ? 2099 : 2028 + (p[4] % 3),
     fitness: 95,
-    morale: isIcon ? 92 : 86,
-    form: isIcon ? 8.0 : 7.4,
+    morale: isLegendTier ? 92 : 86,
+    form: isIcon ? 8.0 : isUcl17 ? 7.9 : 7.4,
     goals: 0,
     assists: 0,
     appearances: 0,
-    transferStatus: isIcon
+    transferStatus: isLegendTier
       ? 'available'
       : p[8] >= 89
         ? 'untouchable'

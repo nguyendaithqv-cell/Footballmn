@@ -1788,8 +1788,9 @@ export function createNextSeasonCareer(career: CareerSave): {
   // Player progression & aging (+1 year, training boost for young talents, slight dip for 34+; Icons never age-decline)
   const intensityBonus = hydrated.trainingIntensity === 'intense' ? 1 : 0;
   const nextSquad = hydrated.squad.map((p) => {
-    const isIcon = p.cardTier === 'icon' || p.clubId === 'icons-fc';
-    if (isIcon) {
+    const isImmortalLegend =
+      p.cardTier === 'icon' || p.clubId === 'icons-fc' || p.cardTier === 'ucl17';
+    if (isImmortalLegend) {
       return {
         ...p,
         contractUntil: Math.max(2099, p.contractUntil),

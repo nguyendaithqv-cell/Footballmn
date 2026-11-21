@@ -29,7 +29,7 @@ export interface PlayerAttributes {
   phy: number;
 }
 
-export type CardTier = 'standard' | 'global' | 'icon';
+export type CardTier = 'standard' | 'global' | 'icon' | 'ucl17';
 
 export interface Player {
   id: string;

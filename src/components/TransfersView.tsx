@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Crown, ExternalLink, Globe, RefreshCw, Search, Sparkles, TrendingUp } from 'lucide-react';
+import { Crown, ExternalLink, Globe, RefreshCw, Search, Sparkles, TrendingUp, Trophy } from 'lucide-react';
 import { getClubById, getIconShardCost, INITIAL_PLAYERS } from '../data/footballDatabase';
 import { applyMarketOverrides } from '../lib/careerEngine';
 import { normalizeInventory } from '../lib/inventoryEngine';
@@ -49,7 +49,7 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
   onSelectPlayer,
 }) => {
   const [tab, setTab] = useState<'market' | 'live'>('market');
-  const [tierFilter, setTierFilter] = useState<'all' | 'icon' | 'global' | 'standard'>('all');
+  const [tierFilter, setTierFilter] = useState<'all' | 'ucl17' | 'icon' | 'global' | 'standard'>('all');
   const [queryText, setQueryText] = useState('');
   const [posFilter, setPosFilter] = useState<'ALL' | Position>('ALL');
   const [onlyListed, setOnlyListed] = useState(false);
@@ -71,26 +71,30 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
   );
 
   const tierCounts = useMemo(() => {
+    let ucl17 = 0;
     let icon = 0;
     let global = 0;
     let standard = 0;
     for (const p of mergedMarketBase) {
       const t = p.cardTier ?? 'standard';
-      if (t === 'icon' || p.clubId === 'icons-fc') icon++;
+      if (t === 'ucl17' || p.clubId === 'rma-ucl-2017') ucl17++;
+      else if (t === 'icon' || p.clubId === 'icons-fc') icon++;
       else if (t === 'global') global++;
       else standard++;
     }
-    return { all: mergedMarketBase.length, icon, global, standard };
+    return { all: mergedMarketBase.length, ucl17, icon, global, standard };
   }, [mergedMarketBase]);
 
   const marketPlayers = useMemo(() => {
     return mergedMarketBase
       .filter((p) => {
         if (tierFilter === 'all') return true;
+        const isUcl17 = p.cardTier === 'ucl17' || p.clubId === 'rma-ucl-2017';
         const isIcon = p.cardTier === 'icon' || p.clubId === 'icons-fc';
+        if (tierFilter === 'ucl17') return isUcl17;
         if (tierFilter === 'icon') return isIcon;
         if (tierFilter === 'global') return p.cardTier === 'global';
-        return !isIcon && p.cardTier !== 'global';
+        return !isIcon && !isUcl17 && p.cardTier !== 'global';
       })
       .filter((p) => (posFilter === 'ALL' ? true : p.position === posFilter))
       .filter((p) => (onlyListed ? p.transferStatus === 'listed' : true))
@@ -199,33 +203,48 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
             {/* Tier Filter Tabs */}
             <div className="flex gap-1.5 overflow-x-auto pb-1">
               {[
-                { id: 'all', label: `Tất cả (${tierCounts.all})`, icon: false },
-                { id: 'icon', label: `Sảnh Huyền Thoại (${tierCounts.icon})`, icon: true },
-                { id: 'global', label: `Ngoài Âu / Tự do (${tierCounts.global})`, icon: false },
-                { id: 'standard', label: `Giải Châu Âu (${tierCounts.standard})`, icon: false },
+                { id: 'all', label: `Tất cả (${tierCounts.all})`, badge: 'none' },
+                { id: 'ucl17', label: `Real C1 '17 (${tierCounts.ucl17})`, badge: 'ucl17' },
+                { id: 'icon', label: `Sảnh Huyền Thoại (${tierCounts.icon})`, badge: 'icon' },
+                { id: 'global', label: `Ngoài Âu / Tự do (${tierCounts.global})`, badge: 'none' },
+                { id: 'standard', label: `Giải Châu Âu (${tierCounts.standard})`, badge: 'none' },
               ].map((t) => (
                 <button
                   key={t.id}
                   type="button"
                   onClick={() => {
                     setTierFilter(t.id as typeof tierFilter);
-                    setShowAll(t.id === 'icon' || t.id === 'global');
+                    setShowAll(t.id === 'icon' || t.id === 'global' || t.id === 'ucl17');
                   }}
                   className={`h-9 px-3 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-1.5 border ${
                     tierFilter === t.id
-                      ? t.icon
+                      ? t.badge === 'icon'
                         ? 'bg-amber-500 border-amber-400 text-slate-950'
-                        : 'bg-emerald-500 border-emerald-400 text-slate-950'
-                      : t.icon
+                        : t.badge === 'ucl17'
+                          ? 'bg-indigo-500 border-indigo-400 text-white'
+                          : 'bg-emerald-500 border-emerald-400 text-slate-950'
+                      : t.badge === 'icon'
                         ? 'bg-amber-500/10 border-amber-400/35 text-amber-300'
-                        : 'bg-[#121B24] border-white/10 text-slate-300'
+                        : t.badge === 'ucl17'
+                          ? 'bg-indigo-500/15 border-indigo-400/40 text-indigo-200'
+                          : 'bg-[#121B24] border-white/10 text-slate-300'
                   }`}
                 >
-                  {t.icon && <Crown className="w-3.5 h-3.5" />}
+                  {t.badge === 'icon' && <Crown className="w-3.5 h-3.5" />}
+                  {t.badge === 'ucl17' && <Trophy className="w-3.5 h-3.5" />}
                   {t.label}
                 </button>
               ))}
             </div>
+
+            {tierFilter === 'ucl17' && (
+              <div className="rounded-xl bg-indigo-500/15 border border-indigo-400/40 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
+                <span className="text-indigo-100 flex items-center gap-1.5">
+                  <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+                  Đội hình <strong className="text-amber-300">La Duodécima Real Madrid C1 2017</strong> — Chiêu mộ trực tiếp bằng Ngân sách, không cần Mảnh & không suy giảm tuổi tác!
+                </span>
+              </div>
+            )}
 
             {tierFilter === 'icon' && (
               <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
@@ -263,6 +282,7 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
             {(showAll ? marketPlayers : marketPlayers.slice(0, 60)).map((player) => {
               const club = getClubById(player.clubId);
               const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
+              const isUcl17 = player.cardTier === 'ucl17' || player.clubId === 'rma-ucl-2017';
               const isGlobal = player.cardTier === 'global';
               const shardCost = getIconShardCost(player);
               const hasOverride = Boolean(marketOverrides[player.id]);
@@ -274,9 +294,11 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
                   className={`w-full text-left rounded-2xl border p-3 flex items-center justify-between gap-3 transition-colors min-h-[74px] ${
                     isIcon
                       ? 'bg-gradient-to-r from-amber-500/12 via-[#121B24] to-[#121B24] border-amber-400/45 hover:border-amber-300'
-                      : isGlobal
-                        ? 'bg-[#121B24] border-pink-400/30 hover:border-pink-400/60'
-                        : 'bg-[#121B24] border-white/10 hover:border-emerald-500/40'
+                      : isUcl17
+                        ? 'bg-gradient-to-r from-indigo-500/18 via-[#121B24] to-[#121B24] border-indigo-400/50 hover:border-indigo-300'
+                        : isGlobal
+                          ? 'bg-[#121B24] border-pink-400/30 hover:border-pink-400/60'
+                          : 'bg-[#121B24] border-white/10 hover:border-emerald-500/40'
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0">
@@ -284,6 +306,7 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         {isIcon && <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                        {isUcl17 && <Trophy className="w-3.5 h-3.5 text-indigo-300 shrink-0" />}
                         <span className="font-bold text-sm text-white truncate">
                           {player.name}
                         </span>
@@ -303,7 +326,7 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
                   <div className="text-right shrink-0">
                     <p
                       className={`font-mono-num text-sm font-extrabold ${
-                        isIcon ? 'text-amber-300' : 'text-emerald-400'
+                        isIcon ? 'text-amber-300' : isUcl17 ? 'text-indigo-300' : 'text-emerald-400'
                       }`}
                     >
                       OVR {player.rating}
@@ -313,6 +336,8 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
                       <p className="text-[10px] text-amber-400 font-bold">
                         +{shardCost} Mảnh
                       </p>
+                    ) : isUcl17 ? (
+                      <p className="text-[10px] text-amber-300 font-bold">Vô Địch C1 &apos;17</p>
                     ) : isGlobal ? (
                       <p className="text-[10px] text-pink-300 font-semibold">Quốc tế</p>
                     ) : player.transferStatus === 'listed' ? (
