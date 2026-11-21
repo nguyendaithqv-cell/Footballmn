@@ -6,7 +6,12 @@ import {
   REAL_MANAGERS,
   ROLES_BY_POSITION,
 } from '../data/footballDatabase';
-import { buildAutoLineupSlots, calculateTacticalProfile } from '../lib/careerEngine';
+import {
+  buildAutoLineupSlots,
+  calculateTacticalProfile,
+  getActiveCareerManager,
+  getManagerImpactSummary,
+} from '../lib/careerEngine';
 import {
   CareerSave,
   FormationId,
@@ -55,9 +60,15 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
     [career.squad, starterIds]
   );
 
+  const activeManager = useMemo(() => getActiveCareerManager(career), [career]);
+  const managerImpact = useMemo(
+    () => getManagerImpactSummary(activeManager, career.tactics),
+    [activeManager, career.tactics]
+  );
+
   const tacticalProfile = useMemo(
-    () => calculateTacticalProfile(career.tactics, career.squad),
-    [career.tactics, career.squad]
+    () => calculateTacticalProfile(career.tactics, career.squad, activeManager),
+    [career.tactics, career.squad, activeManager]
   );
 
   const nextFixture = useMemo(
@@ -81,13 +92,30 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
 
   const handleFormationChange = (formation: FormationId) => {
     const template = FORMATION_TEMPLATES[formation];
-    const currentStarters = career.tactics.slots.map((s) => s.playerId);
+    const validSquadIds = new Set(career.squad.map((p) => p.id));
+    const seenIds = new Set<string>();
+    const uniqueStarters: string[] = [];
+
+    for (const slot of career.tactics.slots) {
+      if (slot.playerId && validSquadIds.has(slot.playerId) && !seenIds.has(slot.playerId)) {
+        seenIds.add(slot.playerId);
+        uniqueStarters.push(slot.playerId);
+      }
+    }
+    for (const p of career.squad) {
+      if (uniqueStarters.length >= 11) break;
+      if (!seenIds.has(p.id)) {
+        seenIds.add(p.id);
+        uniqueStarters.push(p.id);
+      }
+    }
+
     const newSlots = template.map((tpl, i) => ({
       slotIndex: i,
       label: tpl.label,
       x: tpl.x,
       y: tpl.y,
-      playerId: currentStarters[i] ?? career.squad[i]?.id ?? '',
+      playerId: uniqueStarters[i] ?? '',
       role: tpl.defaultRole,
     }));
     onUpdateTactics({ ...career.tactics, formation, slots: newSlots });
@@ -337,6 +365,21 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
       {/* Right/Bottom: Tactical Controls, Bench & Tactical Scout */}
       <div className="lg:col-span-6 space-y-4">
         {/* Tactical Rating Summary */}
+        <div
+          className={`rounded-xl px-3.5 py-2.5 border text-xs flex items-center justify-between gap-2 ${
+            activeManager
+              ? 'bg-[#121B24] border-emerald-500/25 text-slate-200'
+              : 'bg-amber-500/10 border-amber-400/35 text-amber-200'
+          }`}
+        >
+          <span className="truncate font-semibold">{managerImpact.label}</span>
+          {activeManager && (
+            <span className="font-mono-num text-[11px] text-emerald-400 shrink-0">
+              +{managerImpact.atkBonus.toFixed(1)}ATK / +{managerImpact.defBonus.toFixed(1)}DEF
+            </span>
+          )}
+        </div>
+
         <div className="grid grid-cols-4 gap-2">
           <div className="rounded-xl bg-[#121B24] border border-white/10 p-3 text-center">
             <p className="text-[11px] text-slate-400">Tấn công</p>

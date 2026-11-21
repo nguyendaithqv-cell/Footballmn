@@ -160,18 +160,10 @@ export function buildCompactCareerForStorage(rawCareer: CareerSave, targetUid: s
       ? hydrated.clubId.trim().slice(0, 64)
       : CLUBS[0].id;
 
-  const compactFixtures = (Array.isArray(hydrated.fixtures) ? hydrated.fixtures : [])
-    .slice(0, 450)
-    .map((f) => {
-      const involvesUser = f.homeClubId === safeClubId || f.awayClubId === safeClubId;
-      if (involvesUser || !f.report) return f;
-      const { report: _omitReport, ...rest } = f;
-      return rest;
-    });
+  const compactFixtures = (Array.isArray(hydrated.fixtures) ? hydrated.fixtures : []).slice(0, 450);
 
   const compactRecentResults = (Array.isArray(hydrated.recentResults) ? hydrated.recentResults : [])
-    .slice(0, 15)
-    .map((r, idx) => (idx >= 5 && r.playerRatings ? { ...r, playerRatings: undefined } : r));
+    .slice(0, 60);
 
   const safeFormation = VALID_FORMATIONS.includes(hydrated.tactics?.formation)
     ? hydrated.tactics.formation
@@ -204,9 +196,11 @@ export function buildCompactCareerForStorage(rawCareer: CareerSave, targetUid: s
     standings: safeStandings,
     fixtures: compactFixtures,
     recentResults: compactRecentResults,
-    transferHistory: (hydrated.transferHistory ?? []).slice(0, 100),
-    trophyCabinet: (hydrated.trophyCabinet ?? []).slice(0, 60),
-    seasonHistory: (hydrated.seasonHistory ?? []).slice(0, 30),
+    transferHistory: (hydrated.transferHistory ?? []).slice(0, 200),
+    managerHistory: (hydrated.managerHistory ?? []).slice(0, 100),
+    seasonAwards: (hydrated.seasonAwards ?? []).slice(0, 120),
+    trophyCabinet: (hydrated.trophyCabinet ?? []).slice(0, 120),
+    seasonHistory: (hydrated.seasonHistory ?? []).slice(0, 50),
     inventory: normalizeInventory(hydrated.inventory),
   };
 }

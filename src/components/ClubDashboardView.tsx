@@ -1,8 +1,31 @@
 import React, { useMemo, useState } from 'react';
-import { Bell, Calendar, ChevronRight, Dumbbell, HeartPulse, PackageOpen, RefreshCw, Shield, Star, Trophy, Wallet } from 'lucide-react';
+import {
+  Award,
+  Bell,
+  Calendar,
+  ChevronRight,
+  Crown,
+  Dumbbell,
+  HeartPulse,
+  History,
+  PackageOpen,
+  RefreshCw,
+  Search,
+  Shield,
+  Star,
+  Trophy,
+  UserCheck,
+  UserMinus,
+  UserPlus,
+  Wallet,
+} from 'lucide-react';
 import { CLUBS, REAL_MANAGERS } from '../data/footballDatabase';
 import {
   calculateTacticalProfile,
+  getActiveCareerManager,
+  getManagerHireFeeM,
+  getManagerImpactSummary,
+  getManagerSeveranceM,
   getNextSeasonString,
   getPlayerRecoveryCostM,
   getSquadRecoveryCostM,
@@ -29,6 +52,11 @@ interface ClubDashboardViewProps {
   ) => void;
   onRecoverPlayerFitness: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onRecoverSquadFitness: () => Promise<{ ok: boolean; message: string }>;
+  onFireManager: () => Promise<{ ok: boolean; message: string }>;
+  onHireManager: (
+    managerId: string,
+    applySuggestedTactics: boolean
+  ) => Promise<{ ok: boolean; message: string }>;
   onStartNextSeason: () => Promise<void>;
   onExportBackup: (includeAdminData: boolean) => Promise<void>;
   onRestoreBackup: (
@@ -49,6 +77,8 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   onUpdateTraining,
   onRecoverPlayerFitness,
   onRecoverSquadFitness,
+  onFireManager,
+  onHireManager,
   onStartNextSeason,
   onExportBackup,
   onRestoreBackup,
@@ -60,10 +90,24 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   const [recoveringTarget, setRecoveringTarget] = useState<string | null>(null);
   const [recoveryFeedback, setRecoveryFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // Manager recruitment / dismissal UI state
+  const [managerFilter, setManagerFilter] = useState<'all' | 'free-agent' | 'employed'>('all');
+  const [managerQuery, setManagerQuery] = useState('');
+  const [confirmFireOpen, setConfirmFireOpen] = useState(false);
+  const [selectedRecruitId, setSelectedRecruitId] = useState<string | null>(null);
+  const [applyNewTactics, setApplyNewTactics] = useState(true);
+  const [managerActionLoading, setManagerActionLoading] = useState(false);
+  const [managerFeedback, setManagerFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
   const club = CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0];
+  const activeManager = useMemo(() => getActiveCareerManager(career), [career]);
+  const managerImpact = useMemo(
+    () => getManagerImpactSummary(activeManager, career.tactics),
+    [activeManager, career.tactics]
+  );
   const tacticalProfile = useMemo(
-    () => calculateTacticalProfile(career.tactics, career.squad),
-    [career.tactics, career.squad]
+    () => calculateTacticalProfile(career.tactics, career.squad, activeManager),
+    [career.tactics, career.squad, activeManager]
   );
 
   const sortedTable = useMemo(() => sortStandings(career.standings), [career.standings]);
@@ -102,13 +146,13 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
           { id: 'overview', label: 'Tổng quan' },
           { id: 'squad', label: 'Đội hình' },
           { id: 'training', label: 'Tập luyện' },
-          { id: 'managers', label: 'HLV Thực' },
+          { id: 'managers', label: 'HLV & BHL' },
         ].map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setClubSubTab(t.id as typeof clubSubTab)}
-            className={`h-10 rounded-lg text-xs font-semibold transition-colors ${
+            className={`h-10 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
               clubSubTab === t.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
             }`}
           >
@@ -132,13 +176,14 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
 
               <div className="relative z-10 space-y-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <ClubCrest club={club} size={46} />
-                    <div>
-                      <p className="text-xs text-emerald-400 font-medium">
-                        Mùa {career.season} · HLV {profile.managerName} · {club.stadium}
+                    <div className="min-w-0">
+                      <p className="text-xs text-emerald-400 font-medium truncate">
+                        Mùa {career.season} · Giám đốc {profile.managerName} ·{' '}
+                        {activeManager ? `HLV ${activeManager.name}` : 'Chưa có HLV trưởng'}
                       </p>
-                      <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-white">
+                      <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-white truncate">
                         {club.name}
                       </h2>
                     </div>
@@ -326,14 +371,47 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
 
               {career.trophyCabinet && career.trophyCabinet.length > 0 && (
                 <div className="space-y-1.5">
-                  {career.trophyCabinet.slice(0, 3).map((t) => (
+                  {career.trophyCabinet.slice(0, 4).map((t) => (
                     <div
                       key={t.id}
-                      className="rounded-lg bg-[#0B1117] border border-amber-400/20 px-3 py-1.5 text-xs text-amber-200 flex items-center justify-between"
+                      className="rounded-lg bg-[#0B1117] border border-amber-400/20 px-3 py-1.5 text-xs text-amber-200 flex items-center justify-between gap-2"
                     >
-                      <span className="truncate font-semibold">{t.title}</span>
-                      <span className="font-mono-num text-[11px] text-amber-400 shrink-0 ml-2">
+                      <span className="truncate font-semibold flex items-center gap-1.5">
+                        {t.awardType === 'mvp' ? (
+                          <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        ) : t.awardType === 'top-scorer' ? (
+                          <Award className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        ) : (
+                          <Trophy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        )}
+                        <span className="truncate">{t.title}</span>
+                      </span>
+                      <span className="font-mono-num text-[11px] text-amber-400 shrink-0">
                         {t.season}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {career.seasonAwards && career.seasonAwards.length > 0 && (
+                <div className="pt-2 border-t border-white/10 space-y-1.5">
+                  <p className="text-[11px] font-semibold text-slate-400">
+                    Danh hiệu Cá nhân Giải đấu gần nhất
+                  </p>
+                  {career.seasonAwards.slice(0, 3).map((aw) => (
+                    <div
+                      key={aw.id}
+                      className="rounded-lg bg-[#0B1117] border border-white/10 px-3 py-1.5 text-[11px] flex items-center justify-between gap-2"
+                    >
+                      <span className="text-slate-200 truncate">
+                        <strong className={aw.awardType === 'mvp' ? 'text-amber-400' : 'text-emerald-400'}>
+                          {aw.awardTitle}
+                        </strong>{' '}
+                        {aw.competitionTitle}: {aw.playerName}
+                      </span>
+                      <span className="font-mono-num text-slate-400 shrink-0">
+                        {aw.awardType === 'mvp' ? `${aw.avgRating.toFixed(2)}★` : `${aw.goals} bàn`}
                       </span>
                     </div>
                   ))}
@@ -635,36 +713,383 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
         </div>
       )}
 
-      {clubSubTab === 'managers' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {REAL_MANAGERS.map((mgr) => {
-            const mgrClub = CLUBS.find((c) => c.id === mgr.clubId) ?? CLUBS[0];
-            return (
-              <div
-                key={mgr.id}
-                className="rounded-2xl bg-[#121B24] border border-white/10 p-4 flex items-center gap-3.5"
-              >
-                <ManagerAvatar manager={mgr} size={52} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <ClubCrest club={mgrClub} size={18} />
-                    <span className="text-xs text-emerald-400 font-semibold truncate">
-                      {mgrClub.name}
-                    </span>
+      {clubSubTab === 'managers' && (() => {
+        const freeAgentCount = REAL_MANAGERS.filter((m) => m.clubId === 'free-agent').length;
+        const employedCount = REAL_MANAGERS.length - freeAgentCount;
+        const normalizedQuery = managerQuery.trim().toLowerCase();
+        const filteredManagers = REAL_MANAGERS.filter((m) => {
+          if (managerFilter === 'free-agent' && m.clubId !== 'free-agent') return false;
+          if (managerFilter === 'employed' && m.clubId === 'free-agent') return false;
+          if (!normalizedQuery) return true;
+          const clubObj = CLUBS.find((c) => c.id === m.clubId);
+          return (
+            m.name.toLowerCase().includes(normalizedQuery) ||
+            m.nationality.toLowerCase().includes(normalizedQuery) ||
+            m.style.toLowerCase().includes(normalizedQuery) ||
+            (m.specialty ?? '').toLowerCase().includes(normalizedQuery) ||
+            (clubObj?.name ?? '').toLowerCase().includes(normalizedQuery)
+          );
+        }).sort((a, b) => {
+          if (activeManager?.id === a.id) return -1;
+          if (activeManager?.id === b.id) return 1;
+          return b.tacticalRating - a.tacticalRating;
+        });
+
+        const severanceFee = activeManager ? getManagerSeveranceM(activeManager) : 0;
+
+        return (
+          <div className="space-y-4">
+            {/* Active Head Coach Card */}
+            <div
+              className={`rounded-2xl border p-4 sm:p-5 space-y-4 ${
+                activeManager
+                  ? 'bg-[#121B24] border-emerald-500/35'
+                  : 'bg-amber-500/10 border-amber-400/40'
+              }`}
+            >
+              {activeManager ? (
+                <>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <ManagerAvatar manager={activeManager} size={60} />
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                          <UserCheck className="w-3.5 h-3.5" />
+                          HLV Trưởng đương nhiệm · {club.name}
+                        </p>
+                        <h3 className="font-display text-xl font-extrabold text-white truncate">
+                          {activeManager.name}
+                        </h3>
+                        <p className="text-xs text-slate-300 truncate">
+                          {activeManager.nationality} · {activeManager.age} tuổi · Sơ đồ sở trường{' '}
+                          <span className="font-mono-num font-bold text-emerald-400">
+                            {activeManager.preferredFormation}
+                          </span>
+                        </p>
+                        <p className="text-[11px] text-amber-300 truncate">
+                          {activeManager.specialty || activeManager.style}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap sm:flex-col items-end justify-between gap-2 shrink-0">
+                      <div className="text-left sm:text-right">
+                        <p className="text-[11px] text-slate-400">Ảnh hưởng chiến thuật</p>
+                        <p className="font-mono-num text-xs font-bold text-emerald-400">
+                          +{managerImpact.atkBonus.toFixed(1)} ATK · +{managerImpact.midBonus.toFixed(1)} MID · +{managerImpact.defBonus.toFixed(1)} DEF
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          {managerImpact.formationMatch
+                            ? 'Khớp sơ đồ sở trường (+4% Gắn kết)'
+                            : `Gợi ý đổi sang ${activeManager.preferredFormation} để +4% Gắn kết`}
+                        </p>
+                      </div>
+
+                      {!confirmFireOpen ? (
+                        <button
+                          type="button"
+                          disabled={managerActionLoading}
+                          onClick={() => {
+                            setConfirmFireOpen(true);
+                            setManagerFeedback(null);
+                          }}
+                          className="h-11 px-4 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 text-xs font-bold flex items-center gap-1.5"
+                        >
+                          <UserMinus className="w-4 h-4" />
+                          Sa thải HLV
+                        </button>
+                      ) : (
+                        <div className="rounded-xl bg-[#0B1117] border border-red-500/40 p-3 space-y-2 max-w-xs">
+                          <p className="text-[11px] text-red-200">
+                            Bồi thường hợp đồng <strong className="font-mono-num">-€{severanceFee}M</strong>. Đội sẽ tạm dùng HLV Tạm quyền (-1.5 chỉ số tuyến) tới khi bổ nhiệm người mới.
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={managerActionLoading || career.transferBudget < severanceFee}
+                              onClick={async () => {
+                                setManagerActionLoading(true);
+                                try {
+                                  const res = await onFireManager();
+                                  setManagerFeedback({ ok: res.ok, text: res.message });
+                                  if (res.ok) setConfirmFireOpen(false);
+                                } finally {
+                                  setManagerActionLoading(false);
+                                }
+                              }}
+                              className="flex-1 h-9 rounded-lg bg-red-500 text-white text-xs font-bold disabled:opacity-50"
+                            >
+                              {managerActionLoading ? 'Đang xử lý...' : 'Xác nhận sa thải'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={managerActionLoading}
+                              onClick={() => setConfirmFireOpen(false)}
+                              className="h-9 px-3 rounded-lg bg-slate-800 text-slate-300 text-xs font-semibold"
+                            >
+                              Hủy
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-sm font-bold text-white truncate mt-0.5">{mgr.name}</p>
-                  <p className="text-[11px] text-slate-400 truncate">
-                    {mgr.preferredFormation} · {mgr.style}
-                  </p>
-                  <p className="text-[11px] font-mono-num text-amber-400 mt-0.5">
-                    Chiến thuật {mgr.tacticalRating} · Quản trị {mgr.manManagement}
-                  </p>
+
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/10 text-center">
+                    <div className="rounded-xl bg-[#0B1117] p-2.5">
+                      <p className="text-[10px] text-slate-400">Chiến thuật</p>
+                      <p className="font-mono-num text-base font-extrabold text-emerald-400">
+                        {activeManager.tacticalRating}
+                      </p>
+                    </div>
+                    <div className="rounded-xl bg-[#0B1117] p-2.5">
+                      <p className="text-[10px] text-slate-400">Quản trị phòng thay đồ</p>
+                      <p className="font-mono-num text-base font-extrabold text-amber-400">
+                        {activeManager.manManagement}
+                      </p>
+                    </div>
+                    <div className="rounded-xl bg-[#0B1117] p-2.5">
+                      <p className="text-[10px] text-slate-400">Hồi phục giữa vòng</p>
+                      <p className="font-mono-num text-base font-extrabold text-sky-400">
+                        +{managerImpact.recoveryBonus}%
+                      </p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-amber-400 uppercase tracking-wide">
+                      Ghế HLV trưởng đang trống · Tạm quyền
+                    </p>
+                    <h3 className="font-display text-lg font-bold text-white mt-0.5">
+                      Hãy chiêu mộ HLV trưởng mới bên dưới
+                    </h3>
+                    <p className="text-xs text-amber-200/90 mt-1">
+                      Khi chưa có HLV chính thức, đội bị giảm nhẹ (-1.5 ATK/MID/DEF, -6% Gắn kết). Ngân sách hiện có: <strong className="font-mono-num text-emerald-300">€{career.transferBudget.toFixed(1)}M</strong>.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {managerFeedback && (
+              <div
+                className={`rounded-xl p-3 text-xs border ${
+                  managerFeedback.ok
+                    ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-200'
+                    : 'bg-red-500/15 border-red-500/35 text-red-200'
+                }`}
+              >
+                {managerFeedback.text}
+              </div>
+            )}
+
+            {/* Search & Filter Toolbar */}
+            <div className="rounded-2xl bg-[#121B24] border border-white/10 p-3.5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={managerQuery}
+                    onChange={(e) => setManagerQuery(e.target.value)}
+                    placeholder="Tìm tên HLV, quốc tịch, phong cách hoặc CLB..."
+                    className="w-full h-11 pl-9 pr-3 rounded-xl bg-[#0B1117] border border-white/10 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[#0B1117] border border-white/10 shrink-0">
+                  {[
+                    { id: 'all', label: `Tất cả (${REAL_MANAGERS.length})` },
+                    { id: 'free-agent', label: `Tự do (${freeAgentCount})` },
+                    { id: 'employed', label: `CLB (${employedCount})` },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setManagerFilter(tab.id as typeof managerFilter)}
+                      className={`h-9 px-2.5 rounded-lg text-[11px] font-semibold whitespace-nowrap ${
+                        managerFilter === tab.id
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'text-slate-300'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+            </div>
+
+            {/* Manager Market Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {filteredManagers.map((mgr) => {
+                const isFreeAgent = mgr.clubId === 'free-agent';
+                const mgrClub = !isFreeAgent ? CLUBS.find((c) => c.id === mgr.clubId) : undefined;
+                const isCurrent = activeManager?.id === mgr.id;
+                const hireFeeM = getManagerHireFeeM(mgr, career.clubId);
+                const isRecruitingThis = selectedRecruitId === mgr.id;
+
+                return (
+                  <div
+                    key={mgr.id}
+                    className={`rounded-2xl border p-4 flex flex-col justify-between gap-3 ${
+                      isCurrent
+                        ? 'bg-emerald-500/10 border-emerald-500/45'
+                        : 'bg-[#121B24] border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3.5">
+                      <ManagerAvatar manager={mgr} size={52} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {mgrClub ? (
+                              <>
+                                <ClubCrest club={mgrClub} size={16} />
+                                <span className="text-[11px] text-sky-400 font-semibold truncate">
+                                  {mgrClub.name}
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-[11px] text-emerald-400 font-bold truncate">
+                                HLV Tự do · Sẵn sàng ký ngay
+                              </span>
+                            )}
+                          </div>
+                          <span className="font-mono-num text-[11px] font-bold text-amber-400 shrink-0">
+                            €{hireFeeM}M
+                          </span>
+                        </div>
+
+                        <p className="text-sm font-bold text-white truncate mt-0.5">{mgr.name}</p>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {mgr.nationality} · {mgr.preferredFormation} · {mgr.style}
+                        </p>
+                        {mgr.specialty && (
+                          <p className="text-[11px] text-emerald-300/90 truncate mt-0.5">
+                            {mgr.specialty}
+                          </p>
+                        )}
+                        <p className="text-[11px] font-mono-num text-slate-300 mt-1">
+                          Chiến thuật <strong className="text-emerald-400">{mgr.tacticalRating}</strong> · Quản trị{' '}
+                          <strong className="text-amber-400">{mgr.manManagement}</strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    {isCurrent ? (
+                      <div className="h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                        <UserCheck className="w-4 h-4" />
+                        Đang dẫn dắt CLB của bạn
+                      </div>
+                    ) : isRecruitingThis ? (
+                      <div className="rounded-xl bg-[#0B1117] border border-emerald-500/40 p-3 space-y-2.5">
+                        <label className="flex items-start gap-2 text-[11px] text-slate-200 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={applyNewTactics}
+                            onChange={(e) => setApplyNewTactics(e.target.checked)}
+                            className="mt-0.5 accent-emerald-500"
+                          />
+                          <span>
+                            Áp dụng sơ đồ <strong className="text-emerald-400">{mgr.preferredFormation}</strong> &amp; triết lý của {mgr.name} cho đội hình
+                          </span>
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={managerActionLoading || career.transferBudget < hireFeeM}
+                            onClick={async () => {
+                              setManagerActionLoading(true);
+                              setManagerFeedback(null);
+                              try {
+                                const res = await onHireManager(mgr.id, applyNewTactics);
+                                setManagerFeedback({ ok: res.ok, text: res.message });
+                                if (res.ok) setSelectedRecruitId(null);
+                              } finally {
+                                setManagerActionLoading(false);
+                              }
+                            }}
+                            className="flex-1 h-9 rounded-lg bg-emerald-500 text-slate-950 text-xs font-bold disabled:opacity-50"
+                          >
+                            {career.transferBudget < hireFeeM
+                              ? `Thiếu €${hireFeeM}M`
+                              : managerActionLoading
+                                ? 'Đang ký...'
+                                : `Bổ nhiệm (-€${hireFeeM}M)`}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={managerActionLoading}
+                            onClick={() => setSelectedRecruitId(null)}
+                            className="h-9 px-3 rounded-lg bg-slate-800 text-slate-300 text-xs font-semibold"
+                          >
+                            Hủy
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedRecruitId(mgr.id);
+                          setApplyNewTactics(true);
+                          setManagerFeedback(null);
+                        }}
+                        className="h-10 rounded-xl bg-[#0B1117] hover:bg-emerald-500 hover:text-slate-950 border border-white/15 hover:border-emerald-400 text-emerald-400 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <UserPlus className="w-4 h-4" />
+                        Chiêu mộ (€{hireFeeM}M)
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Manager Change History */}
+            {career.managerHistory && career.managerHistory.length > 0 && (
+              <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-2.5">
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <History className="w-4 h-4 text-amber-400" />
+                  Lịch sử Bổ nhiệm &amp; Sa thải HLV
+                </h4>
+                <div className="space-y-1.5">
+                  {career.managerHistory.slice(0, 12).map((h) => (
+                    <div
+                      key={h.id}
+                      className="rounded-xl bg-[#0B1117] border border-white/5 px-3 py-2 text-xs flex items-center justify-between gap-2"
+                    >
+                      <span className="text-slate-200 truncate">
+                        <strong
+                          className={
+                            h.action === 'hired'
+                              ? 'text-emerald-400'
+                              : h.action === 'fired'
+                                ? 'text-red-400'
+                                : 'text-amber-400'
+                          }
+                        >
+                          {h.action === 'hired'
+                            ? 'Bổ nhiệm'
+                            : h.action === 'fired'
+                              ? 'Sa thải'
+                              : 'Chấm dứt HĐ'}
+                        </strong>{' '}
+                        {h.managerName} · Mùa {h.season} (Vòng {h.matchweek})
+                      </span>
+                      <span className="font-mono-num text-[11px] text-slate-400 shrink-0">
+                        -€{h.feeM}M
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 };

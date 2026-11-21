@@ -893,24 +893,30 @@ export function simulateOnlineMatch(
   });
   events.sort((a, b) => a.minute - b.minute);
 
-  // Player Ratings 4.5 - 10.0 for both sides
+  // Avoid duplicate clubId collision in ratings if both coaches use same clubId by handling same-club cleanly
+  const sameClub = home.clubId === away.clubId;
   const rateSide = (
     side: ArenaProfile,
     gf: number,
-    ga: number
+    ga: number,
+    isHomeSide: boolean
   ): MatchPlayerRating[] => {
     const won = winnerUid ? winnerUid === side.uid : gf > ga;
     const lost = winnerUid ? winnerUid !== side.uid : gf < ga;
     const resAdj = won ? 0.45 : lost ? -0.35 : 0.05;
+    const matchesSide = (e: MatchEvent) =>
+      sameClub ? e.description.includes(side.managerName) : e.teamId === side.clubId;
+    const outClubId = sameClub && !isHomeSide ? `${side.clubId}-away` : side.clubId;
+
     return side.starters.map((st) => {
       const goals = events.filter(
-        (e) => e.type === 'goal' && e.teamId === side.clubId && e.playerId === st.id
+        (e) => e.type === 'goal' && matchesSide(e) && e.playerId === st.id
       ).length;
       const assists = events.filter(
-        (e) => e.type === 'goal' && e.teamId === side.clubId && e.assistId === st.id
+        (e) => e.type === 'goal' && matchesSide(e) && e.assistId === st.id
       ).length;
       const yellows = events.filter(
-        (e) => e.type === 'yellow' && e.teamId === side.clubId && e.playerId === st.id
+        (e) => e.type === 'yellow' && matchesSide(e) && e.playerId === st.id
       ).length;
 
       let score = 6.4 + (st.rating - 78) * 0.015 + resAdj;
@@ -924,7 +930,7 @@ export function simulateOnlineMatch(
         playerId: st.id,
         playerName: st.name,
         shortName: st.shortName,
-        clubId: side.clubId,
+        clubId: outClubId,
         position: st.position,
         rating: clamped,
         goals,
@@ -935,14 +941,8 @@ export function simulateOnlineMatch(
     });
   };
 
-  // Avoid duplicate clubId collision in ratings if both coaches use same clubId by handling same-club cleanly
-  const sameClub = home.clubId === away.clubId;
-  const homeRatings = rateSide(home, homeGoals, awayGoals);
-  const awayRatings = rateSide(
-    sameClub ? { ...away, clubId: `${away.clubId}-away` } : away,
-    awayGoals,
-    homeGoals
-  );
+  const homeRatings = rateSide(home, homeGoals, awayGoals, true);
+  const awayRatings = rateSide(away, awayGoals, homeGoals, false);
   const allRatings = [...homeRatings, ...awayRatings];
   const sortedBest = [...allRatings].sort((a, b) => b.rating - a.rating);
   const best = sortedBest[0];

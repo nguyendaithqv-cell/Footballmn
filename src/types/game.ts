@@ -71,18 +71,32 @@ export interface RealManager {
   nationality: string;
   flagCode: string;
   age: number;
-  clubId: string;
+  clubId: string; // club id or 'free-agent'
   preferredFormation: FormationId;
   style: string;
   tacticalRating: number;
   manManagement: number;
   pressingStyle: 'High Gegenpress' | 'Positional Control' | 'Mid-Block Counter' | 'Low Compact';
+  hireFeeM?: number;
+  weeklyWageK?: number;
+  specialty?: string;
   appearance: {
     skin: string;
     hair: string;
     hairStyle: 'bald' | 'short' | 'silver' | 'slick';
     suitColor: string;
   };
+}
+
+export interface ManagerHistoryRecord {
+  id: string;
+  managerId: string;
+  managerName: string;
+  action: 'hired' | 'fired' | 'replaced';
+  season: string;
+  matchweek: number;
+  feeM: number;
+  date: string;
 }
 
 export interface Club {
@@ -294,6 +308,31 @@ export interface CompetitionPlayerStat {
   position: Position;
   goals: number;
   assists: number;
+  matches?: number;
+  ratingSum?: number;
+  motmCount?: number;
+}
+
+export type CompetitionAwardType = 'top-scorer' | 'mvp';
+
+export interface CompetitionAwardWinner {
+  id: string;
+  competition: CompetitionId;
+  competitionTitle: string;
+  awardType: CompetitionAwardType;
+  awardTitle: string;
+  season: string;
+  playerId: string;
+  playerName: string;
+  shortName: string;
+  clubId: string;
+  position: Position;
+  goals: number;
+  assists: number;
+  avgRating: number;
+  motmCount: number;
+  matches: number;
+  isUserPlayer: boolean;
 }
 
 export interface CompetitionsState {
@@ -310,6 +349,9 @@ export interface TrophyItem {
   season: string;
   clubId: string;
   awardedAt: string;
+  awardType?: 'team' | 'top-scorer' | 'mvp';
+  playerName?: string;
+  playerId?: string;
 }
 
 export interface SeasonRecord {
@@ -322,6 +364,10 @@ export interface SeasonRecord {
   nationalCupWinnerId?: string;
   topScorerName: string;
   topScorerGoals: number;
+  topScorerClubId?: string;
+  mvpPlayerName?: string;
+  mvpPlayerClubId?: string;
+  mvpAvgRating?: number;
   trophiesWon: string[];
 }
 
@@ -503,6 +549,8 @@ export interface OnlineTournamentState {
 export interface CareerSave {
   uid: string;
   clubId: string;
+  activeManagerId?: string | null;
+  managerHistory?: ManagerHistoryRecord[];
   season: string;
   matchweek: number;
   transferBudget: number;
@@ -519,6 +567,7 @@ export interface CareerSave {
   transferHistory?: TransferRecord[];
   competitions?: CompetitionsState;
   trophyCabinet?: TrophyItem[];
+  seasonAwards?: CompetitionAwardWinner[];
   seasonHistory?: SeasonRecord[];
   inventory?: InventoryState;
   onlineTournament?: OnlineTournamentState;

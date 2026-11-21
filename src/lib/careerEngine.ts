@@ -4,6 +4,7 @@ import {
   ChampionsCupState,
   ChampionsGroup,
   CompactMatchReport,
+  CompetitionAwardWinner,
   CompetitionId,
   CompetitionPlayerStat,
   CompetitionsState,
@@ -18,7 +19,9 @@ import {
   MatchResultSummary,
   NationalCupState,
   Player,
+  PlayerRole,
   Position,
+  RealManager,
   SeasonRecord,
   SuperCupState,
   TacticSettings,
@@ -26,6 +29,100 @@ import {
   TrophyItem,
 } from '../types/game';
 import { createStarterInventory, normalizeInventory } from './inventoryEngine';
+
+export const COMPETITION_LABEL_MAP: Record<CompetitionId, string> = {
+  league: 'Super League',
+  'champions-cup': 'Champions Cup',
+  'national-cup': 'Cúp Quốc Gia',
+  'super-cup': 'Siêu Cúp',
+  friendly: 'Giao hữu Quốc tế',
+};
+
+export function getActiveCareerManager(career: CareerSave): RealManager | null {
+  if (career.activeManagerId === null) return null;
+  if (typeof career.activeManagerId === 'string' && career.activeManagerId.trim()) {
+    const found = REAL_MANAGERS.find((m) => m.id === career.activeManagerId);
+    if (found) return found;
+  }
+  const club = CLUBS.find((c) => c.id === career.clubId);
+  if (!club) return REAL_MANAGERS[0] ?? null;
+  return REAL_MANAGERS.find((m) => m.id === club.managerId) ?? null;
+}
+
+export function getManagerHireFeeM(manager: RealManager, currentClubId?: string): number {
+  if (typeof manager.hireFeeM === 'number' && Number.isFinite(manager.hireFeeM)) {
+    return manager.hireFeeM;
+  }
+  const baseFee = Math.max(6, Math.round((manager.tacticalRating - 78) * 1.15));
+  const isEmployedElsewhere =
+    manager.clubId !== 'free-agent' && (!currentClubId || manager.clubId !== currentClubId);
+  return isEmployedElsewhere ? baseFee + 4 : baseFee;
+}
+
+export function getManagerSeveranceM(manager: RealManager): number {
+  return Math.max(2, Number((getManagerHireFeeM(manager, manager.clubId) * 0.25).toFixed(1)));
+}
+
+export function getManagerImpactSummary(
+  manager: RealManager | null | undefined,
+  tactics?: TacticSettings
+): {
+  atkBonus: number;
+  midBonus: number;
+  defBonus: number;
+  cohesionBonus: number;
+  recoveryBonus: number;
+  formationMatch: boolean;
+  label: string;
+} {
+  if (!manager) {
+    return {
+      atkBonus: -1.5,
+      midBonus: -1.5,
+      defBonus: -1.5,
+      cohesionBonus: -6,
+      recoveryBonus: 0,
+      formationMatch: false,
+      label: 'Tạm quyền (thiếu HLV trưởng: -1.5 chỉ số tuyến, -6 gắn kết)',
+    };
+  }
+
+  const base = Math.max(-0.4, Math.min(2.0, (manager.tacticalRating - 85) * 0.16));
+  const styleAtk =
+    manager.pressingStyle === 'High Gegenpress'
+      ? 0.7
+      : manager.pressingStyle === 'Mid-Block Counter'
+        ? 0.5
+        : manager.pressingStyle === 'Positional Control'
+          ? 0.3
+          : 0.0;
+  const styleMid =
+    manager.pressingStyle === 'Positional Control'
+      ? 1.0
+      : manager.pressingStyle === 'High Gegenpress'
+        ? 0.4
+        : 0.2;
+  const styleDef =
+    manager.pressingStyle === 'Low Compact'
+      ? 1.1
+      : manager.pressingStyle === 'Mid-Block Counter'
+        ? 0.5
+        : 0.2;
+
+  const formationMatch = Boolean(tactics && tactics.formation === manager.preferredFormation);
+  const cohesionBonus = formationMatch ? 4 : 0;
+  const recoveryBonus = manager.manManagement >= 93 ? 2 : manager.manManagement >= 88 ? 1 : 0;
+
+  return {
+    atkBonus: Number((base + styleAtk).toFixed(2)),
+    midBonus: Number((base + styleMid).toFixed(2)),
+    defBonus: Number((base + styleDef).toFixed(2)),
+    cohesionBonus,
+    recoveryBonus,
+    formationMatch,
+    label: `${manager.name} (${manager.preferredFormation}${formationMatch ? ' · Khớp sơ đồ +4 Gắn kết' : ''})`,
+  };
+}
 
 const POSITION_COMPATIBILITY: Record<Position, Position[]> = {
   GK: ['GK'],
@@ -64,6 +161,24 @@ export function applyMarketOverrides(
       transferStatus: ov.transferStatus,
     };
   });
+}
+
+export function buildEffectiveDatabasePlayers(
+  userSquad: Player[],
+  basePlayers: Player[] = INITIAL_PLAYERS,
+  marketOverrides?: Record<string, MarketOverride>
+): Player[] {
+  const overridden = applyMarketOverrides(basePlayers, marketOverrides ?? {});
+  const squadMap = new Map(userSquad.map((p) => [p.id, p]));
+  const result = overridden.map((p) => squadMap.get(p.id) ?? p);
+  const seen = new Set(result.map((p) => p.id));
+  for (const p of userSquad) {
+    if (!seen.has(p.id)) {
+      result.push(p);
+      seen.add(p.id);
+    }
+  }
+  return result;
 }
 
 export function buildAutoLineupSlots(formation: FormationId, clubSquad: Player[]): TacticSlot[] {
@@ -296,7 +411,12 @@ export function mergeMatchResultsIntoLeaderboard(
 ): CompetitionPlayerStat[] {
   const byId = new Map<string, CompetitionPlayerStat>();
   for (const row of existing ?? []) {
-    byId.set(row.playerId, { ...row });
+    byId.set(row.playerId, {
+      ...row,
+      matches: row.matches ?? 0,
+      ratingSum: row.ratingSum ?? 0,
+      motmCount: row.motmCount ?? 0,
+    });
   }
 
   const playerLookupById = new Map<string, Player>();
@@ -317,22 +437,38 @@ export function mergeMatchResultsIntoLeaderboard(
   const upsertStat = (
     player: Player | undefined,
     fallbackName: string,
+    fallbackShortName: string,
+    fallbackPos: Position,
     teamId: string,
     goalDelta: number,
-    assistDelta: number
+    assistDelta: number,
+    matchDelta = 0,
+    ratingDelta = 0,
+    motmDelta = 0
   ) => {
     const key = player?.id ?? `${teamId}:${fallbackName}`;
     const cur = byId.get(key) ?? {
       playerId: key,
       playerName: player?.name ?? fallbackName,
-      shortName: player?.shortName ?? fallbackName,
-      clubId: player?.clubId ?? teamId,
-      position: player?.position ?? 'ST',
+      shortName: player?.shortName ?? fallbackShortName,
+      clubId: teamId || player?.clubId || '',
+      position: player?.position ?? fallbackPos,
       goals: 0,
       assists: 0,
+      matches: 0,
+      ratingSum: 0,
+      motmCount: 0,
     };
+    if (teamId && (goalDelta > 0 || assistDelta > 0 || matchDelta > 0)) {
+      cur.clubId = teamId;
+    } else if (player?.clubId && !cur.clubId) {
+      cur.clubId = player.clubId;
+    }
     cur.goals += goalDelta;
     cur.assists += assistDelta;
+    cur.matches = (cur.matches ?? 0) + matchDelta;
+    cur.ratingSum = Number(((cur.ratingSum ?? 0) + ratingDelta).toFixed(2));
+    cur.motmCount = (cur.motmCount ?? 0) + motmDelta;
     byId.set(key, cur);
   };
 
@@ -343,7 +479,7 @@ export function mergeMatchResultsIntoLeaderboard(
         (ev.playerId ? playerLookupById.get(ev.playerId) : undefined) ??
         playerLookupByName.get(ev.playerName) ??
         playerLookupByTeamShort.get(`${ev.teamId}:${ev.playerName}`);
-      upsertStat(scorer, ev.playerName, ev.teamId, 1, 0);
+      upsertStat(scorer, ev.playerName, scorer?.shortName ?? ev.playerName, 'ST', ev.teamId, 1, 0);
 
       if (ev.assistName || ev.assistId) {
         const assister =
@@ -352,15 +488,292 @@ export function mergeMatchResultsIntoLeaderboard(
             ? playerLookupByTeamShort.get(`${ev.teamId}:${ev.assistName}`) ??
               playerLookupByName.get(ev.assistName)
             : undefined);
-        upsertStat(assister, ev.assistName ?? 'Cầu thủ', ev.teamId, 0, 1);
+        upsertStat(
+          assister,
+          ev.assistName ?? 'Cầu thủ',
+          ev.assistName ?? 'Cầu thủ',
+          'CM',
+          ev.teamId,
+          0,
+          1
+        );
       }
+    }
+
+    const ratings = match.playerRatings ?? [];
+    for (const r of ratings) {
+      const resolved =
+        playerLookupById.get(r.playerId) ??
+        playerLookupByName.get(r.playerName) ??
+        playerLookupByTeamShort.get(`${r.clubId}:${r.shortName}`);
+      const isMotm =
+        Boolean(r.isMotm) ||
+        Boolean(
+          match.manOfTheMatch &&
+            ((match.manOfTheMatch.playerId && match.manOfTheMatch.playerId === r.playerId) ||
+              (match.manOfTheMatch.clubId === r.clubId &&
+                match.manOfTheMatch.name === r.playerName))
+        );
+      upsertStat(
+        resolved,
+        r.playerName,
+        r.shortName,
+        r.position,
+        r.clubId,
+        0,
+        0,
+        1,
+        r.rating,
+        isMotm ? 1 : 0
+      );
     }
   }
 
   return Array.from(byId.values())
-    .filter((item) => item.goals > 0 || item.assists > 0)
-    .sort((a, b) => b.goals + b.assists - (a.goals + a.assists))
-    .slice(0, 200);
+    .filter((item) => (item.matches ?? 0) > 0 || item.goals > 0 || item.assists > 0)
+    .sort((a, b) => {
+      const ga = a.goals + a.assists;
+      const gb = b.goals + b.assists;
+      if (gb !== ga) return gb - ga;
+      const avgA = (a.matches ?? 0) > 0 ? (a.ratingSum ?? 0) / (a.matches ?? 1) : 0;
+      const avgB = (b.matches ?? 0) > 0 ? (b.ratingSum ?? 0) / (b.matches ?? 1) : 0;
+      return avgB - avgA;
+    })
+    .slice(0, 500);
+}
+
+export function computeCompetitionMvpScore(
+  stat: CompetitionPlayerStat,
+  maxMatchesInComp: number
+): number {
+  const matches = Math.max(1, stat.matches ?? 1);
+  const avgRating =
+    typeof stat.ratingSum === 'number' && (stat.matches ?? 0) > 0
+      ? stat.ratingSum / matches
+      : 6.5 + Math.min(2.2, (stat.goals * 0.25 + stat.assists * 0.18) / matches);
+  const motm = stat.motmCount ?? 0;
+  const minThreshold = maxMatchesInComp >= 6 ? Math.max(2, Math.floor(maxMatchesInComp * 0.35)) : 1;
+  const shortagePenalty = matches < minThreshold ? (minThreshold - matches) * 0.65 : 0;
+  return Number(
+    (avgRating * 10 + motm * 1.4 + stat.goals * 0.32 + stat.assists * 0.24 - shortagePenalty).toFixed(2)
+  );
+}
+
+export function resolveCompetitionAwards(
+  career: CareerSave,
+  competition: CompetitionId
+): {
+  topScorer: CompetitionAwardWinner | null;
+  mvp: CompetitionAwardWinner | null;
+  mvpRanking: Array<CompetitionPlayerStat & { avgRating: number; mvpScore: number }>;
+} {
+  const stats = career.competitions?.leaderboards?.[competition] ?? [];
+  const compTitle = COMPETITION_LABEL_MAP[competition] ?? 'Giải đấu';
+
+  const scorerPool = [...stats]
+    .filter((s) => s.goals > 0)
+    .sort((a, b) => {
+      if (b.goals !== a.goals) return b.goals - a.goals;
+      if (b.assists !== a.assists) return b.assists - a.assists;
+      const avgA = (a.matches ?? 0) > 0 ? (a.ratingSum ?? 0) / (a.matches ?? 1) : 0;
+      const avgB = (b.matches ?? 0) > 0 ? (b.ratingSum ?? 0) / (b.matches ?? 1) : 0;
+      return avgB - avgA;
+    });
+
+  const maxMatches = stats.reduce((mx, s) => Math.max(mx, s.matches ?? 0), 0);
+
+  const mvpRanking = [...stats]
+    .filter((s) => (s.matches ?? 0) > 0 || s.goals > 0 || s.assists > 0)
+    .map((s) => {
+      const m = Math.max(1, s.matches ?? 1);
+      const avgRating =
+        typeof s.ratingSum === 'number' && (s.matches ?? 0) > 0
+          ? Number((s.ratingSum / m).toFixed(2))
+          : Number(
+              Math.min(9.5, 6.5 + (s.goals * 0.25 + s.assists * 0.18) / m).toFixed(2)
+            );
+      return {
+        ...s,
+        avgRating,
+        mvpScore: computeCompetitionMvpScore(s, maxMatches),
+      };
+    })
+    .sort((a, b) => {
+      if (b.mvpScore !== a.mvpScore) return b.mvpScore - a.mvpScore;
+      if (b.avgRating !== a.avgRating) return b.avgRating - a.avgRating;
+      return b.goals + b.assists - (a.goals + a.assists);
+    });
+
+  const makeWinner = (
+    row: CompetitionPlayerStat & { avgRating?: number },
+    awardType: 'top-scorer' | 'mvp'
+  ): CompetitionAwardWinner => {
+    const matches = Math.max(1, row.matches ?? 1);
+    const avgRating =
+      typeof row.avgRating === 'number'
+        ? row.avgRating
+        : typeof row.ratingSum === 'number' && (row.matches ?? 0) > 0
+          ? Number((row.ratingSum / matches).toFixed(2))
+          : 7.0;
+    return {
+      id: `award-${career.season.replace('/', '-')}-${competition}-${awardType}`,
+      competition,
+      competitionTitle: compTitle,
+      awardType,
+      awardTitle: awardType === 'top-scorer' ? 'Vua phá lưới' : 'Cầu thủ xuất sắc nhất',
+      season: career.season,
+      playerId: row.playerId,
+      playerName: row.playerName,
+      shortName: row.shortName,
+      clubId: row.clubId,
+      position: row.position,
+      goals: row.goals,
+      assists: row.assists,
+      avgRating,
+      motmCount: row.motmCount ?? 0,
+      matches: row.matches ?? 0,
+      isUserPlayer: row.clubId === career.clubId,
+    };
+  };
+
+  const topScorerRow = scorerPool[0];
+  const mvpRow = mvpRanking[0];
+
+  return {
+    topScorer: topScorerRow ? makeWinner(topScorerRow, 'top-scorer') : null,
+    mvp: mvpRow ? makeWinner(mvpRow, 'mvp') : null,
+    mvpRanking,
+  };
+}
+
+export function isCompetitionFinished(career: CareerSave, competition: CompetitionId): boolean {
+  if (competition === 'league') {
+    return career.fixtures.length > 0 && career.fixtures.every((f) => f.played);
+  }
+  if (competition === 'champions-cup') {
+    return career.competitions?.championsCup.stage === 'completed';
+  }
+  if (competition === 'national-cup') {
+    return career.competitions?.nationalCup.stage === 'completed';
+  }
+  if (competition === 'super-cup') {
+    return Boolean(career.competitions?.superCup.match.played);
+  }
+  return false;
+}
+
+export function finalizeFinishedCompetitionAwards(
+  career: CareerSave,
+  competition: CompetitionId
+): {
+  nextCareer: CareerSave;
+  newlyAwarded: CompetitionAwardWinner[];
+  bonusBudgetM: number;
+  bonusShards: number;
+  newTrophiesCount: number;
+} {
+  if (!isCompetitionFinished(career, competition)) {
+    return {
+      nextCareer: career,
+      newlyAwarded: [],
+      bonusBudgetM: 0,
+      bonusShards: 0,
+      newTrophiesCount: 0,
+    };
+  }
+
+  const existingAwards = [...(career.seasonAwards ?? [])];
+  const existingIds = new Set(existingAwards.map((a) => a.id));
+  const { topScorer, mvp } = resolveCompetitionAwards(career, competition);
+
+  const candidates = [topScorer, mvp].filter(
+    (w): w is CompetitionAwardWinner => Boolean(w && !existingIds.has(w.id))
+  );
+
+  if (candidates.length === 0) {
+    return {
+      nextCareer: career,
+      newlyAwarded: [],
+      bonusBudgetM: 0,
+      bonusShards: 0,
+      newTrophiesCount: 0,
+    };
+  }
+
+  const nextCabinet = [...(career.trophyCabinet ?? [])];
+  const inv = normalizeInventory(career.inventory);
+  const nextPacks = { ...inv.packs };
+  let bonusBudgetM = 0;
+  let bonusShards = 0;
+  let newTrophiesCount = 0;
+  let nextSquad = [...career.squad];
+  const isMajorComp = competition === 'league' || competition === 'champions-cup';
+
+  for (const winner of candidates) {
+    existingAwards.unshift(winner);
+    if (winner.isUserPlayer) {
+      const trophyId = `trophy-${winner.id}`;
+      if (!nextCabinet.some((t) => t.id === trophyId)) {
+        nextCabinet.unshift({
+          id: trophyId,
+          title: `${winner.awardTitle} ${winner.competitionTitle} (${winner.playerName})`,
+          competition,
+          season: career.season,
+          clubId: career.clubId,
+          awardedAt: new Date().toISOString(),
+          awardType: winner.awardType,
+          playerName: winner.playerName,
+          playerId: winner.playerId,
+        });
+        newTrophiesCount++;
+      }
+
+      if (winner.awardType === 'mvp') {
+        bonusBudgetM += isMajorComp ? 8 : 4;
+        bonusShards += isMajorComp ? 25 : 15;
+        if (isMajorComp) {
+          nextPacks.legend_pack = (nextPacks.legend_pack ?? 0) + 1;
+        } else {
+          nextPacks.elite_pack = (nextPacks.elite_pack ?? 0) + 1;
+        }
+      } else {
+        bonusBudgetM += isMajorComp ? 6 : 3;
+        bonusShards += isMajorComp ? 20 : 12;
+        nextPacks.elite_pack = (nextPacks.elite_pack ?? 0) + 1;
+      }
+
+      nextSquad = nextSquad.map((p) =>
+        p.id === winner.playerId
+          ? {
+              ...p,
+              morale: 100,
+              marketValueM: Number((p.marketValueM * 1.08).toFixed(1)),
+            }
+          : p
+      );
+    }
+  }
+
+  const nextCareer: CareerSave = {
+    ...career,
+    transferBudget: Number((career.transferBudget + bonusBudgetM).toFixed(1)),
+    squad: nextSquad,
+    trophyCabinet: nextCabinet.slice(0, 120),
+    seasonAwards: existingAwards.slice(0, 120),
+    inventory: normalizeInventory({
+      ...inv,
+      packs: nextPacks,
+      universalShards: inv.universalShards + bonusShards,
+    }),
+  };
+
+  return {
+    nextCareer,
+    newlyAwarded: candidates,
+    bonusBudgetM,
+    bonusShards,
+    newTrophiesCount,
+  };
 }
 
 export function ensureCareerCompetitions(career: CareerSave): CareerSave {
@@ -397,6 +810,47 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     };
   }
 
+  // Repair legacy leaderboard entries where a bought/recruited bench player with 0 appearances
+  // had AI-club goals misattributed to the user's clubId.
+  const squadById = new Map(career.squad.map((p) => [p.id, p]));
+  const baseById = new Map(INITIAL_PLAYERS.map((p) => [p.id, p]));
+  let repairedLeaderboards = false;
+  if (competitions.leaderboards) {
+    const nextLeaderboards = { ...competitions.leaderboards };
+    for (const compKey of ['league', 'champions-cup', 'national-cup', 'super-cup'] as const) {
+      const list = nextLeaderboards[compKey];
+      if (!list || list.length === 0) continue;
+      let changedList = false;
+      const updatedList = list.map((row) => {
+        if (row.clubId !== career.clubId) return row;
+        const sq = squadById.get(row.playerId);
+        const orig = baseById.get(row.playerId);
+        if (
+          sq &&
+          sq.appearances === 0 &&
+          sq.goals === 0 &&
+          sq.assists === 0 &&
+          orig &&
+          orig.clubId !== career.clubId
+        ) {
+          changedList = true;
+          return { ...row, clubId: orig.clubId };
+        }
+        return row;
+      });
+      if (changedList) {
+        nextLeaderboards[compKey] = updatedList;
+        repairedLeaderboards = true;
+      }
+    }
+    if (repairedLeaderboards) {
+      competitions = {
+        ...competitions,
+        leaderboards: nextLeaderboards,
+      };
+    }
+  }
+
   const hasInventory = Boolean(
     career.inventory &&
       career.inventory.packs &&
@@ -404,20 +858,31 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
       typeof career.inventory.universalShards === 'number'
   );
   const hasAllStars = career.squad.every((p) => typeof p.stars === 'number');
+  const clubDefaultMgr = CLUBS.find((c) => c.id === career.clubId)?.managerId ?? REAL_MANAGERS[0].id;
+  const hasManagerFields =
+    career.activeManagerId !== undefined &&
+    Array.isArray(career.managerHistory) &&
+    Array.isArray(career.seasonAwards);
 
   if (
     hasComps &&
     career.competitions?.leaderboards &&
+    !repairedLeaderboards &&
     career.trophyCabinet &&
     career.seasonHistory &&
     hasInventory &&
-    hasAllStars
+    hasAllStars &&
+    hasManagerFields
   ) {
     return career;
   }
 
   return {
     ...career,
+    activeManagerId:
+      career.activeManagerId === undefined ? clubDefaultMgr : career.activeManagerId,
+    managerHistory: career.managerHistory ?? [],
+    seasonAwards: career.seasonAwards ?? [],
     squad: hasAllStars ? career.squad : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 })),
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
@@ -463,6 +928,8 @@ export function createInitialCareer(
   return {
     uid,
     clubId: club.id,
+    activeManagerId: manager.id,
+    managerHistory: [],
     season: '2026/27',
     matchweek: 1,
     transferBudget: club.transferBudgetM,
@@ -479,12 +946,53 @@ export function createInitialCareer(
     transferHistory: [],
     competitions,
     trophyCabinet: [],
+    seasonAwards: [],
     seasonHistory: [],
     inventory: createStarterInventory(),
   };
 }
 
-export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[]) {
+const ROLE_TACTICAL_EFFECTS: Record<
+  PlayerRole,
+  { atk: number; mid: number; def: number; poss: number }
+> = {
+  'Sweeper Keeper': { atk: 0.1, mid: 0.25, def: 0.35, poss: 0.45 },
+  'Ball-Playing Defender': { atk: 0.15, mid: 0.35, def: 0.25, poss: 0.55 },
+  Stopper: { atk: 0.0, mid: 0.05, def: 0.65, poss: -0.2 },
+  'Inverted Wing-Back': { atk: 0.2, mid: 0.45, def: 0.2, poss: 0.5 },
+  'Complete Wing-Back': { atk: 0.45, mid: 0.25, def: 0.1, poss: 0.2 },
+  'Deep-Lying Playmaker': { atk: 0.15, mid: 0.55, def: 0.2, poss: 0.7 },
+  'Box-to-Box': { atk: 0.3, mid: 0.4, def: 0.3, poss: 0.1 },
+  Mezzala: { atk: 0.45, mid: 0.4, def: 0.05, poss: 0.3 },
+  'Advanced Playmaker': { atk: 0.55, mid: 0.45, def: -0.1, poss: 0.55 },
+  'Inside Forward': { atk: 0.6, mid: 0.1, def: 0.0, poss: 0.1 },
+  'Inverted Winger': { atk: 0.45, mid: 0.3, def: 0.05, poss: 0.4 },
+  'Advanced Forward': { atk: 0.65, mid: 0.0, def: 0.0, poss: -0.1 },
+  'Complete Forward': { atk: 0.55, mid: 0.2, def: 0.05, poss: 0.2 },
+  'Target Forward': { atk: 0.5, mid: 0.15, def: 0.1, poss: -0.2 },
+};
+
+export function getMatchStaminaDrain(tactics: TacticSettings, isCup: boolean): number {
+  const base = isCup ? 7.5 : 9.0;
+  const pressMod = (tactics.pressingIntensity - 3) * 1.1;
+  const tempoMod = (tactics.tempo - 3) * 0.8;
+  const counterMod = tactics.counterPress ? 1.0 : 0;
+  const mentalityMod =
+    tactics.mentality === 'Very Attacking'
+      ? 1.2
+      : tactics.mentality === 'Attacking'
+        ? 0.6
+        : tactics.mentality === 'Cautious'
+          ? -1.0
+          : 0;
+  return Math.max(4, Math.min(15, Math.round(base + pressMod + tempoMod + counterMod + mentalityMod)));
+}
+
+export function calculateTacticalProfile(
+  tactics: TacticSettings,
+  squad: Player[],
+  activeManager?: RealManager | null
+) {
   const playerMap = new Map(squad.map((p) => [p.id, p]));
   let atkSum = 0;
   let atkCount = 0;
@@ -493,6 +1001,10 @@ export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[
   let defSum = 0;
   let defCount = 0;
   let fitMatches = 0;
+  let roleAtkSum = 0;
+  let roleMidSum = 0;
+  let roleDefSum = 0;
+  let rolePossSum = 0;
 
   for (const slot of tactics.slots) {
     const p = playerMap.get(slot.playerId);
@@ -502,6 +1014,14 @@ export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[
     const penalty = p.position === slot.label ? 0 : compat.includes(p.position) ? 3 : 10;
     if (penalty <= 3) fitMatches += 1;
     const effRating = Math.max(50, p.rating - penalty);
+
+    const roleEffect = ROLE_TACTICAL_EFFECTS[slot.role];
+    if (roleEffect) {
+      roleAtkSum += roleEffect.atk;
+      roleMidSum += roleEffect.mid;
+      roleDefSum += roleEffect.def;
+      rolePossSum += roleEffect.poss;
+    }
 
     if (['ST', 'LW', 'RW', 'CAM'].includes(slot.label)) {
       atkSum += effRating * 0.72 + (p.attributes.sho + p.attributes.dri) * 0.14;
@@ -541,21 +1061,48 @@ export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[
             ? -2.5
             : -1.0;
 
+  // Width, pressing intensity & defensive line tactical sliders
+  const widthAtkBonus = (tactics.width - 3) * 0.45;
+  const widthMidBonus = (3 - tactics.width) * 0.35;
+  const pressingAtkBonus = (tactics.pressingIntensity - 3) * 0.35;
+  const pressingMidBonus = (tactics.pressingIntensity - 3) * 0.55;
+  const pressingPossBonus = (tactics.pressingIntensity - 3) * 0.85;
+  const lineMidBonus = (tactics.defensiveLine - 3) * 0.45;
+  const lineDefBonus =
+    tactics.defensiveLine < 3
+      ? (3 - tactics.defensiveLine) * 0.65
+      : -(tactics.defensiveLine - 3) * 0.4;
+  const linePossBonus = (tactics.defensiveLine - 3) * 0.55;
+
+  const mgrImpact =
+    activeManager !== undefined
+      ? getManagerImpactSummary(activeManager, tactics)
+      : { atkBonus: 0, midBonus: 0, defBonus: 0, cohesionBonus: 0 };
+
   const attack = Math.min(
     99,
     Math.round(
       (atkCount ? atkSum / atkCount : 75) +
         mentalityAtkBonus +
-        (tactics.workBallIntoBox ? 0.8 : 0)
+        widthAtkBonus +
+        pressingAtkBonus +
+        roleAtkSum * 0.42 +
+        (tactics.workBallIntoBox ? 0.8 : 0) +
+        mgrImpact.atkBonus
     )
   );
   const midfield = Math.min(
     99,
     Math.round(
       (midCount ? midSum / midCount : 75) +
+        widthMidBonus +
+        pressingMidBonus +
+        lineMidBonus +
+        roleMidSum * 0.42 +
         (tactics.playOutOfDefence ? 1.2 : 0) +
         (tactics.counterPress ? 0.8 : 0) +
-        (tactics.passingDirectness <= 2 ? 0.6 : 0)
+        (tactics.passingDirectness <= 2 ? 0.6 : 0) +
+        mgrImpact.midBonus
     )
   );
   const defense = Math.min(
@@ -563,10 +1110,21 @@ export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[
     Math.round(
       (defCount ? defSum / defCount : 75) +
         mentalityDefBonus +
-        (tactics.offsideTrap && tactics.defensiveLine >= 4 ? 0.5 : 0)
+        lineDefBonus +
+        roleDefSum * 0.42 +
+        (tactics.offsideTrap && tactics.defensiveLine >= 4 ? 0.6 : 0) +
+        mgrImpact.defBonus
     )
   );
-  const cohesion = Math.min(100, Math.round((fitMatches / 11) * 85 + (tactics.counterPress ? 8 : 5) + 7));
+  const cohesion = Math.max(
+    45,
+    Math.min(
+      100,
+      Math.round(
+        (fitMatches / 11) * 85 + (tactics.counterPress ? 8 : 5) + 7 + mgrImpact.cohesionBonus
+      )
+    )
+  );
   const possessionIndex = Math.min(
     75,
     Math.max(
@@ -575,6 +1133,9 @@ export function calculateTacticalProfile(tactics: TacticSettings, squad: Player[
         48 +
           (6 - tactics.passingDirectness) * 3.5 +
           (tactics.playOutOfDefence ? 4 : -2) +
+          pressingPossBonus +
+          linePossBonus +
+          rolePossSum * 0.65 +
           (midfield - 80) * 0.4
       )
     )
@@ -638,6 +1199,47 @@ interface StarterEntry {
   slotLabel: Position;
 }
 
+function createAcademyFillPlayer(clubId: string, position: Position, index: number): Player {
+  const isGk = position === 'GK';
+  const baseStat = 72;
+  return {
+    id: `acad-${clubId}-${index}`,
+    name: `Học viện Trẻ #${index + 1}`,
+    shortName: `Trẻ #${index + 1}`,
+    clubId,
+    position,
+    number: 40 + index,
+    age: 18,
+    nationality: 'Việt Nam',
+    flagCode: 'UN',
+    rating: baseStat,
+    potential: 76,
+    marketValueM: 1.5,
+    wageK: 8,
+    contractUntil: 2029,
+    fitness: 95,
+    morale: 80,
+    form: 6.8,
+    goals: 0,
+    assists: 0,
+    appearances: 0,
+    transferStatus: 'untouchable',
+    attributes: {
+      pac: isGk ? 55 : 73,
+      sho: isGk ? 40 : 69,
+      pas: 71,
+      dri: isGk ? 50 : 71,
+      def: isGk ? 62 : 70,
+      phy: 72,
+    },
+    appearance: {
+      skin: '#E0AC8B',
+      hair: '#1E293B',
+      hairStyle: 'short',
+    },
+  };
+}
+
 function resolveMatchStarters(
   clubId: string,
   formation: FormationId,
@@ -677,6 +1279,17 @@ function resolveMatchStarters(
         used.add(p.id);
         starters.push({ player: p, slotLabel: p.position });
       }
+    }
+  }
+
+  // Synthesize Youth Academy prospects for depleted AI clubs so every match runs 11v11
+  if (!userTactics && starters.length < 11) {
+    const tpl = FORMATION_TEMPLATES[formation] ?? FORMATION_TEMPLATES['4-3-3'];
+    let acadIdx = 0;
+    while (starters.length < 11) {
+      const pos = tpl[starters.length]?.label ?? 'CM';
+      const fill = createAcademyFillPlayer(clubId, pos, acadIdx++);
+      starters.push({ player: fill, slotLabel: pos });
     }
   }
 
@@ -895,6 +1508,129 @@ function computeAITeamProfile(
   };
 }
 
+function pickWeightedItem<T>(items: T[], weightFn: (item: T) => number): T | undefined {
+  if (items.length === 0) return undefined;
+  const weights = items.map((it) => Math.max(0.1, weightFn(it)));
+  const total = weights.reduce((s, w) => s + w, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < items.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return items[i];
+  }
+  return items[items.length - 1];
+}
+
+function pickScorerFromXI(roster: Player[]): Player | undefined {
+  const outfield = roster.filter((p) => p.position !== 'GK');
+  const pool = outfield.length > 0 ? outfield : roster;
+  return pickWeightedItem(pool, (p) => {
+    const posWeight =
+      p.position === 'ST'
+        ? 5.5
+        : p.position === 'LW' || p.position === 'RW'
+          ? 3.6
+          : p.position === 'CAM'
+            ? 2.8
+            : p.position === 'CM'
+              ? 1.5
+              : 0.45;
+    return posWeight * (0.6 + p.attributes.sho / 100);
+  });
+}
+
+function pickAssisterFromXI(roster: Player[], scorerId?: string): Player | undefined {
+  const candidates = roster.filter((p) => p.id !== scorerId && p.position !== 'GK');
+  if (candidates.length === 0 || Math.random() < 0.14) return undefined;
+  return pickWeightedItem(candidates, (p) => {
+    const posWeight =
+      p.position === 'CAM'
+        ? 4.2
+        : p.position === 'LW' || p.position === 'RW'
+          ? 3.4
+          : p.position === 'CM'
+            ? 3.0
+            : p.position === 'LB' || p.position === 'RB'
+              ? 2.0
+              : p.position === 'ST'
+                ? 1.6
+                : 0.6;
+    return posWeight * (0.6 + p.attributes.pas / 100);
+  });
+}
+
+function pickYellowCardPlayer(roster: Player[]): Player | undefined {
+  const outfield = roster.filter((p) => p.position !== 'GK');
+  const pool = outfield.length > 0 ? outfield : roster;
+  return pickWeightedItem(pool, (p) => {
+    const posWeight =
+      p.position === 'CB'
+        ? 4.2
+        : p.position === 'CDM'
+          ? 3.9
+          : p.position === 'LB' || p.position === 'RB'
+            ? 3.2
+            : p.position === 'CM'
+              ? 2.6
+              : p.position === 'CAM'
+                ? 1.4
+                : p.position === 'LW' || p.position === 'RW'
+                  ? 1.1
+                  : 0.9;
+    return posWeight * (0.65 + (p.attributes.phy * 0.7 + p.attributes.def * 0.3) / 140);
+  });
+}
+
+function pickChancePlayer(roster: Player[]): Player | undefined {
+  const outfield = roster.filter((p) => p.position !== 'GK');
+  const pool = outfield.length > 0 ? outfield : roster;
+  return pickWeightedItem(pool, (p) => {
+    const posWeight =
+      p.position === 'ST'
+        ? 4.5
+        : p.position === 'LW' || p.position === 'RW'
+          ? 3.4
+          : p.position === 'CAM'
+            ? 2.9
+            : p.position === 'CM'
+              ? 1.8
+              : p.position === 'LB' || p.position === 'RB'
+                ? 0.9
+                : 0.5;
+    return posWeight * (0.55 + (p.attributes.sho * 0.7 + p.attributes.pac * 0.3) / 120);
+  });
+}
+
+function computeShotsAndXg(params: {
+  attack: number;
+  oppDefense: number;
+  possession: number;
+  goals: number;
+  tempoMod?: number;
+}): { shots: number; shotsOnTarget: number; xg: number; corners: number } {
+  const { attack, oppDefense, possession, goals, tempoMod = 0 } = params;
+  const attIntensity = (attack - oppDefense) * 0.28 + (possession - 50) * 0.22 + tempoMod;
+  const rawShots = Math.round(10.5 + attIntensity + (Math.random() - 0.45) * 6);
+  const shots = Math.max(goals > 0 ? goals : 2, Math.min(28, rawShots));
+  const shotsOnTarget = Math.min(
+    shots,
+    Math.max(goals, Math.round(goals * 0.45 + shots * (0.26 + Math.random() * 0.12)))
+  );
+  const perShotQuality = 0.088 + Math.max(-0.03, Math.min(0.04, (attack - oppDefense) * 0.0025));
+  const rawXg = shots * perShotQuality + goals * 0.26;
+  const xg = Number(
+    Math.max(goals > 0 ? Math.max(0.45, goals * 0.42) : 0.15, rawXg).toFixed(2)
+  );
+  const corners = Math.max(1, Math.round(shots * 0.38 + (possession - 50) * 0.05 + Math.random() * 2));
+  return { shots, shotsOnTarget, xg, corners };
+}
+
+function computePressingYellowCount(pressingAggression: number): number {
+  const baseProb = Math.max(0.4, Math.min(2.8, 1.05 + pressingAggression));
+  const whole = Math.floor(baseProb);
+  const extra = Math.random() < baseProb - whole ? 1 : 0;
+  return Math.min(4, whole + extra);
+}
+
 export function simulateMatchFull(
   homeId: string,
   awayId: string,
@@ -905,9 +1641,11 @@ export function simulateMatchFull(
   allPlayers: Player[],
   options?: {
     isKnockout?: boolean;
+    isNeutralVenue?: boolean;
     competition?: CompetitionId;
     roundLabel?: string;
     matchId?: string;
+    userManager?: RealManager | null;
   }
 ): MatchResultSummary {
   const isUserHome = homeId === userClubId;
@@ -916,28 +1654,44 @@ export function simulateMatchFull(
   const homeClub = CLUBS.find((c) => c.id === homeId) ?? CLUBS[0];
   const awayClub = CLUBS.find((c) => c.id === awayId) ?? CLUBS[1];
 
-  const homeRoster = isUserHome ? userSquad : allPlayers.filter((p) => p.clubId === homeId);
-  const awayRoster = isUserAway ? userSquad : allPlayers.filter((p) => p.clubId === awayId);
+  const userSquadIds = new Set(userSquad.map((p) => p.id));
+  const homeRoster = isUserHome
+    ? userSquad
+    : allPlayers.filter((p) => p.clubId === homeId && !userSquadIds.has(p.id));
+  const awayRoster = isUserAway
+    ? userSquad
+    : allPlayers.filter((p) => p.clubId === awayId && !userSquadIds.has(p.id));
 
-  const homeMgr = REAL_MANAGERS.find((m) => m.id === homeClub.managerId) ?? REAL_MANAGERS[0];
-  const awayMgr = REAL_MANAGERS.find((m) => m.id === awayClub.managerId) ?? REAL_MANAGERS[1];
+  const defaultHomeMgr = REAL_MANAGERS.find((m) => m.id === homeClub.managerId) ?? REAL_MANAGERS[0];
+  const defaultAwayMgr = REAL_MANAGERS.find((m) => m.id === awayClub.managerId) ?? REAL_MANAGERS[1];
+  const hasExplicitUserMgr = Boolean(options && 'userManager' in options);
+  const userMgrResolved = hasExplicitUserMgr
+    ? options?.userManager ?? null
+    : isUserHome
+      ? defaultHomeMgr
+      : isUserAway
+        ? defaultAwayMgr
+        : null;
+
+  const homeMgr = isUserHome ? userMgrResolved : defaultHomeMgr;
+  const awayMgr = isUserAway ? userMgrResolved : defaultAwayMgr;
 
   const homeStarters = resolveMatchStarters(
     homeId,
-    isUserHome ? userTactics.formation : homeMgr.preferredFormation,
+    isUserHome ? userTactics.formation : (homeMgr?.preferredFormation ?? '4-3-3'),
     homeRoster,
     isUserHome ? userTactics : undefined
   );
   const awayStarters = resolveMatchStarters(
     awayId,
-    isUserAway ? userTactics.formation : awayMgr.preferredFormation,
+    isUserAway ? userTactics.formation : (awayMgr?.preferredFormation ?? '4-3-3'),
     awayRoster,
     isUserAway ? userTactics : undefined
   );
   const homePlayingXI = homeStarters.length > 0 ? homeStarters.map((s) => s.player) : homeRoster;
   const awayPlayingXI = awayStarters.length > 0 ? awayStarters.map((s) => s.player) : awayRoster;
 
-  const userProfile = calculateTacticalProfile(userTactics, userSquad);
+  const userProfile = calculateTacticalProfile(userTactics, userSquad, userMgrResolved);
   const userCondBonus = isUserHome
     ? computeUserConditionBonus(homeStarters, userProfile.cohesion)
     : isUserAway
@@ -986,19 +1740,27 @@ export function simulateMatchFull(
     (awayProfile.midfield - homeProfile.midfield) * 0.25 +
     (awayProfile.overall - homeProfile.overall) * 0.2;
 
+  const isNeutralVenue = Boolean(
+    options?.isNeutralVenue ||
+      options?.competition === 'super-cup' ||
+      (options?.roundLabel && /chung kết/i.test(options.roundLabel))
+  );
+  const baseHomeXg = isNeutralVenue ? 1.28 : 1.38;
+  const baseAwayXg = isNeutralVenue ? 1.28 : 1.18;
+
   const clampExponent = (val: number) => Math.max(-1.35, Math.min(1.35, val));
-  // Neutral realistic home-field boost (~1.38 vs ~1.18) without hidden AI OVR inflation
   const expectedHome = Math.max(
     0.25,
-    1.38 * matchPace * Math.exp(clampExponent(homeEdge * 0.068))
+    baseHomeXg * matchPace * Math.exp(clampExponent(homeEdge * 0.068))
   );
   const expectedAway = Math.max(
     0.22,
-    1.18 * matchPace * Math.exp(clampExponent(awayEdge * 0.068))
+    baseAwayXg * matchPace * Math.exp(clampExponent(awayEdge * 0.068))
   );
 
   const homeGoals = samplePoissonGoals(expectedHome);
   const awayGoals = samplePoissonGoals(expectedAway);
+  const venueLabel = isNeutralVenue ? 'Sân vận động Trung lập' : homeClub.stadium;
 
   const events: MatchEvent[] = [
     {
@@ -1006,74 +1768,14 @@ export function simulateMatchFull(
       type: 'kickoff',
       teamId: homeId,
       playerName: homeClub.shortName,
-      description: `Trọng tài thổi còi khai cuộc tại ${homeClub.stadium}.`,
+      description: `Trọng tài thổi còi khai cuộc tại ${venueLabel}.`,
     },
   ];
 
-  const pickWeighted = <T,>(items: T[], weightFn: (item: T) => number): T | undefined => {
-    if (items.length === 0) return undefined;
-    const weights = items.map((it) => Math.max(0.1, weightFn(it)));
-    const total = weights.reduce((s, w) => s + w, 0);
-    let r = Math.random() * total;
-    for (let i = 0; i < items.length; i++) {
-      r -= weights[i];
-      if (r <= 0) return items[i];
-    }
-    return items[items.length - 1];
-  };
-
-  const pickScorer = (roster: Player[]) => {
-    const outfield = roster.filter((p) => p.position !== 'GK');
-    const pool = outfield.length > 0 ? outfield : roster;
-    return pickWeighted(pool, (p) => {
-      const posWeight =
-        p.position === 'ST'
-          ? 5.5
-          : p.position === 'LW' || p.position === 'RW'
-            ? 3.6
-            : p.position === 'CAM'
-              ? 2.8
-              : p.position === 'CM'
-                ? 1.5
-                : 0.45;
-      return posWeight * (0.6 + p.attributes.sho / 100);
-    });
-  };
-
-  const pickAssister = (roster: Player[], scorerId?: string) => {
-    const candidates = roster.filter((p) => p.id !== scorerId && p.position !== 'GK');
-    if (candidates.length === 0 || Math.random() < 0.14) return undefined;
-    return pickWeighted(candidates, (p) => {
-      const posWeight =
-        p.position === 'CAM'
-          ? 4.2
-          : p.position === 'LW' || p.position === 'RW'
-            ? 3.4
-            : p.position === 'CM'
-              ? 3.0
-              : p.position === 'LB' || p.position === 'RB'
-                ? 2.0
-                : p.position === 'ST'
-                  ? 1.6
-                  : 0.6;
-      return posWeight * (0.6 + p.attributes.pas / 100);
-    });
-  };
-
-  const goalContributionByPlayer = new Map<string, { player: Player; teamId: string; score: number }>();
-  const addContribution = (pl: Player | undefined, teamId: string, pts: number) => {
-    if (!pl) return;
-    const cur = goalContributionByPlayer.get(pl.id) ?? { player: pl, teamId, score: 0 };
-    cur.score += pts;
-    goalContributionByPlayer.set(pl.id, cur);
-  };
-
   for (let i = 0; i < homeGoals; i++) {
     const min = Math.floor(Math.random() * 88) + 2;
-    const scorer = pickScorer(homePlayingXI);
-    const assist = pickAssister(homePlayingXI, scorer?.id);
-    addContribution(scorer, homeId, 3);
-    addContribution(assist, homeId, 1.5);
+    const scorer = pickScorerFromXI(homePlayingXI);
+    const assist = pickAssisterFromXI(homePlayingXI, scorer?.id);
     const ev: MatchEvent = {
       minute: min,
       type: 'goal',
@@ -1089,10 +1791,8 @@ export function simulateMatchFull(
 
   for (let i = 0; i < awayGoals; i++) {
     const min = Math.floor(Math.random() * 88) + 2;
-    const scorer = pickScorer(awayPlayingXI);
-    const assist = pickAssister(awayPlayingXI, scorer?.id);
-    addContribution(scorer, awayId, 3);
-    addContribution(assist, awayId, 1.5);
+    const scorer = pickScorerFromXI(awayPlayingXI);
+    const assist = pickAssisterFromXI(awayPlayingXI, scorer?.id);
     const ev: MatchEvent = {
       minute: min,
       type: 'goal',
@@ -1106,31 +1806,68 @@ export function simulateMatchFull(
     events.push(ev);
   }
 
-  let yellowsHome = 0;
-  let yellowsAway = 0;
-  const highlightCount = 5;
-  for (let k = 0; k < highlightCount; k++) {
+  const homePressAggression = isUserHome
+    ? (userTactics.pressingIntensity - 3) * 0.28 + (userTactics.counterPress ? 0.35 : 0)
+    : homeMgr?.pressingStyle === 'High Gegenpress'
+      ? 0.3
+      : homeMgr?.pressingStyle === 'Low Compact'
+        ? -0.2
+        : 0.05;
+  const awayPressAggression = isUserAway
+    ? (userTactics.pressingIntensity - 3) * 0.28 + (userTactics.counterPress ? 0.35 : 0)
+    : awayMgr?.pressingStyle === 'High Gegenpress'
+      ? 0.3
+      : awayMgr?.pressingStyle === 'Low Compact'
+        ? -0.2
+        : 0.05;
+
+  const yellowsHome = computePressingYellowCount(homePressAggression);
+  const yellowsAway = computePressingYellowCount(awayPressAggression);
+
+  for (let i = 0; i < yellowsHome; i++) {
     const min = Math.floor(Math.random() * 86) + 3;
-    const side = Math.random() > 0.5 ? homeId : awayId;
+    const pl = pickYellowCardPlayer(homePlayingXI);
+    const ev: MatchEvent = {
+      minute: min,
+      type: 'yellow',
+      teamId: homeId,
+      playerName: pl?.shortName ?? homeClub.shortName,
+      description: `Thẻ vàng cho ${pl?.shortName ?? 'cầu thủ'} (${homeClub.shortName}) sau pha phạm lỗi chiến thuật.`,
+    };
+    if (pl?.id) ev.playerId = pl.id;
+    events.push(ev);
+  }
+  for (let i = 0; i < yellowsAway; i++) {
+    const min = Math.floor(Math.random() * 86) + 3;
+    const pl = pickYellowCardPlayer(awayPlayingXI);
+    const ev: MatchEvent = {
+      minute: min,
+      type: 'yellow',
+      teamId: awayId,
+      playerName: pl?.shortName ?? awayClub.shortName,
+      description: `Thẻ vàng cho ${pl?.shortName ?? 'cầu thủ'} (${awayClub.shortName}) sau pha phạm lỗi chiến thuật.`,
+    };
+    if (pl?.id) ev.playerId = pl.id;
+    events.push(ev);
+  }
+
+  const chanceCount = 4;
+  for (let k = 0; k < chanceCount; k++) {
+    const min = Math.floor(Math.random() * 85) + 4;
+    const side = Math.random() > 0.48 ? homeId : awayId;
     const roster = side === homeId ? homePlayingXI : awayPlayingXI;
     const club = side === homeId ? homeClub : awayClub;
-    const pl = pickScorer(roster);
-    const evType = k === 1 || k === 4 ? 'yellow' : k === 2 ? 'save' : 'chance';
-    if (evType === 'yellow') {
-      if (side === homeId) yellowsHome++;
-      else yellowsAway++;
-    }
+    const pl = pickChancePlayer(roster);
+    const evType = k % 2 === 0 ? 'chance' : 'save';
     const ev: MatchEvent = {
       minute: min,
       type: evType,
       teamId: side,
       playerName: pl?.shortName ?? club.shortName,
       description:
-        evType === 'yellow'
-          ? `Thẻ vàng cho ${pl?.shortName ?? 'cầu thủ'} (${club.shortName}) sau pha phạm lỗi chiến thuật.`
-          : evType === 'save'
-            ? `Thủ môn bay người cứu thua xuất thần trước cú sút xa của ${pl?.shortName ?? club.shortName}.`
-            : `Cơ hội nguy hiểm! ${pl?.shortName ?? club.shortName} dứt điểm chệch cột dọc trong gang tấc.`,
+        evType === 'save'
+          ? `Thủ môn bay người cứu thua xuất thần trước cú sút của ${pl?.shortName ?? club.shortName}.`
+          : `Cơ hội nguy hiểm! ${pl?.shortName ?? club.shortName} dứt điểm chệch cột dọc trong gang tấc.`,
     };
     if (pl?.id) ev.playerId = pl.id;
     events.push(ev);
@@ -1145,8 +1882,8 @@ export function simulateMatchFull(
   } else if (awayGoals > homeGoals) {
     winnerId = awayId;
   } else if (options?.isKnockout) {
-    const homeEdge = homeStrength >= awayStrength ? 0.53 : 0.47;
-    const homeWinsPen = Math.random() < homeEdge;
+    const homeEdgePen = homeStrength >= awayStrength ? 0.53 : 0.47;
+    const homeWinsPen = Math.random() < homeEdgePen;
     const baseScore = Math.floor(Math.random() * 2) + 4; // 4 or 5
     if (homeWinsPen) {
       penaltiesHome = baseScore;
@@ -1177,26 +1914,43 @@ export function simulateMatchFull(
 
   events.sort((a, b) => a.minute - b.minute);
 
-  const possessionHome = isUserHome
-    ? userProfile.possessionIndex
+  // Dynamic possession comparing both teams' midfield + tactical style bias
+  const midDiffPoss = (homeProfile.midfield - awayProfile.midfield) * 1.15;
+  const userPossBias = isUserHome
+    ? (userProfile.possessionIndex - 50) * 0.45
     : isUserAway
-      ? 100 - userProfile.possessionIndex
-      : Math.min(65, Math.max(35, Math.round(50 + (homeStrength - awayStrength) * 1.4)));
+      ? -(userProfile.possessionIndex - 50) * 0.45
+      : 0;
+  const venuePossBias = isNeutralVenue ? 0 : 1.5;
+  const possessionHome = Math.min(
+    72,
+    Math.max(28, Math.round(50 + midDiffPoss + userPossBias + venuePossBias))
+  );
 
-  const shotsHome = homeGoals * 3 + Math.floor(Math.random() * 7) + 4;
-  const shotsAway = awayGoals * 3 + Math.floor(Math.random() * 7) + 3;
-  const shotsOnTargetHome = Math.min(
-    shotsHome,
-    homeGoals + Math.max(1, Math.floor(shotsHome * 0.36))
-  );
-  const shotsOnTargetAway = Math.min(
-    shotsAway,
-    awayGoals + Math.max(1, Math.floor(shotsAway * 0.34))
-  );
-  const cornersHome = Math.max(1, Math.round(shotsHome * 0.42 + Math.random() * 2));
-  const cornersAway = Math.max(1, Math.round(shotsAway * 0.42 + Math.random() * 2));
-  const foulsHome = 6 + yellowsHome * 2 + Math.floor(Math.random() * 5);
-  const foulsAway = 6 + yellowsAway * 2 + Math.floor(Math.random() * 5);
+  const userTempoMod = (userTactics.tempo - 3) * 0.9;
+  const homeShotStats = computeShotsAndXg({
+    attack: homeProfile.attack,
+    oppDefense: awayProfile.defense,
+    possession: possessionHome,
+    goals: homeGoals,
+    tempoMod: isUserHome ? userTempoMod : 0,
+  });
+  const awayShotStats = computeShotsAndXg({
+    attack: awayProfile.attack,
+    oppDefense: homeProfile.defense,
+    possession: 100 - possessionHome,
+    goals: awayGoals,
+    tempoMod: isUserAway ? userTempoMod : 0,
+  });
+
+  const shotsHome = homeShotStats.shots;
+  const shotsAway = awayShotStats.shots;
+  const shotsOnTargetHome = homeShotStats.shotsOnTarget;
+  const shotsOnTargetAway = awayShotStats.shotsOnTarget;
+  const cornersHome = homeShotStats.corners;
+  const cornersAway = awayShotStats.corners;
+  const foulsHome = 5 + yellowsHome * 2 + Math.floor(Math.random() * 4);
+  const foulsAway = 5 + yellowsAway * 2 + Math.floor(Math.random() * 4);
 
   const { playerRatings, motm: computedMotm } = computeMatchPlayerRatings({
     homeId,
@@ -1235,13 +1989,21 @@ export function simulateMatchFull(
     foulsAway,
     yellowsHome,
     yellowsAway,
-    xgHome: Number((homeGoals * 0.72 + shotsHome * 0.08).toFixed(2)),
-    xgAway: Number((awayGoals * 0.72 + shotsAway * 0.08).toFixed(2)),
-    homeFormation: isUserHome ? userTactics.formation : homeMgr.preferredFormation,
-    awayFormation: isUserAway ? userTactics.formation : awayMgr.preferredFormation,
-    homeManagerName: isUserHome ? 'Bạn (HLV)' : homeMgr.name,
-    awayManagerName: isUserAway ? 'Bạn (HLV)' : awayMgr.name,
-    venue: homeClub.stadium,
+    xgHome: homeShotStats.xg,
+    xgAway: awayShotStats.xg,
+    homeFormation: isUserHome ? userTactics.formation : (homeMgr?.preferredFormation ?? '4-3-3'),
+    awayFormation: isUserAway ? userTactics.formation : (awayMgr?.preferredFormation ?? '4-3-3'),
+    homeManagerName: isUserHome
+      ? homeMgr
+        ? `${homeMgr.name} (HLV)`
+        : 'HLV Tạm quyền'
+      : (homeMgr?.name ?? 'HLV CLB'),
+    awayManagerName: isUserAway
+      ? awayMgr
+        ? `${awayMgr.name} (HLV)`
+        : 'HLV Tạm quyền'
+      : (awayMgr?.name ?? 'HLV CLB'),
+    venue: venueLabel,
     playerRatings,
     events,
     playedAt: new Date().toISOString(),
@@ -1256,9 +2018,394 @@ export function simulateMatchFull(
   return summary;
 }
 
+export function resimulateMatchFromMinute(params: {
+  currentMatch: MatchResultSummary;
+  fromMinute: number;
+  userClubId: string;
+  nextUserTactics: TacticSettings;
+  userSquad: Player[];
+  allPlayers: Player[];
+  userManager?: RealManager | null;
+  isKnockout?: boolean;
+  isNeutralVenue?: boolean;
+}): MatchResultSummary {
+  const {
+    currentMatch,
+    fromMinute,
+    userClubId,
+    nextUserTactics,
+    userSquad,
+    allPlayers,
+    userManager,
+    isKnockout = false,
+    isNeutralVenue: explicitNeutral,
+  } = params;
+
+  const homeId = currentMatch.homeClubId;
+  const awayId = currentMatch.awayClubId;
+  const isUserHome = homeId === userClubId;
+  const isUserAway = awayId === userClubId;
+
+  const homeClub = CLUBS.find((c) => c.id === homeId) ?? CLUBS[0];
+  const awayClub = CLUBS.find((c) => c.id === awayId) ?? CLUBS[1];
+
+  const userSquadIds = new Set(userSquad.map((p) => p.id));
+  const homeRoster = isUserHome
+    ? userSquad
+    : allPlayers.filter((p) => p.clubId === homeId && !userSquadIds.has(p.id));
+  const awayRoster = isUserAway
+    ? userSquad
+    : allPlayers.filter((p) => p.clubId === awayId && !userSquadIds.has(p.id));
+
+  const defaultHomeMgr = REAL_MANAGERS.find((m) => m.id === homeClub.managerId) ?? REAL_MANAGERS[0];
+  const defaultAwayMgr = REAL_MANAGERS.find((m) => m.id === awayClub.managerId) ?? REAL_MANAGERS[1];
+  const userMgrResolved =
+    userManager !== undefined
+      ? userManager
+      : isUserHome
+        ? defaultHomeMgr
+        : isUserAway
+          ? defaultAwayMgr
+          : null;
+  const homeMgr = isUserHome ? userMgrResolved : defaultHomeMgr;
+  const awayMgr = isUserAway ? userMgrResolved : defaultAwayMgr;
+
+  const homeStarters = resolveMatchStarters(
+    homeId,
+    isUserHome ? nextUserTactics.formation : (homeMgr?.preferredFormation ?? '4-3-3'),
+    homeRoster,
+    isUserHome ? nextUserTactics : undefined
+  );
+  const awayStarters = resolveMatchStarters(
+    awayId,
+    isUserAway ? nextUserTactics.formation : (awayMgr?.preferredFormation ?? '4-3-3'),
+    awayRoster,
+    isUserAway ? nextUserTactics : undefined
+  );
+  const homePlayingXI = homeStarters.length > 0 ? homeStarters.map((s) => s.player) : homeRoster;
+  const awayPlayingXI = awayStarters.length > 0 ? awayStarters.map((s) => s.player) : awayRoster;
+
+  const userProfile = calculateTacticalProfile(nextUserTactics, userSquad, userMgrResolved);
+  const userCondBonus = isUserHome
+    ? computeUserConditionBonus(homeStarters, userProfile.cohesion)
+    : isUserAway
+      ? computeUserConditionBonus(awayStarters, userProfile.cohesion)
+      : 0;
+
+  const homeProfile = isUserHome
+    ? {
+        attack: userProfile.attack + userCondBonus,
+        midfield: userProfile.midfield + userCondBonus * 0.85,
+        defense: userProfile.defense + userCondBonus,
+        overall: userProfile.overall + userCondBonus,
+      }
+    : computeAITeamProfile(homeId, homeRoster, homeClub.reputation);
+
+  const awayProfile = isUserAway
+    ? {
+        attack: userProfile.attack + userCondBonus,
+        midfield: userProfile.midfield + userCondBonus * 0.85,
+        defense: userProfile.defense + userCondBonus,
+        overall: userProfile.overall + userCondBonus,
+      }
+    : computeAITeamProfile(awayId, awayRoster, awayClub.reputation);
+
+  const isNeutralVenue = Boolean(
+    explicitNeutral ||
+      currentMatch.competition === 'super-cup' ||
+      currentMatch.venue === 'Sân vận động Trung lập' ||
+      (currentMatch.roundLabel && /chung kết/i.test(currentMatch.roundLabel))
+  );
+
+  const userActive = isUserHome || isUserAway;
+  const tempoPace = userActive ? 1 + (nextUserTactics.tempo - 3) * 0.05 : 1;
+  const mentalityPace =
+    userActive && nextUserTactics.mentality === 'Very Attacking'
+      ? 1.08
+      : userActive && nextUserTactics.mentality === 'Cautious'
+        ? 0.9
+        : 1.0;
+  const matchPace = tempoPace * mentalityPace;
+
+  const homeEdge =
+    (homeProfile.attack - awayProfile.defense) * 0.55 +
+    (homeProfile.midfield - awayProfile.midfield) * 0.25 +
+    (homeProfile.overall - awayProfile.overall) * 0.2;
+  const awayEdge =
+    (awayProfile.attack - homeProfile.defense) * 0.55 +
+    (awayProfile.midfield - homeProfile.midfield) * 0.25 +
+    (awayProfile.overall - homeProfile.overall) * 0.2;
+
+  const baseHomeXg = isNeutralVenue ? 1.28 : 1.38;
+  const baseAwayXg = isNeutralVenue ? 1.28 : 1.18;
+  const clampExponent = (val: number) => Math.max(-1.35, Math.min(1.35, val));
+  const expectedHome = Math.max(
+    0.25,
+    baseHomeXg * matchPace * Math.exp(clampExponent(homeEdge * 0.068))
+  );
+  const expectedAway = Math.max(
+    0.22,
+    baseAwayXg * matchPace * Math.exp(clampExponent(awayEdge * 0.068))
+  );
+
+  const keptEvents = currentMatch.events.filter(
+    (e) => e.minute <= fromMinute && e.type !== 'fulltime' && e.type !== 'penalty'
+  );
+  const baseHomeGoals = keptEvents.filter((e) => e.type === 'goal' && e.teamId === homeId).length;
+  const baseAwayGoals = keptEvents.filter((e) => e.type === 'goal' && e.teamId === awayId).length;
+  const baseYellowsHome = keptEvents.filter((e) => e.type === 'yellow' && e.teamId === homeId).length;
+  const baseYellowsAway = keptEvents.filter((e) => e.type === 'yellow' && e.teamId === awayId).length;
+
+  const remFrac = Math.max(0.04, (90 - fromMinute) / 90);
+  const minFloor = Math.min(89, Math.max(2, fromMinute + 1));
+  const span = Math.max(1, 90 - minFloor);
+
+  const remHomeGoals = samplePoissonGoals(
+    expectedHome * remFrac,
+    Math.max(0, 9 - baseHomeGoals)
+  );
+  const remAwayGoals = samplePoissonGoals(
+    expectedAway * remFrac,
+    Math.max(0, 9 - baseAwayGoals)
+  );
+
+  const newEvents: MatchEvent[] = [...keptEvents];
+  const tacticalLabelMap: Record<TacticSettings['mentality'], string> = {
+    Cautious: 'Thận trọng',
+    Balanced: 'Cân bằng',
+    Positive: 'Tích cực',
+    Attacking: 'Tấn công',
+    'Very Attacking': 'Tổng lực',
+  };
+  newEvents.push({
+    minute: fromMinute,
+    type: 'sub',
+    teamId: userClubId,
+    playerName: userMgrResolved?.name ?? 'HLV',
+    description: `Chỉ đạo từ đường biên: Chuyển sang thế trận ${tacticalLabelMap[nextUserTactics.mentality]}!`,
+  });
+
+  for (let i = 0; i < remHomeGoals; i++) {
+    const min = minFloor + Math.floor(Math.random() * span);
+    const scorer = pickScorerFromXI(homePlayingXI);
+    const assist = pickAssisterFromXI(homePlayingXI, scorer?.id);
+    const ev: MatchEvent = {
+      minute: min,
+      type: 'goal',
+      teamId: homeId,
+      playerName: scorer?.name ?? homeClub.shortName,
+      description: `VÀO! ${scorer?.name ?? 'Tiền đạo'} dứt điểm lạnh lùng cho ${homeClub.shortName}${assist ? ` (kiến tạo: ${assist.shortName})` : ''}.`,
+    };
+    if (scorer?.id) ev.playerId = scorer.id;
+    if (assist?.id) ev.assistId = assist.id;
+    if (assist?.shortName) ev.assistName = assist.shortName;
+    newEvents.push(ev);
+  }
+
+  for (let i = 0; i < remAwayGoals; i++) {
+    const min = minFloor + Math.floor(Math.random() * span);
+    const scorer = pickScorerFromXI(awayPlayingXI);
+    const assist = pickAssisterFromXI(awayPlayingXI, scorer?.id);
+    const ev: MatchEvent = {
+      minute: min,
+      type: 'goal',
+      teamId: awayId,
+      playerName: scorer?.name ?? awayClub.shortName,
+      description: `BÀN THẮNG! ${scorer?.name ?? 'Tiền đạo'} lập công cho ${awayClub.shortName}${assist ? ` (kiến tạo: ${assist.shortName})` : ''}.`,
+    };
+    if (scorer?.id) ev.playerId = scorer.id;
+    if (assist?.id) ev.assistId = assist.id;
+    if (assist?.shortName) ev.assistName = assist.shortName;
+    newEvents.push(ev);
+  }
+
+  const remYellowsHome = Math.min(
+    Math.max(0, 3 - baseYellowsHome),
+    Math.random() < remFrac * (isUserHome && nextUserTactics.pressingIntensity >= 4 ? 1.5 : 0.9)
+      ? 1
+      : 0
+  );
+  const remYellowsAway = Math.min(
+    Math.max(0, 3 - baseYellowsAway),
+    Math.random() < remFrac * (isUserAway && nextUserTactics.pressingIntensity >= 4 ? 1.5 : 0.9)
+      ? 1
+      : 0
+  );
+
+  for (let i = 0; i < remYellowsHome; i++) {
+    const min = minFloor + Math.floor(Math.random() * span);
+    const pl = pickYellowCardPlayer(homePlayingXI);
+    const ev: MatchEvent = {
+      minute: min,
+      type: 'yellow',
+      teamId: homeId,
+      playerName: pl?.shortName ?? homeClub.shortName,
+      description: `Thẻ vàng cho ${pl?.shortName ?? 'cầu thủ'} (${homeClub.shortName}) sau pha phạm lỗi chiến thuật.`,
+    };
+    if (pl?.id) ev.playerId = pl.id;
+    newEvents.push(ev);
+  }
+  for (let i = 0; i < remYellowsAway; i++) {
+    const min = minFloor + Math.floor(Math.random() * span);
+    const pl = pickYellowCardPlayer(awayPlayingXI);
+    const ev: MatchEvent = {
+      minute: min,
+      type: 'yellow',
+      teamId: awayId,
+      playerName: pl?.shortName ?? awayClub.shortName,
+      description: `Thẻ vàng cho ${pl?.shortName ?? 'cầu thủ'} (${awayClub.shortName}) sau pha phạm lỗi chiến thuật.`,
+    };
+    if (pl?.id) ev.playerId = pl.id;
+    newEvents.push(ev);
+  }
+
+  const remChances = Math.max(1, Math.round(3 * remFrac));
+  for (let k = 0; k < remChances; k++) {
+    const min = minFloor + Math.floor(Math.random() * span);
+    const side = Math.random() > 0.48 ? homeId : awayId;
+    const roster = side === homeId ? homePlayingXI : awayPlayingXI;
+    const club = side === homeId ? homeClub : awayClub;
+    const pl = pickChancePlayer(roster);
+    const evType = k % 2 === 0 ? 'chance' : 'save';
+    const ev: MatchEvent = {
+      minute: min,
+      type: evType,
+      teamId: side,
+      playerName: pl?.shortName ?? club.shortName,
+      description:
+        evType === 'save'
+          ? `Thủ môn bay người cứu thua xuất thần trước cú sút của ${pl?.shortName ?? club.shortName}.`
+          : `Cơ hội nguy hiểm! ${pl?.shortName ?? club.shortName} dứt điểm chệch cột dọc trong gang tấc.`,
+    };
+    if (pl?.id) ev.playerId = pl.id;
+    newEvents.push(ev);
+  }
+
+  const homeGoals = baseHomeGoals + remHomeGoals;
+  const awayGoals = baseAwayGoals + remAwayGoals;
+  const yellowsHome = baseYellowsHome + remYellowsHome;
+  const yellowsAway = baseYellowsAway + remYellowsAway;
+
+  let penaltiesHome: number | undefined;
+  let penaltiesAway: number | undefined;
+  let winnerId: string | undefined;
+
+  if (homeGoals > awayGoals) {
+    winnerId = homeId;
+  } else if (awayGoals > homeGoals) {
+    winnerId = awayId;
+  } else if (isKnockout) {
+    const homeEdgePen = homeProfile.overall >= awayProfile.overall ? 0.53 : 0.47;
+    const homeWinsPen = Math.random() < homeEdgePen;
+    const baseScore = Math.floor(Math.random() * 2) + 4;
+    if (homeWinsPen) {
+      penaltiesHome = baseScore;
+      penaltiesAway = baseScore - (Math.random() > 0.4 ? 1 : 2);
+      winnerId = homeId;
+    } else {
+      penaltiesAway = baseScore;
+      penaltiesHome = baseScore - (Math.random() > 0.4 ? 1 : 2);
+      winnerId = awayId;
+    }
+    const winnerClub = winnerId === homeId ? homeClub : awayClub;
+    newEvents.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: winnerId,
+      playerName: winnerClub.shortName,
+      description: `LUÂN LƯU 11M! ${winnerClub.name} thắng ${penaltiesHome} - ${penaltiesAway} trên chấm phạt đền!`,
+    });
+  }
+
+  newEvents.push({
+    minute: 90,
+    type: 'fulltime',
+    teamId: homeId,
+    playerName: 'FT',
+    description: `Hết giờ! ${homeClub.name} ${homeGoals} - ${awayGoals} ${awayClub.name}.`,
+  });
+  newEvents.sort((a, b) => a.minute - b.minute);
+
+  const midDiffPoss = (homeProfile.midfield - awayProfile.midfield) * 1.15;
+  const userPossBias = isUserHome
+    ? (userProfile.possessionIndex - 50) * 0.45
+    : isUserAway
+      ? -(userProfile.possessionIndex - 50) * 0.45
+      : 0;
+  const newPossTarget = Math.min(
+    72,
+    Math.max(28, Math.round(50 + midDiffPoss + userPossBias + (isNeutralVenue ? 0 : 1.5)))
+  );
+  const possessionHome = Math.round(
+    currentMatch.possessionHome * (1 - remFrac) + newPossTarget * remFrac
+  );
+
+  const userTempoMod = (nextUserTactics.tempo - 3) * 0.9;
+  const homeShotStats = computeShotsAndXg({
+    attack: homeProfile.attack,
+    oppDefense: awayProfile.defense,
+    possession: possessionHome,
+    goals: homeGoals,
+    tempoMod: isUserHome ? userTempoMod : 0,
+  });
+  const awayShotStats = computeShotsAndXg({
+    attack: awayProfile.attack,
+    oppDefense: homeProfile.defense,
+    possession: 100 - possessionHome,
+    goals: awayGoals,
+    tempoMod: isUserAway ? userTempoMod : 0,
+  });
+
+  const { playerRatings, motm } = computeMatchPlayerRatings({
+    homeId,
+    awayId,
+    homeGoals,
+    awayGoals,
+    winnerId,
+    events: newEvents,
+    homeStarters,
+    awayStarters,
+    deterministic: false,
+  });
+
+  const updated: MatchResultSummary = {
+    ...currentMatch,
+    homeGoals,
+    awayGoals,
+    possessionHome,
+    shotsHome: homeShotStats.shots,
+    shotsAway: awayShotStats.shots,
+    shotsOnTargetHome: homeShotStats.shotsOnTarget,
+    shotsOnTargetAway: awayShotStats.shotsOnTarget,
+    cornersHome: homeShotStats.corners,
+    cornersAway: awayShotStats.corners,
+    foulsHome: 5 + yellowsHome * 2 + Math.floor(Math.random() * 4),
+    foulsAway: 5 + yellowsAway * 2 + Math.floor(Math.random() * 4),
+    yellowsHome,
+    yellowsAway,
+    xgHome: homeShotStats.xg,
+    xgAway: awayShotStats.xg,
+    homeFormation: isUserHome ? nextUserTactics.formation : currentMatch.homeFormation,
+    awayFormation: isUserAway ? nextUserTactics.formation : currentMatch.awayFormation,
+    playerRatings,
+    events: newEvents,
+    playedAt: new Date().toISOString(),
+  };
+
+  if (motm) updated.manOfTheMatch = motm;
+  if (penaltiesHome !== undefined) updated.penaltiesHome = penaltiesHome;
+  else delete updated.penaltiesHome;
+  if (penaltiesAway !== undefined) updated.penaltiesAway = penaltiesAway;
+  else delete updated.penaltiesAway;
+  if (winnerId !== undefined) updated.winnerId = winnerId;
+  else delete updated.winnerId;
+
+  return updated;
+}
+
 export function toCompactMatchReport(
   summary: MatchResultSummary,
-  keepAllEvents = false
+  keepAllEvents = true
 ): CompactMatchReport {
   const filteredEvents = keepAllEvents
     ? summary.events
@@ -1286,7 +2433,7 @@ export function toCompactMatchReport(
   if (summary.awayManagerName) report.awayManagerName = summary.awayManagerName;
   if (summary.venue) report.venue = summary.venue;
   if (summary.manOfTheMatch) report.manOfTheMatch = summary.manOfTheMatch;
-  if (keepAllEvents && summary.playerRatings && summary.playerRatings.length > 0) {
+  if (summary.playerRatings && summary.playerRatings.length > 0) {
     report.playerRatings = summary.playerRatings;
   }
   return report;
@@ -1720,16 +2867,26 @@ export function createNextSeasonCareer(career: CareerSave): {
   summary: SeasonRecord;
   prizeM: number;
   newTrophiesCount: number;
+  newlyAwarded: CompetitionAwardWinner[];
 } {
-  const hydrated = ensureCareerCompetitions(career);
+  let hydrated = ensureCareerCompetitions(career);
+  const newlyAwarded: CompetitionAwardWinner[] = [];
+  let awardTrophiesAdded = 0;
+
+  for (const comp of ['league', 'champions-cup', 'national-cup', 'super-cup'] as const) {
+    const settled = finalizeFinishedCompetitionAwards(hydrated, comp);
+    hydrated = settled.nextCareer;
+    newlyAwarded.push(...settled.newlyAwarded);
+    awardTrophiesAdded += settled.newTrophiesCount;
+  }
+
   const sortedPrev = sortStandings(hydrated.standings);
   const leagueRank = Math.max(1, sortedPrev.findIndex((r) => r.clubId === hydrated.clubId) + 1);
   const myRow = sortedPrev.find((r) => r.clubId === hydrated.clubId);
   const championClubId = sortedPrev[0]?.clubId ?? hydrated.clubId;
-  const leagueScorers = [...(hydrated.competitions?.leaderboards?.league ?? [])].sort(
-    (a, b) => b.goals - a.goals
-  );
-  const topLeagueScorer = leagueScorers[0];
+  const leagueAwards = resolveCompetitionAwards(hydrated, 'league');
+  const topLeagueScorer = leagueAwards.topScorer;
+  const leagueMvp = leagueAwards.mvp;
   const topSquadScorer = [...hydrated.squad].sort((a, b) => b.goals - a.goals)[0];
 
   const prizeM =
@@ -1737,7 +2894,7 @@ export function createNextSeasonCareer(career: CareerSave): {
 
   const existingCabinet = [...(hydrated.trophyCabinet ?? [])];
   const trophiesWonTitles: string[] = [];
-  let newTrophiesCount = 0;
+  let newTrophiesCount = awardTrophiesAdded;
 
   if (championClubId === hydrated.clubId) {
     const title = `Vô địch Super League ${hydrated.season}`;
@@ -1751,6 +2908,7 @@ export function createNextSeasonCareer(career: CareerSave): {
         season: hydrated.season,
         clubId: hydrated.clubId,
         awardedAt: new Date().toISOString(),
+        awardType: 'team',
       });
       newTrophiesCount++;
     }
@@ -1768,6 +2926,11 @@ export function createNextSeasonCareer(career: CareerSave): {
   if (scWinner === hydrated.clubId) {
     trophiesWonTitles.push(`Siêu Cúp ${hydrated.season}`);
   }
+  for (const aw of newlyAwarded) {
+    if (aw.isUserPlayer) {
+      trophiesWonTitles.push(`${aw.awardTitle} ${aw.competitionTitle}: ${aw.playerName}`);
+    }
+  }
 
   const summary: SeasonRecord = {
     season: hydrated.season,
@@ -1779,13 +2942,21 @@ export function createNextSeasonCareer(career: CareerSave): {
     topScorerGoals: topLeagueScorer?.goals ?? topSquadScorer?.goals ?? 0,
     trophiesWon: trophiesWonTitles,
   };
+  if (topLeagueScorer?.clubId) summary.topScorerClubId = topLeagueScorer.clubId;
+  if (leagueMvp) {
+    summary.mvpPlayerName = leagueMvp.playerName;
+    summary.mvpPlayerClubId = leagueMvp.clubId;
+    summary.mvpAvgRating = leagueMvp.avgRating;
+  }
   if (ccWinner) summary.championsCupWinnerId = ccWinner;
   if (ncWinner) summary.nationalCupWinnerId = ncWinner;
 
   const nextSeason = getNextSeasonString(hydrated.season);
   const seasonStartYear = Number(nextSeason.slice(0, 4)) || 2027;
 
-  // Player progression & aging (+1 year, training boost for young talents, slight dip for 34+; Icons never age-decline)
+  // Player progression & aging (+1 year, training & manager manManagement boost; Icons never age-decline)
+  const activeMgr = getActiveCareerManager(hydrated);
+  const mgrDevBonus = activeMgr && activeMgr.manManagement >= 93 ? 1 : 0;
   const intensityBonus = hydrated.trainingIntensity === 'intense' ? 1 : 0;
   const nextSquad = hydrated.squad.map((p) => {
     const isImmortalLegend =
@@ -1795,7 +2966,7 @@ export function createNextSeasonCareer(career: CareerSave): {
         ...p,
         contractUntil: Math.max(2099, p.contractUntil),
         fitness: 98,
-        morale: Math.min(100, Math.max(85, p.morale + 5)),
+        morale: Math.min(100, Math.max(85, p.morale + 5 + mgrDevBonus * 2)),
         goals: 0,
         assists: 0,
         appearances: 0,
@@ -1805,8 +2976,8 @@ export function createNextSeasonCareer(career: CareerSave): {
     const nextAge = p.age + 1;
     let delta = 0;
     if (nextAge <= 24 && p.rating < p.potential) {
-      delta = Math.min(p.potential - p.rating, 1 + intensityBonus);
-    } else if (nextAge <= 29 && p.rating < p.potential && Math.random() < 0.55) {
+      delta = Math.min(p.potential - p.rating, 1 + intensityBonus + mgrDevBonus);
+    } else if (nextAge <= 29 && p.rating < p.potential && Math.random() < 0.55 + mgrDevBonus * 0.15) {
       delta = 1;
     } else if (nextAge >= 34 && p.rating > 70) {
       delta = -1;
@@ -1825,7 +2996,7 @@ export function createNextSeasonCareer(career: CareerSave): {
       contractUntil:
         p.contractUntil <= seasonStartYear ? seasonStartYear + 2 : p.contractUntil,
       fitness: 98,
-      morale: Math.min(100, Math.max(75, p.morale + 5)),
+      morale: Math.min(100, Math.max(75, p.morale + 5 + mgrDevBonus * 2)),
       goals: 0,
       assists: 0,
       appearances: 0,
@@ -1875,12 +3046,12 @@ export function createNextSeasonCareer(career: CareerSave): {
     fixtures,
     recentResults: [],
     competitions,
-    trophyCabinet: existingCabinet.slice(0, 60),
-    seasonHistory: [summary, ...(hydrated.seasonHistory ?? [])].slice(0, 30),
+    trophyCabinet: existingCabinet.slice(0, 120),
+    seasonHistory: [summary, ...(hydrated.seasonHistory ?? [])].slice(0, 50),
     inventory: nextInventory,
   };
 
-  return { nextCareer, summary, prizeM, newTrophiesCount };
+  return { nextCareer, summary, prizeM, newTrophiesCount, newlyAwarded };
 }
 
 export function getPlayerRecoveryCostM(fitness: number): number {

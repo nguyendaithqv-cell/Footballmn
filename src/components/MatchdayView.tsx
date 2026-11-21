@@ -11,11 +11,16 @@ import {
   Trophy,
   Users,
 } from 'lucide-react';
-import { CLUBS, INITIAL_PLAYERS, REAL_MANAGERS } from '../data/footballDatabase';
+import { CLUBS, FORMATION_TEMPLATES, INITIAL_PLAYERS, REAL_MANAGERS } from '../data/footballDatabase';
 import {
+  buildEffectiveDatabasePlayers,
   buildMatchSummaryFromStored,
   ensureMatchResultRatings,
+  getActiveCareerManager,
   getNextSeasonString,
+  isCompetitionFinished,
+  resimulateMatchFromMinute,
+  resolveCompetitionAwards,
   simulateMatchFull,
   sortStandings,
 } from '../lib/careerEngine';
@@ -24,6 +29,8 @@ import {
   CompetitionId,
   CupMatch,
   Fixture,
+  FormationId,
+  MarketOverride,
   MatchResultSummary,
   Mentality,
 } from '../types/game';
@@ -33,6 +40,7 @@ import { MatchDetailModal, MatchStatsBreakdown } from './MatchDetailModal';
 
 interface MatchdayViewProps {
   career: CareerSave;
+  marketOverrides?: Record<string, MarketOverride>;
   onCompleteMatchweek: (userMatch: MatchResultSummary, allMatches: MatchResultSummary[]) => Promise<void>;
   onCompleteCupMatch: (
     competition: 'champions-cup' | 'national-cup' | 'super-cup',
@@ -48,10 +56,31 @@ type CompetitionViewTab = 'league' | 'champions-cup' | 'national-cup' | 'special
 
 type ActiveSimContext =
   | { kind: 'league' }
-  | { kind: 'champions-cup'; cupMatchId: string; roundMatches: CupMatch[]; isKnockout: boolean; roundLabel: string }
-  | { kind: 'national-cup'; cupMatchId: string; roundMatches: CupMatch[]; roundLabel: string }
-  | { kind: 'super-cup'; cupMatchId: string }
+  | {
+      kind: 'champions-cup';
+      cupMatchId: string;
+      roundMatches: CupMatch[];
+      isKnockout: boolean;
+      isNeutralVenue?: boolean;
+      roundLabel: string;
+    }
+  | {
+      kind: 'national-cup';
+      cupMatchId: string;
+      roundMatches: CupMatch[];
+      isNeutralVenue?: boolean;
+      roundLabel: string;
+    }
+  | { kind: 'super-cup'; cupMatchId: string; isNeutralVenue?: boolean }
   | { kind: 'friendly' };
+
+const LIVE_MENTALITY_OPTIONS: { id: Mentality; label: string }[] = [
+  { id: 'Cautious', label: 'Thận trọng' },
+  { id: 'Balanced', label: 'Cân bằng' },
+  { id: 'Positive', label: 'Tích cực' },
+  { id: 'Attacking', label: 'Tấn công' },
+  { id: 'Very Attacking', label: 'Tổng lực' },
+];
 
 const STAGE_LABEL: Record<string, string> = {
   group: 'Vòng bảng',
@@ -64,6 +93,7 @@ const STAGE_LABEL: Record<string, string> = {
 
 export const MatchdayView: React.FC<MatchdayViewProps> = ({
   career,
+  marketOverrides,
   onCompleteMatchweek,
   onCompleteCupMatch,
   onCompleteFriendly,
@@ -71,14 +101,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   onQuickMentality,
 }) => {
   const [compTab, setCompTab] = useState<CompetitionViewTab>('league');
-  const [subTab, setSubTab] = useState<'match' | 'standings' | 'fixtures' | 'scorers' | 'assists'>(
+  const [subTab, setSubTab] = useState<'match' | 'standings' | 'fixtures' | 'scorers' | 'assists' | 'mvp'>(
     'match'
   );
-  const [cupSubTab, setCupSubTab] = useState<'overview' | 'history' | 'scorers' | 'assists'>(
+  const [cupSubTab, setCupSubTab] = useState<'overview' | 'history' | 'scorers' | 'assists' | 'mvp'>(
     'overview'
   );
-  const [ncSubTab, setNcSubTab] = useState<'bracket' | 'scorers' | 'assists'>('bracket');
-  const [specialSubTab, setSpecialSubTab] = useState<'play' | 'history' | 'scorers' | 'assists'>(
+  const [ncSubTab, setNcSubTab] = useState<'bracket' | 'scorers' | 'assists' | 'mvp'>('bracket');
+  const [specialSubTab, setSpecialSubTab] = useState<'play' | 'history' | 'scorers' | 'assists' | 'mvp'>(
     'play'
   );
   const [specialStatsTarget, setSpecialStatsTarget] = useState<'friendly' | 'super-cup'>(
@@ -131,6 +161,19 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   const nextSeasonLabel = getNextSeasonString(career.season);
   const endSeasonPrizeM =
     myLeagueRank === 1 ? 55 : myLeagueRank <= 4 ? 35 : myLeagueRank <= 10 ? 25 : 18;
+
+  const activeUserManager = useMemo(() => getActiveCareerManager(career), [career]);
+  const effectiveAllPlayers = useMemo(
+    () => buildEffectiveDatabasePlayers(career.squad, INITIAL_PLAYERS, marketOverrides),
+    [career.squad, marketOverrides]
+  );
+  const leagueAwards = useMemo(() => resolveCompetitionAwards(career, 'league'), [career]);
+  const ccAwards = useMemo(() => resolveCompetitionAwards(career, 'champions-cup'), [career]);
+  const ncAwards = useMemo(() => resolveCompetitionAwards(career, 'national-cup'), [career]);
+  const specialAwards = useMemo(
+    () => resolveCompetitionAwards(career, specialStatsTarget),
+    [career, specialStatsTarget]
+  );
 
   const cc = career.competitions?.championsCup;
   const nc = career.competitions?.nationalCup;
@@ -210,7 +253,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                 career.clubId,
                 career.tactics,
                 career.squad,
-                INITIAL_PLAYERS
+                effectiveAllPlayers,
+                { userManager: activeUserManager }
               )
             );
           await onCompleteMatchweek(userRes, [userRes, ...otherResults]);
@@ -227,12 +271,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                     career.clubId,
                     career.tactics,
                     career.squad,
-                    INITIAL_PLAYERS,
+                    effectiveAllPlayers,
                     {
                       isKnockout: context.isKnockout,
+                      isNeutralVenue: context.isNeutralVenue,
                       competition: 'champions-cup',
                       roundLabel: context.roundLabel,
                       matchId: m.id,
+                      userManager: activeUserManager,
                     }
                   ),
           }));
@@ -250,12 +296,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                     career.clubId,
                     career.tactics,
                     career.squad,
-                    INITIAL_PLAYERS,
+                    effectiveAllPlayers,
                     {
                       isKnockout: true,
+                      isNeutralVenue: context.isNeutralVenue,
                       competition: 'national-cup',
                       roundLabel: context.roundLabel,
                       matchId: m.id,
+                      userManager: activeUserManager,
                     }
                   ),
           }));
@@ -278,6 +326,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       career.clubId,
       career.tactics,
       career.squad,
+      effectiveAllPlayers,
+      activeUserManager,
       userMatchFixture?.id,
       onCompleteMatchweek,
       onCompleteCupMatch,
@@ -289,7 +339,13 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     homeId: string,
     awayId: string,
     context: ActiveSimContext,
-    options: { isKnockout?: boolean; competition: MatchResultSummary['competition']; roundLabel?: string; matchId?: string },
+    options: {
+      isKnockout?: boolean;
+      isNeutralVenue?: boolean;
+      competition: MatchResultSummary['competition'];
+      roundLabel?: string;
+      matchId?: string;
+    },
     instant: boolean
   ) => {
     finalizedMatchIdRef.current = null;
@@ -300,8 +356,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       career.clubId,
       career.tactics,
       career.squad,
-      INITIAL_PLAYERS,
-      options
+      effectiveAllPlayers,
+      { ...options, userManager: activeUserManager }
     );
     setSimContext(context);
     if (instant) {
@@ -325,11 +381,38 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     }
   };
 
+  const handleLiveMentalityChange = (nextMentality: Mentality) => {
+    onQuickMentality(nextMentality);
+    if (!isLive || !liveResult || minute <= 1 || minute >= 88) return;
+    const nextTactics = { ...career.tactics, mentality: nextMentality };
+    const isKnockoutCtx =
+      simContext?.kind === 'national-cup' ||
+      simContext?.kind === 'super-cup' ||
+      (simContext?.kind === 'champions-cup' && simContext.isKnockout);
+    const isNeutralCtx =
+      simContext?.kind === 'super-cup' ||
+      (simContext?.kind === 'champions-cup' && Boolean(simContext.isNeutralVenue)) ||
+      (simContext?.kind === 'national-cup' && Boolean(simContext.isNeutralVenue));
+    const adapted = resimulateMatchFromMinute({
+      currentMatch: liveResult,
+      fromMinute: minute,
+      userClubId: career.clubId,
+      nextUserTactics: nextTactics,
+      userSquad: career.squad,
+      allPlayers: effectiveAllPlayers,
+      userManager: activeUserManager,
+      isKnockout: isKnockoutCtx,
+      isNeutralVenue: isNeutralCtx,
+    });
+    setLiveResult(adapted);
+  };
+
   const simulateRemainingCupRound = async (
     competition: 'champions-cup' | 'national-cup' | 'super-cup',
     matches: CupMatch[],
     isKnockout: boolean,
-    roundLabel: string
+    roundLabel: string,
+    isNeutralVenue = false
   ) => {
     if (matches.length === 0) return;
     setSavingMatch(true);
@@ -343,8 +426,15 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           career.clubId,
           career.tactics,
           career.squad,
-          INITIAL_PLAYERS,
-          { isKnockout, competition, roundLabel, matchId: m.id }
+          effectiveAllPlayers,
+          {
+            isKnockout,
+            isNeutralVenue,
+            competition,
+            roundLabel,
+            matchId: m.id,
+            userManager: activeUserManager,
+          }
         ),
       }));
       await onCompleteCupMatch(competition, null, entries);
@@ -353,8 +443,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     }
   };
 
+  const hasLiveResult = Boolean(liveResult);
   useEffect(() => {
-    if (!isLive || !liveResult) return;
+    if (!isLive || !hasLiveResult) return;
     if (timerRef.current) window.clearInterval(timerRef.current);
 
     const intervalMs = speed === 4 ? 65 : speed === 2 ? 130 : 260;
@@ -365,20 +456,28 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
     };
-  }, [isLive, speed, liveResult]);
+  }, [isLive, speed, hasLiveResult]);
 
   useEffect(() => {
     if (!isLive || !liveResult) return;
     const eventNow = liveResult.events.find((e) => e.minute === minute);
     if (eventNow?.type === 'goal') {
       setBallPos({
-        x: 50,
-        y: eventNow.teamId === liveResult.homeClubId ? 10 : 90,
+        x: eventNow.teamId === liveResult.homeClubId ? 92 : 8,
+        y: 50,
+      });
+    } else if (eventNow?.type === 'save' || eventNow?.type === 'chance') {
+      setBallPos({
+        x: eventNow.teamId === liveResult.homeClubId ? 84 : 16,
+        y: 35 + Math.round((Math.sin(minute) + 1) * 15),
       });
     } else {
+      const possBias = (liveResult.possessionHome - 50) * 0.35;
+      const rawX = 50 + possBias + Math.sin(minute * 0.55) * 24;
+      const rawY = 50 + Math.cos(minute * 0.72) * 28;
       setBallPos({
-        x: 20 + Math.round(Math.sin(minute * 0.7) * 28 + 30),
-        y: 22 + Math.round(Math.cos(minute * 0.45) * 28 + 28),
+        x: Math.max(12, Math.min(88, Math.round(rawX))),
+        y: Math.max(14, Math.min(86, Math.round(rawY))),
       });
     }
 
@@ -429,13 +528,26 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       );
     }
 
+    const homeTemplate =
+      liveResult.homeClubId === career.clubId
+        ? career.tactics.slots
+        : (FORMATION_TEMPLATES[(liveResult.homeFormation as FormationId) || '4-3-3'] ??
+          FORMATION_TEMPLATES['4-3-3']);
+    const awayTemplate =
+      liveResult.awayClubId === career.clubId
+        ? career.tactics.slots
+        : (FORMATION_TEMPLATES[(liveResult.awayFormation as FormationId) || '4-3-3'] ??
+          FORMATION_TEMPLATES['4-3-3']);
+    const pitchBallShift = (ballPos.x - 50) * 0.34;
+
     return (
       <div className="space-y-4 lg:grid lg:grid-cols-12 lg:gap-6 lg:space-y-0">
         <div className="lg:col-span-7 space-y-3">
           <div className="rounded-2xl bg-[#121B24] border border-emerald-500/30 p-4">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
               <span>
-                {liveResult.roundLabel || `Vòng ${liveResult.matchweek}`} · {hClub.stadium}
+                {liveResult.roundLabel || `Vòng ${liveResult.matchweek}`} ·{' '}
+                {liveResult.venue || hClub.stadium}
               </span>
               <span className="font-mono-num font-bold text-emerald-400">
                 {isLive ? `${minute}'` : 'HẾT GIỜ (FT)'}
@@ -447,6 +559,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                 <ClubCrest club={hClub} size={46} />
                 <span className="text-xs font-bold text-white truncate max-w-full">
                   {hClub.name}
+                </span>
+                <span className="text-[10px] font-mono-num text-slate-400">
+                  {liveResult.homeFormation || '4-3-3'} · {liveResult.possessionHome}%
                 </span>
               </div>
 
@@ -469,6 +584,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                 <span className="text-xs font-bold text-white truncate max-w-full">
                   {aClub.name}
                 </span>
+                <span className="text-[10px] font-mono-num text-slate-400">
+                  {100 - liveResult.possessionHome}% · {liveResult.awayFormation || '4-3-3'}
+                </span>
               </div>
             </div>
           </div>
@@ -483,49 +601,67 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               <rect x="250" y="64" width="38" height="92" fill="none" stroke="rgba(255,255,255,0.35)" strokeWidth="1.5" />
             </svg>
 
-            {[1, 2, 3, 4, 5, 6].map((n) => {
-              const px = 14 + n * 10 + (isLive ? ((minute * n) % 12) - 6 : 0);
-              const py = 20 + ((n * 27) % 65);
+            {homeTemplate.slice(0, 11).map((slot, idx) => {
+              const isGk = slot.label === 'GK';
+              const baseHx = isGk ? 7 : 10 + ((92 - slot.y) / 80) * 44;
+              const px = isGk
+                ? 7
+                : Math.max(12, Math.min(86, baseHx + pitchBallShift + (isLive ? Math.sin(minute * 0.5 + idx) * 2.2 : 0)));
+              const py = isGk
+                ? 50
+                : Math.max(10, Math.min(90, 10 + (slot.x / 100) * 80 + (isLive ? Math.cos(minute * 0.4 + idx) * 1.8 : 0)));
               return (
                 <div
-                  key={`h-${n}`}
+                  key={`h-${idx}`}
+                  title={`${hClub.shortName} · ${slot.label}`}
                   style={{
-                    transform: `translate(${px * 2.5}px, ${py * 1.8}px)`,
-                    backgroundColor: hClub.primaryColor,
+                    left: `${px}%`,
+                    top: `${py}%`,
+                    transform: 'translate(-50%, -50%)',
+                    backgroundColor: isGk ? '#0EA5E9' : hClub.primaryColor,
                   }}
-                  className="absolute top-0 left-0 w-3.5 h-3.5 rounded-full border border-white shadow transition-transform duration-300"
+                  className="absolute w-3.5 h-3.5 rounded-full border-2 border-white shadow transition-all duration-300"
                 />
               );
             })}
 
-            {[1, 2, 3, 4, 5, 6].map((n) => {
-              const px = 86 - n * 10 + (isLive ? ((minute * (n + 2)) % 10) - 5 : 0);
-              const py = 18 + ((n * 31) % 65);
+            {awayTemplate.slice(0, 11).map((slot, idx) => {
+              const isGk = slot.label === 'GK';
+              const baseAx = isGk ? 93 : 90 - ((92 - slot.y) / 80) * 44;
+              const px = isGk
+                ? 93
+                : Math.max(14, Math.min(88, baseAx + pitchBallShift + (isLive ? Math.sin(minute * 0.55 + idx + 2) * 2.2 : 0)));
+              const py = isGk
+                ? 50
+                : Math.max(10, Math.min(90, 10 + ((100 - slot.x) / 100) * 80 + (isLive ? Math.cos(minute * 0.45 + idx + 2) * 1.8 : 0)));
               return (
                 <div
-                  key={`a-${n}`}
+                  key={`a-${idx}`}
+                  title={`${aClub.shortName} · ${slot.label}`}
                   style={{
-                    transform: `translate(${px * 2.5}px, ${py * 1.8}px)`,
-                    backgroundColor: aClub.primaryColor,
+                    left: `${px}%`,
+                    top: `${py}%`,
+                    transform: 'translate(-50%, -50%)',
+                    backgroundColor: isGk ? '#F59E0B' : aClub.primaryColor,
                   }}
-                  className="absolute top-0 left-0 w-3.5 h-3.5 rounded-full border border-amber-300 shadow transition-transform duration-300"
+                  className="absolute w-3.5 h-3.5 rounded-full border-2 border-amber-300 shadow transition-all duration-300"
                 />
               );
             })}
 
             <div
               style={{
-                left: `${ballPos.y}%`,
-                top: `${ballPos.x}%`,
+                left: `${ballPos.x}%`,
+                top: `${ballPos.y}%`,
                 transform: 'translate(-50%, -50%)',
               }}
-              className="absolute w-3.5 h-3.5 rounded-full bg-white ring-2 ring-emerald-400 shadow-lg transition-all duration-200"
+              className="absolute w-3.5 h-3.5 rounded-full bg-white ring-2 ring-emerald-400 shadow-lg transition-all duration-200 z-10"
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            {isLive ? (
-              <>
+          {isLive ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
                 <div className="flex items-center gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
                   {([1, 2, 4] as const).map((sp) => (
                     <button
@@ -540,36 +676,50 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onQuickMentality(
-                      career.tactics.mentality === 'Attacking' ? 'Balanced' : 'Attacking'
-                    )
-                  }
-                  className="flex-1 h-12 rounded-xl bg-amber-500/15 border border-amber-400/30 text-amber-300 text-xs font-bold"
-                >
-                  Chỉ đạo: {career.tactics.mentality}
-                </button>
+                <div className="flex-1 rounded-xl bg-amber-500/10 border border-amber-400/25 px-3 py-2 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-amber-300 truncate">
+                    Chỉ đạo: {LIVE_MENTALITY_OPTIONS.find((m) => m.id === career.tactics.mentality)?.label ?? career.tactics.mentality}
+                  </span>
+                  <span className="text-[10px] text-slate-400 shrink-0">Đổi trực tiếp</span>
+                </div>
                 <button
                   type="button"
                   disabled={savingMatch}
                   onClick={skipActiveLiveToFullTime}
-                  className="h-12 px-4 rounded-xl bg-slate-800 text-white text-xs font-semibold"
+                  className="h-10 px-4 rounded-xl bg-slate-800 text-white text-xs font-semibold shrink-0"
                 >
                   Kết thúc
                 </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={clearLivePitch}
-                className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm"
-              >
-                Tiếp tục sự nghiệp
-              </button>
-            )}
-          </div>
+              </div>
+              <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+                {LIVE_MENTALITY_OPTIONS.map((opt) => {
+                  const active = career.tactics.mentality === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => handleLiveMentalityChange(opt.id)}
+                      className={`h-9 rounded-lg text-[10px] sm:text-xs font-bold transition-colors truncate px-1 ${
+                        active
+                          ? 'bg-amber-400 text-slate-950'
+                          : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={clearLivePitch}
+              className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm"
+            >
+              Tiếp tục sự nghiệp
+            </button>
+          )}
         </div>
 
         <div className="lg:col-span-5 space-y-3">
@@ -647,14 +797,37 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex items-center gap-3">
-          <ManagerAvatar manager={oppMgr} size={42} />
-          <div className="min-w-0">
-            <p className="text-[11px] text-slate-400">HLV đối thủ · {opp.name}</p>
-            <p className="text-xs font-bold text-white truncate">{oppMgr.name}</p>
-            <p className="text-[11px] text-emerald-400 truncate">
-              {oppMgr.preferredFormation} · {oppMgr.style}
-            </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div className="rounded-xl bg-[#0B1117] border border-emerald-500/25 p-3 flex items-center gap-3">
+            {activeUserManager ? (
+              <ManagerAvatar manager={activeUserManager} size={42} />
+            ) : (
+              <div className="w-[42px] h-[42px] rounded-full bg-slate-800 border border-white/15 flex items-center justify-center text-xs font-bold text-amber-400 shrink-0">
+                TQ
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-400">HLV đội bạn</p>
+              <p className="text-xs font-bold text-white truncate">
+                {activeUserManager ? activeUserManager.name : 'HLV Tạm quyền'}
+              </p>
+              <p className="text-[11px] text-emerald-400 truncate">
+                {activeUserManager
+                  ? `${career.tactics.formation} · ${activeUserManager.style}`
+                  : 'Chưa bổ nhiệm HLV trưởng'}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex items-center gap-3">
+            <ManagerAvatar manager={oppMgr} size={42} />
+            <div className="min-w-0">
+              <p className="text-[11px] text-slate-400">HLV đối thủ · {opp.name}</p>
+              <p className="text-xs font-bold text-white truncate">{oppMgr.name}</p>
+              <p className="text-[11px] text-amber-400 truncate">
+                {oppMgr.preferredFormation} · {oppMgr.style}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -861,19 +1034,20 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       {/* 1. SUPER LEAGUE */}
       {compTab === 'league' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
             {[
               { id: 'match', label: userMatchFixture ? `Vòng ${career.matchweek}` : 'Tổng kết' },
               { id: 'standings', label: 'BXH' },
               { id: 'fixtures', label: 'Lịch & KQ' },
               { id: 'scorers', label: 'Ghi bàn' },
               { id: 'assists', label: 'Kiến tạo' },
+              { id: 'mvp', label: 'Xuất sắc' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setSubTab(tab.id as typeof subTab)}
-                className={`h-10 rounded-lg text-[11px] sm:text-xs font-semibold px-1 truncate ${
+                className={`h-10 rounded-lg text-[11px] sm:text-xs font-semibold px-1 truncate whitespace-nowrap ${
                   subTab === tab.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
                 }`}
               >
@@ -927,6 +1101,57 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                       </p>
                     </div>
                   </div>
+
+                  {(leagueAwards.mvp || leagueAwards.topScorer) && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {leagueAwards.mvp && (
+                        <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 p-3 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold text-amber-400">
+                              Cầu thủ Xuất sắc nhất Mùa giải
+                            </p>
+                            <p className="text-sm font-bold text-white truncate">
+                              {leagueAwards.mvp.playerName}
+                            </p>
+                            <p className="text-[11px] text-slate-300 truncate">
+                              {(CLUBS.find((c) => c.id === leagueAwards.mvp?.clubId) ?? CLUBS[0]).name}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="font-mono-num text-base font-extrabold text-amber-400">
+                              {leagueAwards.mvp.avgRating.toFixed(2)}★
+                            </p>
+                            <p className="font-mono-num text-[11px] text-slate-400">
+                              {leagueAwards.mvp.motmCount} MOTM
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                      {leagueAwards.topScorer && (
+                        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/35 p-3 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold text-emerald-400">
+                              Vua phá lưới Super League
+                            </p>
+                            <p className="text-sm font-bold text-white truncate">
+                              {leagueAwards.topScorer.playerName}
+                            </p>
+                            <p className="text-[11px] text-slate-300 truncate">
+                              {(CLUBS.find((c) => c.id === leagueAwards.topScorer?.clubId) ?? CLUBS[0]).name}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="font-mono-num text-base font-extrabold text-emerald-400">
+                              {leagueAwards.topScorer.goals} bàn
+                            </p>
+                            <p className="font-mono-num text-[11px] text-slate-400">
+                              {leagueAwards.topScorer.assists} kiến tạo
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3.5 text-xs text-emerald-200 space-y-1">
                     <p className="font-bold text-emerald-300 flex items-center gap-1.5">
@@ -1232,6 +1457,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               mode="goals"
               userClubId={career.clubId}
               competitionTitle={`Super League ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'league')}
+              awards={{ topScorer: leagueAwards.topScorer, mvp: leagueAwards.mvp }}
             />
           )}
 
@@ -1241,6 +1468,19 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               mode="assists"
               userClubId={career.clubId}
               competitionTitle={`Super League ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'league')}
+              awards={{ topScorer: leagueAwards.topScorer, mvp: leagueAwards.mvp }}
+            />
+          )}
+
+          {subTab === 'mvp' && (
+            <CompetitionStatsPanel
+              stats={career.competitions?.leaderboards?.league ?? []}
+              mode="mvp"
+              userClubId={career.clubId}
+              competitionTitle={`Super League ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'league')}
+              awards={{ topScorer: leagueAwards.topScorer, mvp: leagueAwards.mvp }}
             />
           )}
         </div>
@@ -1249,18 +1489,19 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       {/* 2. CHAMPIONS CUP */}
       {compTab === 'champions-cup' && cc && (
         <div className="space-y-4">
-          <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
             {[
               { id: 'overview', label: 'Bảng & Nhánh' },
               { id: 'history', label: 'Kết quả' },
               { id: 'scorers', label: 'Ghi bàn' },
               { id: 'assists', label: 'Kiến tạo' },
+              { id: 'mvp', label: 'Xuất sắc' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setCupSubTab(tab.id as typeof cupSubTab)}
-                className={`h-10 rounded-lg text-xs font-semibold px-1 truncate ${
+                className={`h-10 rounded-lg text-xs font-semibold px-1 truncate whitespace-nowrap ${
                   cupSubTab === tab.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
                 }`}
               >
@@ -1309,6 +1550,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         cupMatchId: userCcMatch.id,
                         roundMatches: ccCurrentRoundMatches,
                         isKnockout: cc.stage !== 'group',
+                        isNeutralVenue: cc.stage === 'final',
                         roundLabel:
                           cc.stage === 'group'
                             ? `Cúp C1 · Lượt ${cc.currentRound}`
@@ -1316,6 +1558,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                       },
                       {
                         isKnockout: cc.stage !== 'group',
+                        isNeutralVenue: cc.stage === 'final',
                         competition: 'champions-cup',
                         roundLabel:
                           cc.stage === 'group'
@@ -1334,6 +1577,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         cupMatchId: userCcMatch.id,
                         roundMatches: ccCurrentRoundMatches,
                         isKnockout: cc.stage !== 'group',
+                        isNeutralVenue: cc.stage === 'final',
                         roundLabel:
                           cc.stage === 'group'
                             ? `Cúp C1 · Lượt ${cc.currentRound}`
@@ -1341,6 +1585,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                       },
                       {
                         isKnockout: cc.stage !== 'group',
+                        isNeutralVenue: cc.stage === 'final',
                         competition: 'champions-cup',
                         roundLabel:
                           cc.stage === 'group'
@@ -1364,7 +1609,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         'champions-cup',
                         ccCurrentRoundMatches,
                         cc.stage !== 'group',
-                        `Cúp C1 · ${STAGE_LABEL[cc.stage]}`
+                        `Cúp C1 · ${STAGE_LABEL[cc.stage]}`,
+                        cc.stage === 'final'
                       )
                     }
                     className="h-10 px-4 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs shrink-0"
@@ -1489,6 +1735,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               mode="goals"
               userClubId={career.clubId}
               competitionTitle={`Champions Cup ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'champions-cup')}
+              awards={{ topScorer: ccAwards.topScorer, mvp: ccAwards.mvp }}
             />
           )}
 
@@ -1498,6 +1746,19 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               mode="assists"
               userClubId={career.clubId}
               competitionTitle={`Champions Cup ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'champions-cup')}
+              awards={{ topScorer: ccAwards.topScorer, mvp: ccAwards.mvp }}
+            />
+          )}
+
+          {cupSubTab === 'mvp' && (
+            <CompetitionStatsPanel
+              stats={career.competitions?.leaderboards?.['champions-cup'] ?? []}
+              mode="mvp"
+              userClubId={career.clubId}
+              competitionTitle={`Champions Cup ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'champions-cup')}
+              awards={{ topScorer: ccAwards.topScorer, mvp: ccAwards.mvp }}
             />
           )}
         </div>
@@ -1506,17 +1767,18 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       {/* 3. NATIONAL CUP */}
       {compTab === 'national-cup' && nc && (
         <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
             {[
               { id: 'bracket', label: 'Nhánh đấu & KQ' },
               { id: 'scorers', label: 'Ghi bàn' },
               { id: 'assists', label: 'Kiến tạo' },
+              { id: 'mvp', label: 'Xuất sắc' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setNcSubTab(tab.id as typeof ncSubTab)}
-                className={`h-10 rounded-lg text-xs font-semibold px-1 truncate ${
+                className={`h-10 rounded-lg text-xs font-semibold px-1 truncate whitespace-nowrap ${
                   ncSubTab === tab.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
                 }`}
               >
@@ -1560,10 +1822,12 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         kind: 'national-cup',
                         cupMatchId: userNcMatch.id,
                         roundMatches: ncCurrentRoundMatches,
+                        isNeutralVenue: nc.stage === 'final',
                         roundLabel: `Cúp QG · ${STAGE_LABEL[nc.stage]}`,
                       },
                       {
                         isKnockout: true,
+                        isNeutralVenue: nc.stage === 'final',
                         competition: 'national-cup',
                         roundLabel: `Cúp QG · ${STAGE_LABEL[nc.stage]}`,
                         matchId: userNcMatch.id,
@@ -1578,10 +1842,12 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         kind: 'national-cup',
                         cupMatchId: userNcMatch.id,
                         roundMatches: ncCurrentRoundMatches,
+                        isNeutralVenue: nc.stage === 'final',
                         roundLabel: `Cúp QG · ${STAGE_LABEL[nc.stage]}`,
                       },
                       {
                         isKnockout: true,
+                        isNeutralVenue: nc.stage === 'final',
                         competition: 'national-cup',
                         roundLabel: `Cúp QG · ${STAGE_LABEL[nc.stage]}`,
                         matchId: userNcMatch.id,
@@ -1602,7 +1868,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         'national-cup',
                         ncCurrentRoundMatches,
                         true,
-                        `Cúp QG · ${STAGE_LABEL[nc.stage]}`
+                        `Cúp QG · ${STAGE_LABEL[nc.stage]}`,
+                        nc.stage === 'final'
                       )
                     }
                     className="h-10 px-4 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs shrink-0"
@@ -1641,6 +1908,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               mode="goals"
               userClubId={career.clubId}
               competitionTitle={`Cúp Quốc Gia ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'national-cup')}
+              awards={{ topScorer: ncAwards.topScorer, mvp: ncAwards.mvp }}
             />
           )}
 
@@ -1650,6 +1919,19 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               mode="assists"
               userClubId={career.clubId}
               competitionTitle={`Cúp Quốc Gia ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'national-cup')}
+              awards={{ topScorer: ncAwards.topScorer, mvp: ncAwards.mvp }}
+            />
+          )}
+
+          {ncSubTab === 'mvp' && (
+            <CompetitionStatsPanel
+              stats={career.competitions?.leaderboards?.['national-cup'] ?? []}
+              mode="mvp"
+              userClubId={career.clubId}
+              competitionTitle={`Cúp Quốc Gia ${career.season}`}
+              isFinished={isCompetitionFinished(career, 'national-cup')}
+              awards={{ topScorer: ncAwards.topScorer, mvp: ncAwards.mvp }}
             />
           )}
         </div>
@@ -1658,18 +1940,19 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       {/* 4. SUPER CUP & FRIENDLIES */}
       {compTab === 'special' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
             {[
               { id: 'play', label: 'Thi đấu' },
               { id: 'history', label: 'Lịch sử' },
               { id: 'scorers', label: 'Ghi bàn' },
               { id: 'assists', label: 'Kiến tạo' },
+              { id: 'mvp', label: 'Xuất sắc' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setSpecialSubTab(tab.id as typeof specialSubTab)}
-                className={`h-10 rounded-lg text-xs font-semibold px-1 truncate ${
+                className={`h-10 rounded-lg text-xs font-semibold px-1 truncate whitespace-nowrap ${
                   specialSubTab === tab.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
                 }`}
               >
@@ -1704,9 +1987,10 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         launchMatch(
                           userScMatch.homeClubId,
                           userScMatch.awayClubId,
-                          { kind: 'super-cup', cupMatchId: userScMatch.id },
+                          { kind: 'super-cup', cupMatchId: userScMatch.id, isNeutralVenue: true },
                           {
                             isKnockout: true,
+                            isNeutralVenue: true,
                             competition: 'super-cup',
                             roundLabel: `Siêu Cúp ${career.season}`,
                             matchId: userScMatch.id,
@@ -1717,9 +2001,10 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         launchMatch(
                           userScMatch.homeClubId,
                           userScMatch.awayClubId,
-                          { kind: 'super-cup', cupMatchId: userScMatch.id },
+                          { kind: 'super-cup', cupMatchId: userScMatch.id, isNeutralVenue: true },
                           {
                             isKnockout: true,
+                            isNeutralVenue: true,
                             competition: 'super-cup',
                             roundLabel: `Siêu Cúp ${career.season}`,
                             matchId: userScMatch.id,
@@ -1738,7 +2023,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                             'super-cup',
                             [sc.match],
                             true,
-                            `Siêu Cúp ${career.season}`
+                            `Siêu Cúp ${career.season}`,
+                            true
                           )
                         }
                         className="w-full h-11 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs"
@@ -1896,7 +2182,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
             );
           })()}
 
-          {(specialSubTab === 'scorers' || specialSubTab === 'assists') && (
+          {(specialSubTab === 'scorers' || specialSubTab === 'assists' || specialSubTab === 'mvp') && (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#0B1117] border border-white/10">
                 <button
@@ -1925,13 +2211,24 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
 
               <CompetitionStatsPanel
                 stats={career.competitions?.leaderboards?.[specialStatsTarget] ?? []}
-                mode={specialSubTab === 'scorers' ? 'goals' : 'assists'}
+                mode={
+                  specialSubTab === 'scorers'
+                    ? 'goals'
+                    : specialSubTab === 'assists'
+                      ? 'assists'
+                      : 'mvp'
+                }
                 userClubId={career.clubId}
                 competitionTitle={
                   specialStatsTarget === 'friendly'
                     ? 'Giao hữu Quốc tế'
                     : `Siêu Cúp ${career.season}`
                 }
+                isFinished={
+                  specialStatsTarget === 'super-cup' &&
+                  isCompetitionFinished(career, 'super-cup')
+                }
+                awards={{ topScorer: specialAwards.topScorer, mvp: specialAwards.mvp }}
               />
             </div>
           )}

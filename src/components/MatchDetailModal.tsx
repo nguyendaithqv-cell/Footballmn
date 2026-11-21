@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Award, BarChart3, MapPin, Shield, Star, Users, X } from 'lucide-react';
 import { CLUBS, REAL_MANAGERS } from '../data/footballDatabase';
-import { MatchPlayerRating, MatchResultSummary, Position } from '../types/game';
+import { MatchEvent, MatchPlayerRating, MatchResultSummary, Position } from '../types/game';
 import { ClubCrest } from './ClubBadgeAndAvatar';
 
 interface MatchStatsBreakdownProps {
@@ -46,20 +46,17 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
   const hMgr = REAL_MANAGERS.find((m) => m.id === hClub.managerId);
   const aMgr = REAL_MANAGERS.find((m) => m.id === aClub.managerId);
 
-  const defaultClubId =
-    userClubId === match.homeClubId || userClubId === match.awayClubId
-      ? userClubId
-      : match.homeClubId;
+  const isSameClub = match.homeClubId === match.awayClubId;
+  const defaultSide: 'home' | 'away' =
+    userClubId === match.awayClubId && userClubId !== match.homeClubId ? 'away' : 'home';
 
   const [activeTab, setActiveTab] = useState<'stats' | 'ratings'>('stats');
-  const [selectedClubId, setSelectedClubId] = useState<string>(defaultClubId);
+  const [selectedSide, setSelectedSide] = useState<'home' | 'away'>(defaultSide);
 
   useEffect(() => {
     setActiveTab('stats');
-    setSelectedClubId(
-      userClubId === match.homeClubId || userClubId === match.awayClubId
-        ? userClubId
-        : match.homeClubId
+    setSelectedSide(
+      userClubId === match.awayClubId && userClubId !== match.homeClubId ? 'away' : 'home'
     );
   }, [match.id, match.homeClubId, match.awayClubId, userClubId]);
 
@@ -73,18 +70,27 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
   const cornersAway = match.cornersAway ?? Math.max(1, Math.round(match.shotsAway * 0.4));
   const foulsHome = match.foulsHome ?? 8;
   const foulsAway = match.foulsAway ?? 9;
+  const matchesHomeEvent = (e: MatchEvent) =>
+    isSameClub && match.homeManagerName
+      ? e.description.includes(match.homeManagerName)
+      : e.teamId === match.homeClubId;
+  const matchesAwayEvent = (e: MatchEvent) =>
+    isSameClub && match.awayManagerName
+      ? e.description.includes(match.awayManagerName)
+      : e.teamId === match.awayClubId;
+
   const yellowsHome =
     match.yellowsHome ??
-    match.events.filter((e) => e.type === 'yellow' && e.teamId === match.homeClubId).length;
+    match.events.filter((e) => e.type === 'yellow' && matchesHomeEvent(e)).length;
   const yellowsAway =
     match.yellowsAway ??
-    match.events.filter((e) => e.type === 'yellow' && e.teamId === match.awayClubId).length;
+    match.events.filter((e) => e.type === 'yellow' && matchesAwayEvent(e)).length;
 
   const homeGoalsEvents = match.events
-    .filter((e) => e.type === 'goal' && e.teamId === match.homeClubId)
+    .filter((e) => e.type === 'goal' && matchesHomeEvent(e))
     .sort((a, b) => a.minute - b.minute);
   const awayGoalsEvents = match.events
-    .filter((e) => e.type === 'goal' && e.teamId === match.awayClubId)
+    .filter((e) => e.type === 'goal' && matchesAwayEvent(e))
     .sort((a, b) => a.minute - b.minute);
 
   const statRows = [
@@ -97,9 +103,15 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
     { label: 'Thẻ vàng', h: yellowsHome, a: yellowsAway, hv: yellowsHome, av: yellowsAway },
   ];
 
-  const motmClub = match.manOfTheMatch
-    ? CLUBS.find((c) => c.id === match.manOfTheMatch?.clubId)
-    : undefined;
+  const motmRawClubId = match.manOfTheMatch?.clubId;
+  const motmBaseClubId = motmRawClubId?.replace(/-away$/, '');
+  const motmClub = motmBaseClubId ? CLUBS.find((c) => c.id === motmBaseClubId) : undefined;
+  const motmSideManager =
+    isSameClub && motmRawClubId
+      ? motmRawClubId.endsWith('-away')
+        ? match.awayManagerName
+        : match.homeManagerName
+      : undefined;
 
   const allRatings = match.playerRatings ?? [];
 
@@ -110,8 +122,9 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
         if (diffPos !== 0) return diffPos;
         return b.rating - a.rating;
       });
+    const awayRatingKey = isSameClub ? `${match.awayClubId}-away` : match.awayClubId;
     const hList = sortLineup(allRatings.filter((r) => r.clubId === match.homeClubId));
-    const aList = sortLineup(allRatings.filter((r) => r.clubId === match.awayClubId));
+    const aList = sortLineup(allRatings.filter((r) => r.clubId === awayRatingKey));
     const avg = (list: MatchPlayerRating[]) =>
       list.length > 0
         ? (list.reduce((sum, item) => sum + item.rating, 0) / list.length).toFixed(1)
@@ -122,11 +135,12 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
       homeAvg: avg(hList),
       awayAvg: avg(aList),
     };
-  }, [allRatings, match.homeClubId, match.awayClubId]);
+  }, [allRatings, match.homeClubId, match.awayClubId, isSameClub]);
 
-  const displayedRatings = selectedClubId === match.homeClubId ? homeRatings : awayRatings;
-  const displayedAvg = selectedClubId === match.homeClubId ? homeAvg : awayAvg;
-  const selectedIsUserClub = selectedClubId === userClubId;
+  const displayedRatings = selectedSide === 'home' ? homeRatings : awayRatings;
+  const displayedAvg = selectedSide === 'home' ? homeAvg : awayAvg;
+  const selectedIsUserClub =
+    (selectedSide === 'home' ? match.homeClubId : match.awayClubId) === userClubId;
 
   return (
     <div className="space-y-4">
@@ -233,7 +247,7 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
               <p className="text-sm font-bold text-white truncate">
                 {match.manOfTheMatch.name}{' '}
                 <span className="text-xs font-normal text-slate-300">
-                  ({motmClub?.shortName})
+                  ({motmClub?.shortName}{motmSideManager ? ` · ${motmSideManager}` : ''})
                 </span>
               </p>
             </div>
@@ -345,15 +359,15 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
           {/* Team Selector */}
           <div className="grid grid-cols-2 gap-2">
             {[
-              { club: hClub, avg: homeAvg },
-              { club: aClub, avg: awayAvg },
-            ].map(({ club, avg }) => {
-              const active = selectedClubId === club.id;
+              { side: 'home' as const, club: hClub, avg: homeAvg, mgrName: match.homeManagerName },
+              { side: 'away' as const, club: aClub, avg: awayAvg, mgrName: match.awayManagerName },
+            ].map(({ side, club, avg, mgrName }) => {
+              const active = selectedSide === side;
               return (
                 <button
-                  key={club.id}
+                  key={`${side}-${club.id}`}
                   type="button"
-                  onClick={() => setSelectedClubId(club.id)}
+                  onClick={() => setSelectedSide(side)}
                   className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 border text-left transition-colors ${
                     active
                       ? 'bg-emerald-500/15 border-emerald-500/45 text-white'
@@ -365,9 +379,15 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
                     <div className="min-w-0">
                       <p className="text-xs font-bold truncate">
                         {club.shortName}
-                        {club.id === userClubId ? ' (Bạn)' : ''}
+                        {isSameClub && mgrName
+                          ? ` (${mgrName})`
+                          : club.id === userClubId
+                            ? ' (Bạn)'
+                            : ''}
                       </p>
-                      <p className="text-[10px] text-slate-400">ĐTB trận</p>
+                      <p className="text-[10px] text-slate-400">
+                        {side === 'home' ? 'Đội nhà' : 'Đội khách'} · ĐTB trận
+                      </p>
                     </div>
                   </div>
                   <span className="px-2 py-0.5 rounded-md bg-white/10 font-mono-num text-xs font-extrabold text-emerald-300 shrink-0">
