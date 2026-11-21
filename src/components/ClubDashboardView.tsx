@@ -9,13 +9,16 @@ import {
   sortStandings,
 } from '../lib/careerEngine';
 import { getTotalUnopenedPacks } from '../lib/inventoryEngine';
+import { ClubBackupBundle } from '../lib/backupEngine';
 import { CareerSave, NewsArticle, Player, UserProfile } from '../types/game';
+import { BackupRestoreCard } from './BackupRestoreCard';
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 
 interface ClubDashboardViewProps {
   profile: UserProfile;
   career: CareerSave;
   news: NewsArticle[];
+  isAdmin?: boolean;
   pushPermission: NotificationPermission | 'unsupported';
   onEnablePush: () => Promise<void>;
   onNavigateTab: (tab: 'home' | 'tactics' | 'match' | 'transfers' | 'inventory' | 'club') => void;
@@ -27,12 +30,18 @@ interface ClubDashboardViewProps {
   onRecoverPlayerFitness: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onRecoverSquadFitness: () => Promise<{ ok: boolean; message: string }>;
   onStartNextSeason: () => Promise<void>;
+  onExportBackup: (includeAdminData: boolean) => Promise<void>;
+  onRestoreBackup: (
+    bundle: ClubBackupBundle,
+    restoreAdminData: boolean
+  ) => Promise<{ ok: boolean; message: string }>;
 }
 
 export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   profile,
   career,
   news,
+  isAdmin = false,
   pushPermission,
   onEnablePush,
   onNavigateTab,
@@ -41,6 +50,8 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   onRecoverPlayerFitness,
   onRecoverSquadFitness,
   onStartNextSeason,
+  onExportBackup,
+  onRestoreBackup,
 }) => {
   const [clubSubTab, setClubSubTab] = useState<'overview' | 'squad' | 'training' | 'managers'>(
     'overview'
@@ -361,6 +372,12 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                 </div>
               )}
             </div>
+
+            <BackupRestoreCard
+              isAdmin={isAdmin}
+              onExportBackup={onExportBackup}
+              onRestoreBackup={onRestoreBackup}
+            />
           </div>
         </div>
       )}

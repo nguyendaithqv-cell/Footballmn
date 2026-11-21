@@ -1,29 +1,32 @@
-import React, { useState } from 'react';
-import {
-  User,
-  createUserWithEmailAndPassword,
-  sendEmailVerification,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
+import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ChevronRight,
+  Eye,
+  EyeOff,
+  HardDrive,
   Lock,
-  Mail,
-  RefreshCw,
-  ShieldCheck,
+  LogIn,
   Trophy,
+  User as UserIcon,
   UserPlus,
 } from 'lucide-react';
-import { auth, googleProvider } from '../lib/firebase';
 import { CLUBS, REAL_MANAGERS } from '../data/footballDatabase';
+import { ClubBackupBundle } from '../lib/backupEngine';
+import {
+  listLocalAccountPreviews,
+  LocalAccountPreview,
+  LocalUser,
+  loginLocalAccount,
+  logoutLocalAccount,
+  registerLocalAccount,
+} from '../lib/localDb';
 import { FormationId } from '../types/game';
+import { BackupRestoreCard } from './BackupRestoreCard';
 import { ClubCrest, ManagerAvatar } from './ClubBadgeAndAvatar';
 
 interface AuthGateProps {
-  firebaseUser: User | null;
+  localUser: LocalUser | null;
   needsProfile: boolean;
   onCompleteOnboarding: (data: {
     managerName: string;
@@ -31,28 +34,31 @@ interface AuthGateProps {
     clubId: string;
     preferredFormation: FormationId;
   }) => Promise<void>;
-  onEmailVerifiedRefresh: () => Promise<void>;
+  onRestoreBackup?: (
+    bundle: ClubBackupBundle,
+    restoreAdminData: boolean
+  ) => Promise<{ ok: boolean; message: string }>;
 }
 
 const FORMATIONS: FormationId[] = ['4-3-3', '4-2-3-1', '3-4-2-1', '3-5-2', '4-4-2', '5-3-2'];
 
 export const AuthOnboarding: React.FC<AuthGateProps> = ({
-  firebaseUser,
+  localUser,
   needsProfile,
   onCompleteOnboarding,
-  onEmailVerifiedRefresh,
+  onRestoreBackup,
 }) => {
-  const [authTab, setAuthTab] = useState<'google' | 'email'>('google');
-  const [emailMode, setEmailMode] = useState<'login' | 'register'>('register');
-  const [email, setEmail] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [savedAccounts, setSavedAccounts] = useState<LocalAccountPreview[]>([]);
 
   // Onboarding state
   const [managerName, setManagerName] = useState(
-    firebaseUser?.displayName?.slice(0, 40) || 'HLV Chiến Lược'
+    localUser?.username?.slice(0, 40) || 'HLV Chiến Lược'
   );
   const [nationality, setNationality] = useState('Việt Nam');
   const [preferredFormation, setPreferredFormation] = useState<FormationId>('4-2-3-1');
@@ -60,62 +66,59 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
   const [leagueFilter, setLeagueFilter] = useState<string>('ALL');
   const [submittingCareer, setSubmittingCareer] = useState(false);
 
-  const handleGoogleLogin = async () => {
-    setAuthError(null);
-    setAuthInfo(null);
-    setLoading(true);
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Đăng nhập Google thất bại.';
-      setAuthError(message);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (localUser) {
+      setManagerName((prev) =>
+        prev === 'HLV Chiến Lược' || !prev.trim() ? localUser.username.slice(0, 40) : prev
+      );
+      return;
     }
-  };
+    let cancelled = false;
+    void listLocalAccountPreviews().then((list) => {
+      if (cancelled) return;
+      setSavedAccounts(list);
+      if (list.length === 0) {
+        setAuthMode('register');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [localUser]);
 
-  const handleEmailAuth = async (e: React.FormEvent) => {
+  const handleSubmitAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    setAuthInfo(null);
-    if (!email.trim() || password.length < 6) {
-      setAuthError('Vui lòng nhập email hợp lệ và mật khẩu tối thiểu 6 ký tự.');
+    const trimmedName = username.trim();
+    if (trimmedName.length < 2) {
+      setAuthError('Tên tài khoản cần ít nhất 2 ký tự.');
+      return;
+    }
+    if (password.length < 4) {
+      setAuthError('Mật khẩu cần ít nhất 4 ký tự.');
       return;
     }
 
     setLoading(true);
     try {
-      if (emailMode === 'register') {
-        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-        await sendEmailVerification(cred.user);
-        setAuthInfo('Tạo tài khoản thành công! Vui lòng kiểm tra hộp thư để xác thực email trước khi đồng bộ đám mây.');
+      if (authMode === 'register') {
+        await registerLocalAccount(trimmedName, password);
       } else {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        await loginLocalAccount(trimmedName, password);
       }
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code ?? '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Phương thức Email/Password chưa được bật trên Firebase Console (Authentication > Sign-in method > Email/Password). Bạn có thể bật trong Console hoặc dùng Đăng nhập Google 1 chạm.'
-        );
-      } else if (code === 'auth/email-already-in-use') {
-        setAuthError('Email này đã được đăng ký. Hãy chuyển sang tab Đăng nhập.');
-      } else if (code === 'auth/invalid-credential') {
-        setAuthError('Email hoặc mật khẩu không chính xác.');
-      } else {
-        setAuthError(err instanceof Error ? err.message : 'Lỗi xác thực tài khoản.');
-      }
+      setAuthError(err instanceof Error ? err.message : 'Lỗi đăng nhập tài khoản.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Screen 1: Sign-in / Register
-  if (!firebaseUser) {
+  // Screen 1: Local Username + Password Sign-in / Register
+  if (!localUser) {
     return (
       <div className="min-h-screen bg-[#0B1117] text-slate-100 flex flex-col lg:grid lg:grid-cols-12">
         {/* Hero Visual Panel */}
-        <div className="relative lg:col-span-7 min-h-[260px] lg:min-h-screen overflow-hidden flex flex-col justify-end p-6 sm:p-10">
+        <div className="relative lg:col-span-7 min-h-[240px] lg:min-h-screen overflow-hidden flex flex-col justify-end p-6 sm:p-10">
           <img
             src="/src/assets/images/stadium_pitch_hero_1795100242983.jpg"
             alt="Sân vận động Touchline XI"
@@ -133,7 +136,7 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
               />
               <div>
                 <p className="text-xs font-medium text-emerald-400 tracking-wide">
-                  Mùa giải 2026/27 · Đồng bộ Firebase
+                  Mùa giải 2026/27 · Lưu trữ cục bộ trên thiết bị
                 </p>
                 <h1 className="font-display text-3xl sm:text-5xl font-extrabold tracking-tight text-white">
                   TOUCHLINE XI
@@ -141,20 +144,21 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
               </div>
             </div>
             <p className="text-sm sm:text-base text-slate-300 leading-relaxed">
-              Trải nghiệm quản lý bóng đá chuyên nghiệp trên màn hình dọc: dữ liệu cầu thủ và HLV thực tế, chiến thuật 3 giai đoạn chuyên sâu, mô phỏng trận đấu 2D và thị trường chuyển nhượng cập nhật theo thời gian thực.
+              Trải nghiệm quản lý bóng đá chuyên nghiệp: dữ liệu cầu thủ và HLV thực tế, chiến thuật 3 giai đoạn chuyên sâu, mô phỏng trận đấu 2D, chơi mượt ngay trên thiết bị không lo giới hạn quota.
             </p>
           </div>
         </div>
 
         {/* Auth Form Panel */}
         <div className="lg:col-span-5 flex items-center justify-center p-5 sm:p-10 bg-[#0B1117]">
-          <div className="w-full max-w-md space-y-6">
+          <div className="w-full max-w-md space-y-5">
             <div className="space-y-1.5">
               <h2 className="font-display text-2xl font-bold text-white">
                 Trung tâm Đăng nhập HLV
               </h2>
-              <p className="text-xs text-slate-400">
-                Thiết bị chỉ lưu trạng thái đăng nhập. Toàn bộ sự nghiệp được lưu an toàn trên đám mây.
+              <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                Lưu trực tiếp trên máy (IndexedDB) · Chỉ cần Tên &amp; Mật khẩu
               </p>
             </div>
 
@@ -162,30 +166,30 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setAuthTab('google');
+                  setAuthMode('login');
                   setAuthError(null);
                 }}
                 className={`h-11 rounded-lg text-xs font-semibold transition-colors ${
-                  authTab === 'google'
+                  authMode === 'login'
                     ? 'bg-emerald-500 text-slate-950'
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
-                Google 1-Chạm
+                Đăng nhập
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  setAuthTab('email');
+                  setAuthMode('register');
                   setAuthError(null);
                 }}
                 className={`h-11 rounded-lg text-xs font-semibold transition-colors ${
-                  authTab === 'email'
+                  authMode === 'register'
                     ? 'bg-emerald-500 text-slate-950'
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
-                Tạo / Nhập Email
+                Tạo tài khoản mới
               </button>
             </div>
 
@@ -195,89 +199,105 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
               </div>
             )}
 
-            {authInfo && (
-              <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-xs text-emerald-200 leading-relaxed">
-                {authInfo}
+            <form
+              onSubmit={handleSubmitAuth}
+              className="space-y-4 rounded-2xl bg-[#121B24] border border-white/10 p-5"
+            >
+              <div className="space-y-1.5">
+                <label className="text-xs text-slate-400 block">Tên tài khoản</label>
+                <div className="relative">
+                  <UserIcon className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    maxLength={40}
+                    autoComplete="username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="VD: hlvdai hoặc admin"
+                    className="w-full h-11 pl-10 pr-3 rounded-xl bg-[#0B1117] border border-white/10 text-sm text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
               </div>
-            )}
 
-            {authTab === 'google' ? (
-              <div className="space-y-4 rounded-2xl bg-[#121B24] border border-white/10 p-5">
-                <p className="text-sm text-slate-300 leading-relaxed">
-                  Đăng nhập bằng tài khoản Google để tạo hồ sơ HLV tức thì và đồng bộ tự động trên mọi thiết bị.
-                </p>
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={handleGoogleLogin}
-                  className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.99] text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-60"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  {loading ? 'Đang kết nối...' : 'Tiếp tục với Google'}
-                </button>
-              </div>
-            ) : (
-              <form
-                onSubmit={handleEmailAuth}
-                className="space-y-4 rounded-2xl bg-[#121B24] border border-white/10 p-5"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-white">
-                    {emailMode === 'register' ? 'Tạo tài khoản mới' : 'Đăng nhập bằng Email'}
-                  </span>
+              <div className="space-y-1.5">
+                <label className="text-xs text-slate-400 block">Mật khẩu (tối thiểu 4 ký tự)</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={4}
+                    autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••"
+                    className="w-full h-11 pl-10 pr-10 rounded-xl bg-[#0B1117] border border-white/10 text-sm text-white focus:outline-none focus:border-emerald-500"
+                  />
                   <button
                     type="button"
-                    onClick={() => setEmailMode(emailMode === 'register' ? 'login' : 'register')}
-                    className="text-xs font-medium text-emerald-400 hover:underline min-h-[36px]"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2.5 top-2.5 p-1 text-slate-400 hover:text-white"
+                    aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
                   >
-                    {emailMode === 'register' ? 'Đã có tài khoản?' : 'Tạo tài khoản mới'}
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+              </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-xs text-slate-400 block">Địa chỉ Email</label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
-                    <input
-                      type="email"
-                      required
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="hlv@touchlinexi.com"
-                      className="w-full h-11 pl-10 pr-3 rounded-xl bg-[#0B1117] border border-white/10 text-sm text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                </div>
+              {authMode === 'register' && (
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Tài khoản đầu tiên tạo trên máy (hoặc tên <span className="text-amber-300 font-semibold">admin</span>) sẽ tự động có quyền Quản trị viên.
+                </p>
+              )}
 
-                <div className="space-y-1.5">
-                  <label className="text-xs text-slate-400 block">Mật khẩu (tối thiểu 6 ký tự)</label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
-                    <input
-                      type="password"
-                      required
-                      minLength={6}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full h-11 pl-10 pr-3 rounded-xl bg-[#0B1117] border border-white/10 text-sm text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-60"
-                >
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.99] text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-60"
+              >
+                {authMode === 'register' ? (
                   <UserPlus className="w-4 h-4" />
-                  {loading
-                    ? 'Đang xử lý...'
-                    : emailMode === 'register'
-                      ? 'Đăng ký tài khoản'
-                      : 'Đăng nhập'}
-                </button>
-              </form>
+                ) : (
+                  <LogIn className="w-4 h-4" />
+                )}
+                {loading
+                  ? 'Đang xử lý...'
+                  : authMode === 'register'
+                    ? 'Tạo tài khoản & Vào game'
+                    : 'Đăng nhập ngay'}
+              </button>
+            </form>
+
+            {savedAccounts.length > 0 && (
+              <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-2.5">
+                <p className="text-xs font-semibold text-slate-300">
+                  Tài khoản đã lưu trên thiết bị này ({savedAccounts.length}):
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {savedAccounts.map((acc) => (
+                    <button
+                      key={acc.uid}
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login');
+                        setUsername(acc.username);
+                        setAuthError(null);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-[#0B1117] hover:bg-white/5 border border-white/10 text-left transition-colors"
+                    >
+                      <p className="text-xs font-bold text-white">
+                        {acc.username}
+                        {acc.role === 'admin' ? ' · Admin' : ''}
+                      </p>
+                      {acc.clubName && (
+                        <p className="text-[10px] text-emerald-400">{acc.clubName}</p>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -285,59 +305,7 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
     );
   }
 
-  // Screen 2: Unverified Email Guard
-  if (!firebaseUser.emailVerified) {
-    return (
-      <div className="min-h-screen bg-[#0B1117] text-slate-100 flex items-center justify-center p-4">
-        <div className="max-w-md w-full rounded-2xl bg-[#121B24] border border-white/10 p-6 space-y-5">
-          <div className="space-y-1">
-            <h2 className="font-display text-2xl font-bold text-white">Xác thực Email tài khoản</h2>
-            <p className="text-xs text-slate-400">
-              Email <span className="text-white font-medium">{firebaseUser.email}</span> cần được xác thực để bảo vệ dữ liệu đám mây của bạn.
-            </p>
-          </div>
-          {authInfo && (
-            <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-xs text-emerald-200">
-              {authInfo}
-            </div>
-          )}
-          <div className="space-y-2.5">
-            <button
-              type="button"
-              onClick={async () => {
-                setLoading(true);
-                await onEmailVerifiedRefresh();
-                setLoading(false);
-              }}
-              className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2"
-            >
-              <RefreshCw className="w-4 h-4" />
-              {loading ? 'Đang kiểm tra...' : 'Tôi đã xác thực · Tiếp tục'}
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                await sendEmailVerification(firebaseUser);
-                setAuthInfo('Đã gửi lại liên kết xác thực vào hộp thư của bạn.');
-              }}
-              className="w-full h-11 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs"
-            >
-              Gửi lại email xác thực
-            </button>
-            <button
-              type="button"
-              onClick={() => signOut(auth)}
-              className="w-full h-10 text-xs text-slate-400 hover:text-white"
-            >
-              Đăng xuất / Dùng tài khoản Google
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Screen 3: New Career Onboarding (Select Real Club & Manager Identity)
+  // Screen 2: New Career Onboarding (Select Real Club & Manager Identity)
   if (needsProfile) {
     const chosenClub = CLUBS.find((c) => c.id === selectedClubId) ?? CLUBS[0];
     const currentRealManager = REAL_MANAGERS.find((m) => m.id === chosenClub.managerId) ?? REAL_MANAGERS[0];
@@ -347,14 +315,16 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
         <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-xs text-emerald-400 font-medium">Khởi tạo sự nghiệp đám mây</p>
+              <p className="text-xs text-emerald-400 font-medium">
+                Khởi tạo sự nghiệp trên thiết bị · Tài khoản {localUser.username}
+              </p>
               <h1 className="font-display text-3xl font-extrabold text-white">
                 Bổ nhiệm Huấn luyện viên
               </h1>
             </div>
             <button
               type="button"
-              onClick={() => signOut(auth)}
+              onClick={() => logoutLocalAccount()}
               className="text-xs text-slate-400 hover:text-white px-3 h-10 rounded-lg border border-white/10"
             >
               Đổi tài khoản
@@ -511,10 +481,19 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
               className="h-12 px-6 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 shrink-0 disabled:opacity-60"
             >
               <Trophy className="w-4 h-4" />
-              {submittingCareer ? 'Đang đồng bộ Cloud...' : 'Ký hợp đồng & Bắt đầu'}
+              {submittingCareer ? 'Đang khởi tạo...' : 'Ký hợp đồng & Bắt đầu'}
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
+
+          {onRestoreBackup && (
+            <BackupRestoreCard
+              title="Đã có bản sao lưu từ bản cũ?"
+              description="Chọn file sao lưu (.json) đã tải từ bản Firebase hoặc máy cũ để khôi phục nguyên vẹn CLB, đội hình, cúp, túi đồ và thứ hạng lên thiết bị này."
+              canExport={false}
+              onRestoreBackup={onRestoreBackup}
+            />
+          )}
         </div>
       </div>
     );

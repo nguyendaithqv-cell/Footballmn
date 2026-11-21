@@ -1,16 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-} from 'firebase/firestore';
-import {
   Activity,
   BarChart3,
   BellRing,
@@ -30,7 +19,17 @@ import {
 } from 'lucide-react';
 import { ALL_CLUBS, CLUBS, INITIAL_PLAYERS } from '../data/footballDatabase';
 import { usePWAInstall } from '../hooks/usePWAInstall';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { ClubBackupBundle } from '../lib/backupEngine';
+import {
+  deleteLocalNews,
+  deleteLocalNotification,
+  listLocalActivityLogs,
+  listLocalUsers,
+  putLocalMarketOverride,
+  putLocalNews,
+  putLocalNotification,
+  updateLocalUserProfile,
+} from '../lib/localDb';
 import {
   ActivityLog,
   MarketOverride,
@@ -38,6 +37,7 @@ import {
   PushNotificationItem,
   UserProfile,
 } from '../types/game';
+import { BackupRestoreCard } from './BackupRestoreCard';
 import { ClubCrest } from './ClubBadgeAndAvatar';
 
 interface AdminDashboardViewProps {
@@ -45,6 +45,16 @@ interface AdminDashboardViewProps {
   news: NewsArticle[];
   notifications: PushNotificationItem[];
   marketOverrides: Record<string, MarketOverride>;
+  onNewsAdded?: (items: NewsArticle[]) => void;
+  onNewsDeleted?: (id: string) => void;
+  onMarketOverrideSaved?: (override: MarketOverride) => void;
+  onNotificationAdded?: (item: PushNotificationItem) => void;
+  onNotificationDeleted?: (id: string) => void;
+  onExportBackup: (includeAdminData: boolean) => Promise<void>;
+  onRestoreBackup: (
+    bundle: ClubBackupBundle,
+    restoreAdminData: boolean
+  ) => Promise<{ ok: boolean; message: string }>;
 }
 
 export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
@@ -52,6 +62,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   news,
   notifications,
   marketOverrides,
+  onNewsAdded,
+  onNewsDeleted,
+  onMarketOverrideSaved,
+  onNotificationAdded,
+  onNotificationDeleted,
+  onExportBackup,
+  onRestoreBackup,
 }) => {
   const [adminTab, setAdminTab] = useState<'stats' | 'users' | 'content' | 'push'>('stats');
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -109,32 +126,25 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setOvStatus(marketOverrides[targetPlayer.id]?.transferStatus ?? targetPlayer.transferStatus);
   }, [targetPlayer, marketOverrides]);
 
-  // Listen to /users & /activityLogs for Admin
+  // Load local users & activity logs on mount
   useEffect(() => {
-    const unsubUsers = onSnapshot(
-      collection(db, 'users'),
-      (snap) => {
-        const list: UserProfile[] = [];
-        snap.forEach((d) => list.push(d.data() as UserProfile));
-        setUsers(list);
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'users')
-    );
-
-    const logsQuery = query(collection(db, 'activityLogs'), orderBy('createdAt', 'desc'));
-    const unsubLogs = onSnapshot(
-      logsQuery,
-      (snap) => {
-        const list: ActivityLog[] = [];
-        snap.forEach((d) => list.push(d.data() as ActivityLog));
-        setLogs(list.slice(0, 100));
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'activityLogs')
-    );
-
+    let cancelled = false;
+    const loadAdminData = async () => {
+      try {
+        const [userList, logList] = await Promise.all([
+          listLocalUsers(),
+          listLocalActivityLogs(40),
+        ]);
+        if (cancelled) return;
+        setUsers(userList);
+        setLogs(logList);
+      } catch (err) {
+        setStatusBanner(err instanceof Error ? err.message : 'Không thể tải dữ liệu Admin cục bộ.');
+      }
+    };
+    void loadAdminData();
     return () => {
-      unsubUsers();
-      unsubLogs();
+      cancelled = true;
     };
   }, []);
 
@@ -172,13 +182,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (u.uid === currentAdminUid) return;
     const nextStatus = u.status === 'active' ? 'suspended' : 'active';
     try {
-      await updateDoc(doc(db, 'users', u.uid), {
-        status: nextStatus,
-        updatedAt: serverTimestamp(),
-      });
+      await updateLocalUserProfile(u.uid, { status: nextStatus });
+      setUsers((prev) =>
+        prev.map((item) => (item.uid === u.uid ? { ...item, status: nextStatus } : item))
+      );
       setStatusBanner(`Đã chuyển trạng thái ${u.managerName} thành ${nextStatus}.`);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${u.uid}`);
+      setStatusBanner(err instanceof Error ? err.message : 'Không thể cập nhật trạng thái.');
     }
   };
 
@@ -186,22 +196,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (u.uid === currentAdminUid) return;
     const nextRole = u.role === 'admin' ? 'manager' : 'admin';
     try {
-      await updateDoc(doc(db, 'users', u.uid), {
-        role: nextRole,
-        updatedAt: serverTimestamp(),
-      });
-      if (nextRole === 'admin') {
-        await setDoc(doc(db, 'admins', u.uid), {
-          uid: u.uid,
-          grantedBy: currentAdminUid,
-          createdAt: serverTimestamp(),
-        });
-      } else {
-        await deleteDoc(doc(db, 'admins', u.uid));
-      }
+      await updateLocalUserProfile(u.uid, { role: nextRole });
+      setUsers((prev) =>
+        prev.map((item) => (item.uid === u.uid ? { ...item, role: nextRole } : item))
+      );
       setStatusBanner(`Đã cập nhật quyền của ${u.managerName} thành ${nextRole}.`);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${u.uid}`);
+      setStatusBanner(err instanceof Error ? err.message : 'Không thể cập nhật quyền tài khoản.');
     }
   };
 
@@ -210,28 +211,30 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (!newsTitle.trim() || !newsSummary.trim()) return;
     setPublishingNews(true);
     const id = `news-${Date.now()}`;
+    const newItem: NewsArticle = {
+      id,
+      title: newsTitle.trim().slice(0, 175),
+      summary: newsSummary.trim().slice(0, 1150),
+      category: newsCategory,
+      playerName: newsPlayer.trim().slice(0, 75),
+      clubTag: newsClubTag.trim().slice(0, 60),
+      feeText: newsFee.trim().slice(0, 40),
+      isBreaking: newsBreaking,
+      authorUid: currentAdminUid,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
     try {
-      await setDoc(doc(db, 'news', id), {
-        id,
-        title: newsTitle.trim().slice(0, 175),
-        summary: newsSummary.trim().slice(0, 1150),
-        category: newsCategory,
-        playerName: newsPlayer.trim().slice(0, 75),
-        clubTag: newsClubTag.trim().slice(0, 60),
-        feeText: newsFee.trim().slice(0, 40),
-        isBreaking: newsBreaking,
-        authorUid: currentAdminUid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await putLocalNews(newItem);
+      onNewsAdded?.([newItem]);
       setNewsTitle('');
       setNewsSummary('');
       setNewsPlayer('');
       setNewsClubTag('');
       setNewsFee('');
-      setStatusBanner('Đã đăng bản tin mới lên đám mây.');
+      setStatusBanner('Đã lưu bản tin mới vào thiết bị.');
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `news/${id}`);
+      setStatusBanner(err instanceof Error ? err.message : 'Không thể đăng bản tin.');
     } finally {
       setPublishingNews(false);
     }
@@ -252,10 +255,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         return;
       }
       const firstSource = Array.isArray(data.sources) && data.sources[0] ? data.sources[0] : null;
+      const addedArticles: NewsArticle[] = [];
       let count = 0;
       for (const item of data.items.slice(0, 3)) {
         const id = `live-${Date.now()}-${count}`;
-        await setDoc(doc(db, 'news', id), {
+        const article: NewsArticle = {
           id,
           title: String(item.title || 'Tin chuyển nhượng mới').slice(0, 175),
           summary: String(item.summary || 'Cập nhật thị trường chuyển nhượng quốc tế.').slice(0, 1150),
@@ -269,14 +273,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           sourceUrl: firstSource?.uri ? String(firstSource.uri).slice(0, 380) : '',
           isBreaking: Boolean(item.isBreaking),
           authorUid: currentAdminUid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        await putLocalNews(article);
+        addedArticles.push(article);
         count++;
       }
-      setStatusBanner(`Đã đồng bộ và xuất bản ${count} tin chuyển nhượng thực tế mới nhất lên Firestore.`);
+      if (addedArticles.length > 0) {
+        onNewsAdded?.(addedArticles);
+      }
+      setStatusBanner(`Đã đồng bộ và lưu ${count} tin chuyển nhượng thực tế mới nhất vào thiết bị.`);
     } catch (err) {
-      setStatusBanner(err instanceof Error ? err.message : 'Lỗi đồng bộ tin web.');
+      setStatusBanner(err instanceof Error ? err.message : 'Lỗi đồng bộ tin web (cần kết nối mạng).');
     } finally {
       setSyncingWebNews(false);
     }
@@ -284,19 +293,21 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   const handleSaveMarketOverride = async (e: React.FormEvent) => {
     e.preventDefault();
+    const overrideItem: MarketOverride = {
+      playerId: targetPlayer.id,
+      clubId: ovClubId,
+      marketValueM: Number(ovValueM),
+      rating: Math.round(Number(ovRating)),
+      transferStatus: ovStatus,
+      updatedBy: currentAdminUid,
+      updatedAt: Date.now(),
+    };
     try {
-      await setDoc(doc(db, 'marketOverrides', targetPlayer.id), {
-        playerId: targetPlayer.id,
-        clubId: ovClubId,
-        marketValueM: Number(ovValueM),
-        rating: Math.round(Number(ovRating)),
-        transferStatus: ovStatus,
-        updatedBy: currentAdminUid,
-        updatedAt: serverTimestamp(),
-      });
-      setStatusBanner(`Đã cập nhật giá trị thị trường của ${targetPlayer.name} trên toàn hệ thống.`);
+      await putLocalMarketOverride(overrideItem);
+      onMarketOverrideSaved?.(overrideItem);
+      setStatusBanner(`Đã cập nhật giá trị thị trường của ${targetPlayer.name} trên thiết bị.`);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `marketOverrides/${targetPlayer.id}`);
+      setStatusBanner(err instanceof Error ? err.message : 'Không thể lưu cập nhật thị trường.');
     }
   };
 
@@ -305,20 +316,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (!pushTitle.trim() || !pushBody.trim()) return;
     setSendingPush(true);
     const id = `push-${Date.now()}`;
+    const item: PushNotificationItem = {
+      id,
+      title: pushTitle.trim().slice(0, 135),
+      body: pushBody.trim().slice(0, 480),
+      category: pushCategory,
+      authorUid: currentAdminUid,
+      createdAt: Date.now(),
+    };
     try {
-      await setDoc(doc(db, 'notifications', id), {
-        id,
-        title: pushTitle.trim().slice(0, 135),
-        body: pushBody.trim().slice(0, 480),
-        category: pushCategory,
-        authorUid: currentAdminUid,
-        createdAt: serverTimestamp(),
-      });
+      await putLocalNotification(item);
+      onNotificationAdded?.(item);
       setPushTitle('');
       setPushBody('');
-      setStatusBanner('Đã phát thông báo đẩy thời gian thực tới tất cả người dùng.');
+      setStatusBanner('Đã phát thông báo tới các tài khoản trên thiết bị.');
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `notifications/${id}`);
+      setStatusBanner(err instanceof Error ? err.message : 'Không thể gửi thông báo.');
     } finally {
       setSendingPush(false);
     }
@@ -330,7 +343,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         <div>
           <p className="text-xs text-amber-400 font-semibold">Bảng điều khiển Quản trị viên</p>
           <h2 className="font-display text-2xl font-extrabold text-white">
-            Quản lý Hệ thống & Dữ liệu Đám mây
+            Quản lý Hệ thống & Dữ liệu Cục bộ
           </h2>
         </div>
 
@@ -649,7 +662,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   <span className="text-slate-200 truncate">{n.title}</span>
                   <button
                     type="button"
-                    onClick={() => deleteDoc(doc(db, 'news', n.id))}
+                    onClick={async () => {
+                      try {
+                        await deleteLocalNews(n.id);
+                        onNewsDeleted?.(n.id);
+                      } catch (err) {
+                        setStatusBanner(err instanceof Error ? err.message : 'Không thể xóa bản tin.');
+                      }
+                    }}
                     className="min-w-[36px] min-h-[36px] flex items-center justify-center text-red-400 hover:text-red-300"
                     aria-label="Xóa tin"
                   >
@@ -816,7 +836,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => deleteDoc(doc(db, 'notifications', n.id))}
+                    onClick={async () => {
+                      try {
+                        await deleteLocalNotification(n.id);
+                        onNotificationDeleted?.(n.id);
+                      } catch (err) {
+                        setStatusBanner(err instanceof Error ? err.message : 'Không thể xóa thông báo.');
+                      }
+                    }}
                     className="min-w-[36px] min-h-[36px] flex items-center justify-center text-red-400"
                     aria-label="Xóa thông báo"
                   >
@@ -828,6 +855,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Full Backup & Restore Section */}
+      <BackupRestoreCard
+        title="Sao lưu & Phục hồi Toàn bộ Dữ liệu (CLB + Hệ thống)"
+        description="Xuất toàn bộ sự nghiệp CLB, đội hình, túi đồ, xếp hạng và dữ liệu Admin (Tin tức, Thị trường, Thông báo) ra file .json để chuyển qua tài khoản hoặc bản remix mới."
+        isAdmin={true}
+        onExportBackup={onExportBackup}
+        onRestoreBackup={onRestoreBackup}
+      />
 
       {/* Mobile PWA App Install Section at bottom of Admin */}
       <div className="rounded-2xl bg-[#121B24] border border-emerald-500/25 p-4 space-y-3">

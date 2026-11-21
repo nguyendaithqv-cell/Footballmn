@@ -1,19 +1,4 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from 'firebase/firestore';
 import {
   ArrowLeftRight,
   Bell,
@@ -59,14 +44,42 @@ import {
   PACK_CATALOG,
 } from './lib/inventoryEngine';
 import {
-  auth,
-  db,
-  FIRESTORE_QUOTA_UPGRADE_URL,
-  handleFirestoreError,
-  hasFirestoreQuotaExceeded,
-  OperationType,
-  subscribeFirestoreQuota,
-} from './lib/firebase';
+  buildCompactCareerForStorage,
+  ClubBackupBundle,
+  createClubBackupBundle,
+  downloadBackupFile,
+} from './lib/backupEngine';
+import {
+  deleteLocalClubNotification,
+  deleteLocalFriendship,
+  getLocalArenaProfile,
+  getLocalCareer,
+  getLocalUserProfile,
+  listLocalArenaChallenges,
+  listLocalArenaProfiles,
+  listLocalClubNotifications,
+  listLocalFriendships,
+  listLocalMarketOverrides,
+  listLocalNews,
+  listLocalNotifications,
+  LocalUser,
+  logoutLocalAccount,
+  putLocalActivityLog,
+  putLocalArenaChallenge,
+  putLocalArenaProfile,
+  putLocalCareer,
+  putLocalClubNotification,
+  putLocalFriendship,
+  putLocalMarketOverride,
+  putLocalNews,
+  putLocalNotification,
+  putLocalUserProfile,
+  shouldBeInitialAdmin,
+  subscribeLocalAuth,
+  updateLocalArenaChallenge,
+  updateLocalFriendship,
+  updateLocalUserProfile,
+} from './lib/localDb';
 import {
   getPushPermission,
   requestPushPermission,
@@ -125,11 +138,9 @@ const AdminDashboardView = lazy(() =>
 
 type MainTab = 'home' | 'tactics' | 'match' | 'transfers' | 'inventory' | 'online' | 'admin';
 
-const ADMIN_EMAIL = 'nguyendai.thqv@gmail.com';
-
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [localUser, setLocalUser] = useState<LocalUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [career, setCareer] = useState<CareerSave | null>(null);
   const [needsProfile, setNeedsProfile] = useState(false);
@@ -137,7 +148,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<MainTab>('home');
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
 
-  // Real-time cloud feeds
+  // Local device feeds (IndexedDB)
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [notifications, setNotifications] = useState<PushNotificationItem[]>([]);
   const [clubNotifications, setClubNotifications] = useState<ClubNotificationItem[]>([]);
@@ -156,73 +167,56 @@ export default function App() {
     null
   );
   const [unreadCount, setUnreadCount] = useState(0);
-  const [quotaExceeded, setQuotaExceeded] = useState<boolean>(() => hasFirestoreQuotaExceeded());
-  const [quotaBannerDismissed, setQuotaBannerDismissed] = useState(false);
-  const initialNotifLoadedRef = useRef(false);
-  const seenNotifIdsRef = useRef<Set<string>>(new Set());
-  const initialClubNotifLoadedRef = useRef(false);
-  const seenClubNotifIdsRef = useRef<Set<string>>(new Set());
   const tacticsNotifTimerRef = useRef<number | null>(null);
   const tacticsSaveTimerRef = useRef<number | null>(null);
   const arenaSyncTimerRef = useRef<number | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
   const arenaLoadedRef = useRef(false);
   const lastSyncedArenaSigRef = useRef('');
   const prevCareerRef = useRef<CareerSave | null>(null);
 
-  useEffect(() => subscribeFirestoreQuota(setQuotaExceeded), []);
-
   const isAdmin = useMemo(() => {
-    if (!firebaseUser?.emailVerified) return false;
-    return firebaseUser.email === ADMIN_EMAIL || profile?.role === 'admin';
-  }, [firebaseUser, profile]);
+    if (!localUser) return false;
+    return profile?.role === 'admin' || localUser.username.trim().toLowerCase() === 'admin';
+  }, [localUser, profile]);
 
   const hydratedCareer = useMemo(
     () => (career ? ensureCareerCompetitions(career) : null),
     [career]
   );
 
-  // 1. Auth State Listener
+  // 1. Local Auth State Listener
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      setFirebaseUser(user);
+    const unsub = subscribeLocalAuth(async (user) => {
+      setLocalUser(user);
       if (!user) {
         setProfile(null);
         setCareer(null);
+        prevCareerRef.current = null;
         setClubNotifications([]);
         setNotifications([]);
         setCloudArenaProfiles([]);
         setArenaChallenges([]);
         setFriendships([]);
         setUnreadCount(0);
-        initialNotifLoadedRef.current = false;
-        initialClubNotifLoadedRef.current = false;
-        seenNotifIdsRef.current.clear();
-        seenClubNotifIdsRef.current.clear();
         arenaLoadedRef.current = false;
         lastSyncedArenaSigRef.current = '';
         setNeedsProfile(false);
-        setAuthReady(true);
-        return;
-      }
-
-      if (!user.emailVerified) {
+        setActiveTab('home');
         setAuthReady(true);
         return;
       }
 
       try {
-        const userRef = doc(db, 'users', user.uid);
-        const userSnap = await getDoc(userRef);
-        if (!userSnap.exists()) {
+        const userProfile = await getLocalUserProfile(user.uid);
+        if (!userProfile) {
+          setProfile(null);
           setNeedsProfile(true);
-          setAuthReady(true);
-          return;
+        } else {
+          setProfile(userProfile);
+          setNeedsProfile(false);
         }
-        setProfile(userSnap.data() as UserProfile);
-        setNeedsProfile(false);
       } catch (err) {
-        handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+        console.error('Lỗi tải hồ sơ cục bộ:', err);
       } finally {
         setAuthReady(true);
       }
@@ -230,206 +224,80 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // 2. Real-time Firestore Listeners when authenticated & verified
+  // 2. Load local career + session feeds from IndexedDB
   useEffect(() => {
-    if (!firebaseUser?.emailVerified || needsProfile) return;
+    if (!localUser || needsProfile) return;
 
-    const uid = firebaseUser.uid;
-    const unsubCareer = onSnapshot(
-      doc(db, 'careers', uid),
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as CareerSave;
-          prevCareerRef.current = data;
-          setCareer(data);
+    const uid = localUser.uid;
+    let cancelled = false;
+
+    const loadSessionData = async () => {
+      try {
+        const [savedCareer, newsList, notifList, clubNotifList, overrideMap] = await Promise.all([
+          getLocalCareer(uid),
+          listLocalNews(25),
+          listLocalNotifications(20),
+          listLocalClubNotifications(uid, 25),
+          listLocalMarketOverrides(),
+        ]);
+        if (cancelled) return;
+
+        if (savedCareer) {
+          prevCareerRef.current = savedCareer;
+          setCareer(savedCareer);
         }
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, `careers/${uid}`)
-    );
-
-    const unsubProfile = onSnapshot(
-      doc(db, 'users', uid),
-      (snap) => {
-        if (snap.exists()) {
-          setProfile(snap.data() as UserProfile);
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
-    );
-
-    const newsQuery = query(collection(db, 'news'), orderBy('createdAt', 'desc'), limit(25));
-    const unsubNews = onSnapshot(
-      newsQuery,
-      (snap) => {
-        const list: NewsArticle[] = [];
-        snap.forEach((d) => list.push(d.data() as NewsArticle));
-        setNews(list);
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'news')
-    );
-
-    const notifQuery = query(
-      collection(db, 'notifications'),
-      orderBy('createdAt', 'desc'),
-      limit(20)
-    );
-    const unsubNotifs = onSnapshot(
-      notifQuery,
-      (snap) => {
-        const list: PushNotificationItem[] = [];
-        snap.forEach((d) => list.push(d.data() as PushNotificationItem));
-        setNotifications(list);
-
-        if (!initialNotifLoadedRef.current) {
-          list.forEach((n) => seenNotifIdsRef.current.add(n.id));
-          initialNotifLoadedRef.current = true;
-          return;
-        }
-
-        // Dispatch Push + In-App Toast for newly arrived notifications
-        for (const item of list) {
-          if (!seenNotifIdsRef.current.has(item.id)) {
-            seenNotifIdsRef.current.add(item.id);
-            setUnreadCount((c) => c + 1);
-            setLiveToast({ title: item.title, body: item.body, tag: 'HỆ THỐNG' });
-            triggerDeviceNotification(item.title, item.body, item.id);
-            if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-            toastTimerRef.current = window.setTimeout(() => setLiveToast(null), 6500);
-            break;
-          }
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'notifications')
-    );
-
-    const clubNotifQuery = query(
-      collection(db, 'users', uid, 'clubNotifications'),
-      orderBy('createdAt', 'desc'),
-      limit(40)
-    );
-    const unsubClubNotifs = onSnapshot(
-      clubNotifQuery,
-      (snap) => {
-        const list: ClubNotificationItem[] = [];
-        snap.forEach((d) => list.push(d.data() as ClubNotificationItem));
-        setClubNotifications(list);
-
-        if (!initialClubNotifLoadedRef.current) {
-          list.forEach((n) => seenClubNotifIdsRef.current.add(n.id));
-          initialClubNotifLoadedRef.current = true;
-          return;
-        }
-
-        for (const item of list) {
-          if (!seenClubNotifIdsRef.current.has(item.id)) {
-            seenClubNotifIdsRef.current.add(item.id);
-            setUnreadCount((c) => c + 1);
-            setLiveToast({ title: item.title, body: item.body, tag: 'CẬP NHẬT CLB' });
-            triggerDeviceNotification(item.title, item.body, item.id);
-            if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-            toastTimerRef.current = window.setTimeout(() => setLiveToast(null), 5500);
-            break;
-          }
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/clubNotifications`)
-    );
-
-    const unsubOverrides = onSnapshot(
-      collection(db, 'marketOverrides'),
-      (snap) => {
-        const map: Record<string, MarketOverride> = {};
-        snap.forEach((d) => {
-          const data = d.data() as MarketOverride;
-          map[data.playerId] = data;
-        });
-        setMarketOverrides(map);
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'marketOverrides')
-    );
-
-    const arenaProfilesQuery = query(
-      collection(db, 'arenaProfiles'),
-      where('visibility', '==', 'public'),
-      limit(100)
-    );
-    const unsubArenaProfiles = onSnapshot(
-      arenaProfilesQuery,
-      (snap) => {
-        const list: ArenaProfile[] = [];
-        snap.forEach((d) => list.push(d.data() as ArenaProfile));
-        arenaLoadedRef.current = true;
-        setCloudArenaProfiles(list);
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'arenaProfiles')
-    );
-
-    const toTimeMs = (ts: unknown): number => {
-      if (ts && typeof (ts as { toMillis?: () => number }).toMillis === 'function') {
-        return (ts as { toMillis: () => number }).toMillis();
+        setNews(newsList);
+        setNotifications(notifList);
+        setClubNotifications(clubNotifList);
+        setMarketOverrides(overrideMap);
+      } catch (err) {
+        console.error('Lỗi tải dữ liệu phiên chơi cục bộ:', err);
       }
-      return 0;
     };
 
-    const challengesQuery = query(
-      collection(db, 'arenaChallenges'),
-      where('participants', 'array-contains', uid),
-      limit(60)
-    );
-    const unsubChallenges = onSnapshot(
-      challengesQuery,
-      (snap) => {
-        const list: ArenaChallenge[] = [];
-        snap.forEach((d) => list.push(d.data() as ArenaChallenge));
-        list.sort(
-          (a, b) =>
-            (toTimeMs(b.updatedAt) || toTimeMs(b.createdAt)) -
-            (toTimeMs(a.updatedAt) || toTimeMs(a.createdAt))
-        );
-        setArenaChallenges(list);
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'arenaChallenges')
-    );
-
-    const friendshipsQuery = query(
-      collection(db, 'friendships'),
-      where('participants', 'array-contains', uid),
-      limit(80)
-    );
-    const unsubFriendships = onSnapshot(
-      friendshipsQuery,
-      (snap) => {
-        const list: Friendship[] = [];
-        snap.forEach((d) => list.push(d.data() as Friendship));
-        list.sort(
-          (a, b) =>
-            (toTimeMs(b.updatedAt) || toTimeMs(b.createdAt)) -
-            (toTimeMs(a.updatedAt) || toTimeMs(a.createdAt))
-        );
-        setFriendships(list);
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'friendships')
-    );
+    void loadSessionData();
 
     return () => {
-      unsubCareer();
-      unsubProfile();
-      unsubNews();
-      unsubNotifs();
-      unsubClubNotifs();
-      unsubOverrides();
-      unsubArenaProfiles();
-      unsubChallenges();
-      unsubFriendships();
+      cancelled = true;
     };
-  }, [firebaseUser, needsProfile]);
+  }, [localUser, needsProfile]);
+
+  // 3. Load Online Arena profiles/challenges/friends from local storage when viewing Online tab
+  useEffect(() => {
+    if (activeTab !== 'online' || !localUser || needsProfile) return;
+
+    const uid = localUser.uid;
+    let cancelled = false;
+
+    const loadArenaData = async () => {
+      try {
+        const [profilesList, challengesList, friendshipsList] = await Promise.all([
+          listLocalArenaProfiles(),
+          listLocalArenaChallenges(uid),
+          listLocalFriendships(uid),
+        ]);
+        if (cancelled) return;
+        arenaLoadedRef.current = true;
+        setCloudArenaProfiles(profilesList);
+        setArenaChallenges(challengesList);
+        setFriendships(friendshipsList);
+      } catch (err) {
+        console.error('Lỗi tải dữ liệu Đấu trường:', err);
+      }
+    };
+
+    void loadArenaData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, localUser, needsProfile]);
 
   useEffect(() => {
     return () => {
       if (tacticsNotifTimerRef.current) window.clearTimeout(tacticsNotifTimerRef.current);
       if (tacticsSaveTimerRef.current) window.clearTimeout(tacticsSaveTimerRef.current);
       if (arenaSyncTimerRef.current) window.clearTimeout(arenaSyncTimerRef.current);
-      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     };
   }, []);
 
@@ -440,42 +308,45 @@ export default function App() {
       body: string,
       targetUid?: string
     ) => {
-      const uid = targetUid ?? firebaseUser?.uid;
+      const uid = targetUid ?? localUser?.uid;
       if (!uid) return;
-      if (hasFirestoreQuotaExceeded()) return;
       const safeTitle = (title.trim() || 'Cập nhật CLB').slice(0, 140);
-      const safeBody = (body.trim() || 'Dữ liệu câu lạc bộ đã được đồng bộ.').slice(0, 400);
+      const safeBody = (body.trim() || 'Dữ liệu câu lạc bộ đã được lưu trên thiết bị.').slice(0, 400);
+      const normalizedTitle = safeTitle.length < 2 ? `${safeTitle}.` : safeTitle;
+      const normalizedBody = safeBody.length < 2 ? `${safeBody}.` : safeBody;
       const notifId = `cn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+      const localItem: ClubNotificationItem = {
+        id: notifId,
+        uid,
+        category,
+        title: normalizedTitle,
+        body: normalizedBody,
+        createdAt: Date.now(),
+      };
+      setClubNotifications((prev) => [localItem, ...prev].slice(0, 25));
+      setUnreadCount((c) => Math.min(99, c + 1));
+
       try {
-        await setDoc(doc(db, 'users', uid, 'clubNotifications', notifId), {
-          id: notifId,
-          uid,
-          category,
-          title: safeTitle.length < 2 ? `${safeTitle}.` : safeTitle,
-          body: safeBody.length < 2 ? `${safeBody}.` : safeBody,
-          createdAt: serverTimestamp(),
-        });
+        await putLocalClubNotification(localItem);
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${uid}/clubNotifications/${notifId}`);
+        console.error('Lỗi lưu thông báo CLB cục bộ:', err);
       }
     },
-    [firebaseUser]
+    [localUser]
   );
 
   const handleDeleteClubNotification = useCallback(
     async (notifId: string) => {
-      if (!firebaseUser) return;
+      setClubNotifications((prev) => prev.filter((n) => n.id !== notifId));
+      if (!localUser) return;
       try {
-        await deleteDoc(doc(db, 'users', firebaseUser.uid, 'clubNotifications', notifId));
+        await deleteLocalClubNotification(notifId);
       } catch (err) {
-        handleFirestoreError(
-          err,
-          OperationType.DELETE,
-          `users/${firebaseUser.uid}/clubNotifications/${notifId}`
-        );
+        console.error('Lỗi xóa thông báo CLB cục bộ:', err);
       }
     },
-    [firebaseUser]
+    [localUser]
   );
 
   const handleCompleteOnboarding = useCallback(
@@ -485,26 +356,29 @@ export default function App() {
       clubId: string;
       preferredFormation: FormationId;
     }) => {
-      if (!firebaseUser) return;
-      const uid = firebaseUser.uid;
+      if (!localUser) return;
+      const uid = localUser.uid;
       const club = CLUBS.find((c) => c.id === data.clubId) ?? CLUBS[0];
+      const adminRole = await shouldBeInitialAdmin(localUser.username);
+      const now = Date.now();
 
-      const newProfile: Record<string, unknown> = {
+      const newProfile: UserProfile = {
         uid,
         managerName: data.managerName,
         nationality: data.nationality,
         clubId: club.id,
         clubName: club.name,
         preferredFormation: data.preferredFormation,
-        role: 'manager',
+        role: adminRole ? 'admin' : 'manager',
         status: 'active',
         matchesPlayed: 0,
         wins: 0,
         draws: 0,
         losses: 0,
         trophies: 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: now,
+        updatedAt: now,
+        lastActiveAt: now,
       };
 
       const initialCareer = createInitialCareer(uid, club.id, marketOverrides);
@@ -517,26 +391,19 @@ export default function App() {
       }
 
       try {
-        await setDoc(doc(db, 'users', uid), newProfile);
-        await setDoc(doc(db, 'users', uid, 'private', 'account'), {
-          uid,
-          email: firebaseUser.email || 'manager@touchlinexi.com',
-          pushEnabled: pushPermission === 'granted',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        await setDoc(doc(db, 'careers', uid), {
+        await putLocalUserProfile(newProfile);
+        await putLocalCareer({
           ...initialCareer,
-          updatedAt: serverTimestamp(),
+          updatedAt: now,
         });
-        const logId = `start-${uid}-${Date.now()}`;
-        await setDoc(doc(db, 'activityLogs', logId), {
+        const logId = `start-${uid}-${now}`;
+        await putLocalActivityLog({
           id: logId,
           uid,
           eventType: 'career_started',
           clubId: club.id,
           detail: `${data.managerName} tiếp quản ${club.name}`,
-          createdAt: serverTimestamp(),
+          createdAt: now,
         });
         await pushClubNotification(
           'season',
@@ -544,95 +411,34 @@ export default function App() {
           `${data.managerName} chính thức tiếp quản ${club.name} ở mùa giải 2026/27 (${data.preferredFormation}).`,
           uid
         );
+        prevCareerRef.current = initialCareer;
+        setCareer(initialCareer);
+        setProfile(newProfile);
         setNeedsProfile(false);
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${uid}`);
+        console.error('Lỗi khởi tạo sự nghiệp cục bộ:', err);
       }
     },
-    [firebaseUser, marketOverrides, pushPermission, pushClubNotification]
+    [localUser, marketOverrides, pushClubNotification]
   );
-
-  const sanitizeForFirestore = (val: unknown): unknown => {
-    if (val === null || typeof val !== 'object') return val;
-    if (Array.isArray(val)) return val.map((item) => sanitizeForFirestore(item));
-    const proto = Object.getPrototypeOf(val);
-    if (proto !== Object.prototype && proto !== null) {
-      // Preserve Firestore FieldValue sentinels (e.g. serverTimestamp) and Date instances
-      return val;
-    }
-    const clean: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-      if (v !== undefined) {
-        clean[k] = sanitizeForFirestore(v);
-      }
-    }
-    return clean;
-  };
 
   const saveCareerCloud = useCallback(
     async (nextCareer: CareerSave) => {
-      if (!firebaseUser) return;
-      const prev = prevCareerRef.current;
-      prevCareerRef.current = nextCareer;
-      setCareer(nextCareer);
-      if (hasFirestoreQuotaExceeded()) return;
+      if (!localUser) return;
+      const normalizedCareer: CareerSave = {
+        ...nextCareer,
+        uid: localUser.uid,
+        ...(nextCareer.inventory ? { inventory: normalizeInventory(nextCareer.inventory) } : {}),
+      };
+      prevCareerRef.current = normalizedCareer;
+      setCareer(normalizedCareer);
       try {
-        const normalizedInv = nextCareer.inventory
-          ? normalizeInventory(nextCareer.inventory)
-          : undefined;
-        const candidateFields: Array<[string, unknown, unknown]> = [
-          ['clubId', nextCareer.clubId, prev?.clubId],
-          ['season', nextCareer.season, prev?.season],
-          ['matchweek', nextCareer.matchweek, prev?.matchweek],
-          ['transferBudget', nextCareer.transferBudget, prev?.transferBudget],
-          ['wageBudget', nextCareer.wageBudget, prev?.wageBudget],
-          ['boardConfidence', nextCareer.boardConfidence, prev?.boardConfidence],
-          ['fanSupport', nextCareer.fanSupport, prev?.fanSupport],
-          ['trainingFocus', nextCareer.trainingFocus, prev?.trainingFocus],
-          ['trainingIntensity', nextCareer.trainingIntensity, prev?.trainingIntensity],
-          ['tactics', nextCareer.tactics, prev?.tactics],
-          ['squad', nextCareer.squad, prev?.squad],
-          ['standings', nextCareer.standings, prev?.standings],
-          ['fixtures', nextCareer.fixtures, prev?.fixtures],
-          ['recentResults', nextCareer.recentResults, prev?.recentResults],
-          ['transferHistory', nextCareer.transferHistory ?? [], prev?.transferHistory ?? []],
-          ['competitions', nextCareer.competitions, prev?.competitions],
-          ['trophyCabinet', nextCareer.trophyCabinet, prev?.trophyCabinet],
-          ['seasonHistory', nextCareer.seasonHistory, prev?.seasonHistory],
-          ['inventory', normalizedInv, prev?.inventory ? normalizeInventory(prev.inventory) : undefined],
-          ['onlineTournament', nextCareer.onlineTournament, prev?.onlineTournament],
-        ];
-
-        const payload: Record<string, unknown> = {};
-        let changedCount = 0;
-        for (const [key, nextVal, prevVal] of candidateFields) {
-          if (nextVal === undefined) continue;
-          if (!prev || nextVal !== prevVal) {
-            // Confirm serialized change for non-primitive fields to skip massive unchanged blobs
-            if (
-              prev &&
-              prevVal !== undefined &&
-              typeof nextVal === 'object' &&
-              JSON.stringify(nextVal) === JSON.stringify(prevVal)
-            ) {
-              continue;
-            }
-            payload[key] = nextVal;
-            changedCount++;
-          }
-        }
-        if (changedCount === 0) return;
-        payload.updatedAt = serverTimestamp();
-
-        await updateDoc(
-          doc(db, 'careers', firebaseUser.uid),
-          sanitizeForFirestore(payload) as Record<string, unknown>
-        );
+        await putLocalCareer(normalizedCareer);
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `careers/${firebaseUser.uid}`);
+        console.error('Lỗi lưu tiến trình CLB cục bộ:', err);
       }
     },
-    [firebaseUser]
+    [localUser]
   );
 
   const handleUpdateTactics = useCallback(
@@ -674,7 +480,7 @@ export default function App() {
 
   const handleCompleteMatchweek = useCallback(
     async (userMatch: MatchResultSummary, allMatches: MatchResultSummary[]) => {
-      if (!hydratedCareer || !firebaseUser || !profile) return;
+      if (!hydratedCareer || !localUser || !profile) return;
       if (hydratedCareer.recentResults.some((r) => r.id === userMatch.id)) return;
 
       let nextStandings = [...hydratedCareer.standings];
@@ -701,7 +507,8 @@ export default function App() {
           played: true,
           homeGoals: m.homeGoals,
           awayGoals: m.awayGoals,
-          report: toCompactMatchReport(m, involvesUser),
+          // Store detailed report only for user's matches; AI matches reconstruct deterministically on demand
+          ...(involvesUser ? { report: toCompactMatchReport(m, true) } : {}),
         };
       });
 
@@ -833,32 +640,26 @@ export default function App() {
         inventory: nextInv,
         recentResults: [
           userMatch,
-          ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
-        ].slice(0, 50),
+          ...hydratedCareer.recentResults
+            .filter((r) => r.id !== userMatch.id)
+            .map((r, idx) => (idx >= 5 && r.playerRatings ? { ...r, playerRatings: undefined } : r)),
+        ].slice(0, 15),
       };
 
       await saveCareerCloud(nextCareer);
-      if (hasFirestoreQuotaExceeded()) return;
 
       try {
-        await updateDoc(doc(db, 'users', firebaseUser.uid), {
+        const nextProfileStats = {
           matchesPlayed: (profile.matchesPlayed || 0) + 1,
           wins: (profile.wins || 0) + (won ? 1 : 0),
           draws: (profile.draws || 0) + (drawn ? 1 : 0),
           losses: (profile.losses || 0) + (!won && !drawn ? 1 : 0),
           trophies: (profile.trophies || 0) + awardedLeagueTrophy,
-          lastActiveAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        const logId = `match-${firebaseUser.uid}-${Date.now()}`;
-        await setDoc(doc(db, 'activityLogs', logId), {
-          id: logId,
-          uid: firebaseUser.uid,
-          eventType: 'match_played',
-          clubId: hydratedCareer.clubId,
-          detail: `VĐQG V${hydratedCareer.matchweek}: ${userMatch.homeGoals}-${userMatch.awayGoals}`,
-          createdAt: serverTimestamp(),
+        };
+        setProfile((prev) => (prev ? { ...prev, ...nextProfileStats } : prev));
+        await updateLocalUserProfile(localUser.uid, {
+          ...nextProfileStats,
+          lastActiveAt: Date.now(),
         });
 
         const hName = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
@@ -878,10 +679,10 @@ export default function App() {
           );
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        console.error('Lỗi cập nhật thống kê vòng đấu:', err);
       }
     },
-    [hydratedCareer, firebaseUser, profile, saveCareerCloud, pushClubNotification]
+    [hydratedCareer, localUser, profile, saveCareerCloud, pushClubNotification]
   );
 
   const handleCompleteCupMatch = useCallback(
@@ -890,7 +691,7 @@ export default function App() {
       userMatch: MatchResultSummary | null,
       roundEntries: { matchId: string; result: MatchResultSummary }[]
     ) => {
-      if (!hydratedCareer || !hydratedCareer.competitions || !firebaseUser || !profile) return;
+      if (!hydratedCareer || !hydratedCareer.competitions || !localUser || !profile) return;
       if (roundEntries.length === 0) return;
 
       const resultsMap = new Map(roundEntries.map((e) => [e.matchId, e.result]));
@@ -1069,45 +870,42 @@ export default function App() {
         trophyCabinet: nextCabinet,
         inventory: nextInv,
         recentResults: userMatch
-          ? [userMatch, ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id)].slice(
-              0,
-              50
-            )
+          ? [
+              userMatch,
+              ...hydratedCareer.recentResults
+                .filter((r) => r.id !== userMatch.id)
+                .map((r, idx) =>
+                  idx >= 5 && r.playerRatings ? { ...r, playerRatings: undefined } : r
+                ),
+            ].slice(0, 15)
           : hydratedCareer.recentResults,
       };
 
       await saveCareerCloud(nextCareer);
-      if (hasFirestoreQuotaExceeded()) return;
 
       try {
         if (userMatch || trophiesAdded > 0) {
-          await updateDoc(doc(db, 'users', firebaseUser.uid), {
+          const nextProfileStats = {
             matchesPlayed: (profile.matchesPlayed || 0) + (userMatch ? 1 : 0),
             wins: (profile.wins || 0) + (userMatch && wonMatch ? 1 : 0),
             draws: (profile.draws || 0) + (userMatch && drawnMatch ? 1 : 0),
             losses: (profile.losses || 0) + (userMatch && !wonMatch && !drawnMatch ? 1 : 0),
             trophies: (profile.trophies || 0) + trophiesAdded,
-            lastActiveAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+          };
+          setProfile((prev) => (prev ? { ...prev, ...nextProfileStats } : prev));
+          await updateLocalUserProfile(localUser.uid, {
+            ...nextProfileStats,
+            lastActiveAt: Date.now(),
           });
         }
 
         if (userMatch) {
-          const logId = `cup-${firebaseUser.uid}-${Date.now()}`;
           const compLabel =
             competition === 'champions-cup'
               ? 'Cúp C1'
               : competition === 'national-cup'
                 ? 'Cúp QG'
                 : 'Siêu Cúp';
-          await setDoc(doc(db, 'activityLogs', logId), {
-            id: logId,
-            uid: firebaseUser.uid,
-            eventType: 'match_played',
-            clubId: hydratedCareer.clubId,
-            detail: `${compLabel}: ${userMatch.homeGoals}-${userMatch.awayGoals}`.slice(0, 180),
-            createdAt: serverTimestamp(),
-          });
 
           const hName = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
           const aName = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
@@ -1142,15 +940,15 @@ export default function App() {
           );
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        console.error('Lỗi cập nhật thống kê cúp:', err);
       }
     },
-    [hydratedCareer, firebaseUser, profile, saveCareerCloud, pushClubNotification]
+    [hydratedCareer, localUser, profile, saveCareerCloud, pushClubNotification]
   );
 
   const handleCompleteFriendly = useCallback(
     async (userMatch: MatchResultSummary) => {
-      if (!hydratedCareer || !firebaseUser || !profile) return;
+      if (!hydratedCareer || !localUser || !profile) return;
       const isUserHome = userMatch.homeClubId === hydratedCareer.clubId;
       const myGoals = isUserHome ? userMatch.homeGoals : userMatch.awayGoals;
       const oppGoals = isUserHome ? userMatch.awayGoals : userMatch.homeGoals;
@@ -1207,21 +1005,25 @@ export default function App() {
         inventory: nextInv,
         recentResults: [
           userMatch,
-          ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
-        ].slice(0, 50),
+          ...hydratedCareer.recentResults
+            .filter((r) => r.id !== userMatch.id)
+            .map((r, idx) => (idx >= 5 && r.playerRatings ? { ...r, playerRatings: undefined } : r)),
+        ].slice(0, 15),
       };
 
       await saveCareerCloud(nextCareer);
-      if (hasFirestoreQuotaExceeded()) return;
 
       try {
-        await updateDoc(doc(db, 'users', firebaseUser.uid), {
+        const nextProfileStats = {
           matchesPlayed: (profile.matchesPlayed || 0) + 1,
           wins: (profile.wins || 0) + (won ? 1 : 0),
           draws: (profile.draws || 0) + (drawn ? 1 : 0),
           losses: (profile.losses || 0) + (!won && !drawn ? 1 : 0),
-          lastActiveAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+        };
+        setProfile((prev) => (prev ? { ...prev, ...nextProfileStats } : prev));
+        await updateLocalUserProfile(localUser.uid, {
+          ...nextProfileStats,
+          lastActiveAt: Date.now(),
         });
 
         const hName = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
@@ -1232,34 +1034,34 @@ export default function App() {
           `Hoàn tất trận giao hữu quốc tế · Doanh thu +€${won ? '3.0' : '2.0'}M và tăng tinh thần đội bóng.`
         );
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        console.error('Lỗi cập nhật giao hữu:', err);
       }
     },
-    [hydratedCareer, firebaseUser, profile, saveCareerCloud, pushClubNotification]
+    [hydratedCareer, localUser, profile, saveCareerCloud, pushClubNotification]
   );
 
   const handleStartNextSeason = useCallback(async () => {
-    if (!hydratedCareer || !firebaseUser || !profile) return;
+    if (!hydratedCareer || !localUser || !profile) return;
     const { nextCareer, summary, prizeM, newTrophiesCount } = createNextSeasonCareer(hydratedCareer);
     await saveCareerCloud(nextCareer);
-    if (hasFirestoreQuotaExceeded()) return;
 
     try {
-      await updateDoc(doc(db, 'users', firebaseUser.uid), {
-        trophies: (profile.trophies || 0) + newTrophiesCount,
-        lastActiveAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const nextTrophies = (profile.trophies || 0) + newTrophiesCount;
+      setProfile((prev) => (prev ? { ...prev, trophies: nextTrophies } : prev));
+      await updateLocalUserProfile(localUser.uid, {
+        trophies: nextTrophies,
+        lastActiveAt: Date.now(),
       });
 
-      const logId = `season-${firebaseUser.uid}-${Date.now()}`;
-      await setDoc(doc(db, 'activityLogs', logId), {
+      const logId = `season-${localUser.uid}-${Date.now()}`;
+      await putLocalActivityLog({
         id: logId,
-        uid: firebaseUser.uid,
+        uid: localUser.uid,
         eventType: 'season_completed',
         clubId: hydratedCareer.clubId,
         detail: `Kết thúc mùa ${summary.season} hạng #${summary.leagueRank}, sang mùa ${nextCareer.season}`,
         valueM: prizeM,
-        createdAt: serverTimestamp(),
+        createdAt: Date.now(),
       });
 
       await pushClubNotification(
@@ -1268,9 +1070,9 @@ export default function App() {
         `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Nhận thưởng +€${prizeM}M, cập nhật chỉ số cầu thủ và mở rộng 20 CLB (38 vòng).`
       );
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+      console.error('Lỗi chuyển mùa giải mới:', err);
     }
-  }, [hydratedCareer, firebaseUser, profile, saveCareerCloud, pushClubNotification]);
+  }, [hydratedCareer, localUser, profile, saveCareerCloud, pushClubNotification]);
 
   const handleMakeOffer = useCallback(
     async (
@@ -1278,8 +1080,8 @@ export default function App() {
       bidM: number,
       wageK: number
     ): Promise<{ ok: boolean; message: string }> => {
-      if (!hydratedCareer || !firebaseUser) {
-        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      if (!hydratedCareer || !localUser) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu câu lạc bộ.' };
       }
       if (hydratedCareer.squad.length >= 45) {
         return { ok: false, message: 'Đội hình đã đạt giới hạn tối đa 45 cầu thủ.' };
@@ -1355,20 +1157,17 @@ export default function App() {
       };
 
       await saveCareerCloud(nextCareer);
-      if (hasFirestoreQuotaExceeded()) {
-        return { ok: true, message: `Đã chiêu mộ ${player.name} (chế độ cục bộ do hết quota Firestore).` };
-      }
 
       try {
-        const logId = `tr-${firebaseUser.uid}-${Date.now()}`;
-        await setDoc(doc(db, 'activityLogs', logId), {
+        const logId = `tr-${localUser.uid}-${Date.now()}`;
+        await putLocalActivityLog({
           id: logId,
-          uid: firebaseUser.uid,
+          uid: localUser.uid,
           eventType: 'transfer_completed',
           clubId: hydratedCareer.clubId,
           detail: `Chiêu mộ ${player.name}`,
           valueM: bidM,
-          createdAt: serverTimestamp(),
+          createdAt: Date.now(),
         });
 
         await pushClubNotification(
@@ -1377,7 +1176,7 @@ export default function App() {
           `Chiêu mộ thành công ${player.name} (${player.position}, ${player.rating} OVR) với phí €${bidM}M, lương €${wageK}K/tuần.`
         );
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `activityLogs/${firebaseUser.uid}`);
+        console.error('Lỗi ghi nhật ký chuyển nhượng:', err);
       }
 
       return {
@@ -1385,7 +1184,7 @@ export default function App() {
         message: `Chúc mừng! ${player.name} đã chính thức gia nhập đội bóng với mức phí €${bidM}M.`,
       };
     },
-    [hydratedCareer, firebaseUser, saveCareerCloud, pushClubNotification]
+    [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]
   );
 
   const handleToggleTransferList = useCallback(
@@ -1936,26 +1735,18 @@ export default function App() {
   const handleEnablePush = useCallback(async () => {
     const res = await requestPushPermission();
     setPushPermission(res);
-    if (res === 'granted' && firebaseUser) {
+    if (res === 'granted' && localUser) {
       triggerDeviceNotification(
         'Touchline XI đã bật thông báo',
         'Bạn sẽ nhận thông báo tức thì khi có tin chuyển nhượng nóng.'
       );
-      try {
-        await updateDoc(doc(db, 'users', firebaseUser.uid, 'private', 'account'), {
-          pushEnabled: true,
-          updatedAt: serverTimestamp(),
-        });
-      } catch {
-        // Ignore if private doc not created yet
-      }
     }
-  }, [firebaseUser]);
+  }, [localUser]);
 
   // --- ONLINE ARENA STATE & HANDLERS ---
   const existingUserArena = useMemo(
-    () => (firebaseUser ? cloudArenaProfiles.find((p) => p.uid === firebaseUser.uid) ?? null : null),
-    [cloudArenaProfiles, firebaseUser]
+    () => (localUser ? cloudArenaProfiles.find((p) => p.uid === localUser.uid) ?? null : null),
+    [cloudArenaProfiles, localUser]
   );
 
   const userArena = useMemo(() => {
@@ -1968,31 +1759,240 @@ export default function App() {
     [cloudArenaProfiles]
   );
 
+  const handleExportBackup = useCallback(
+    async (includeAdminData: boolean) => {
+      if (!localUser || !profile || !hydratedCareer) return;
+
+      let arenaSnapshot: ArenaProfile | null = existingUserArena;
+      if (!arenaSnapshot) {
+        try {
+          arenaSnapshot = await getLocalArenaProfile(localUser.uid);
+        } catch {
+          // Fallback to computed userArena
+        }
+      }
+
+      const bundle = createClubBackupBundle({
+        profile,
+        career: hydratedCareer,
+        arena:
+          arenaSnapshot ??
+          buildArenaProfileFromCareer(profile, hydratedCareer, existingUserArena),
+        adminData:
+          includeAdminData && isAdmin
+            ? {
+                news,
+                marketOverrides: Object.values(marketOverrides),
+                notifications,
+              }
+            : undefined,
+      });
+
+      downloadBackupFile(bundle);
+    },
+    [
+      localUser,
+      profile,
+      hydratedCareer,
+      existingUserArena,
+      isAdmin,
+      news,
+      marketOverrides,
+      notifications,
+    ]
+  );
+
+  const handleRestoreBackup = useCallback(
+    async (
+      bundle: ClubBackupBundle,
+      restoreAdminData: boolean
+    ): Promise<{ ok: boolean; message: string }> => {
+      if (!localUser) {
+        return { ok: false, message: 'Vui lòng đăng nhập trước khi phục hồi dữ liệu.' };
+      }
+
+      const uid = localUser.uid;
+      const restoredCareer = buildCompactCareerForStorage(bundle.career, uid);
+      const now = Date.now();
+
+      try {
+        const existingProfile = await getLocalUserProfile(uid);
+        const initialAdmin = await shouldBeInitialAdmin(localUser.username);
+        const resolvedRole: 'admin' | 'manager' =
+          existingProfile?.role === 'admin' || isAdmin || initialAdmin ? 'admin' : 'manager';
+
+        const nextProfile: UserProfile = {
+          ...(existingProfile ?? {}),
+          uid,
+          managerName: bundle.profile.managerName,
+          nationality: bundle.profile.nationality,
+          clubId: bundle.profile.clubId,
+          clubName: bundle.profile.clubName,
+          preferredFormation: bundle.profile.preferredFormation,
+          role: resolvedRole,
+          status: existingProfile?.status ?? 'active',
+          matchesPlayed: bundle.profile.matchesPlayed,
+          wins: bundle.profile.wins,
+          draws: bundle.profile.draws,
+          losses: bundle.profile.losses,
+          trophies: bundle.profile.trophies,
+          createdAt: existingProfile?.createdAt ?? now,
+          updatedAt: now,
+          lastActiveAt: now,
+        };
+
+        await putLocalUserProfile(nextProfile);
+        await putLocalCareer({
+          ...restoredCareer,
+          uid,
+          updatedAt: now,
+        });
+
+        if (bundle.arenaRank) {
+          const mergedArena = buildArenaProfileFromCareer(nextProfile, restoredCareer, {
+            ...bundle.arenaRank,
+          } as ArenaProfile);
+          await putLocalArenaProfile({
+            ...mergedArena,
+            visibility: 'public',
+            isBot: false,
+            updatedAt: now,
+          });
+          setCloudArenaProfiles((prev) => {
+            const others = prev.filter((item) => item.uid !== uid);
+            return [mergedArena, ...others];
+          });
+        }
+
+        if (restoreAdminData && resolvedRole === 'admin' && bundle.adminData) {
+          const addedNews: NewsArticle[] = [];
+          for (const article of (bundle.adminData.news ?? []).slice(0, 20)) {
+            const safeId = String(article.id || `news-${Date.now()}`)
+              .replace(/[^a-zA-Z0-9_-]/g, '')
+              .slice(0, 120);
+            if (!safeId) continue;
+            const newsItem: NewsArticle = {
+              id: safeId,
+              title: String(article.title || 'Tin tức').slice(0, 175),
+              summary: String(article.summary || 'Cập nhật thị trường.').slice(0, 1150),
+              category: ['transfer', 'rumor', 'matchday', 'injury', 'official'].includes(
+                article.category
+              )
+                ? article.category
+                : 'transfer',
+              playerName: String(article.playerName || '').slice(0, 75),
+              clubTag: String(article.clubTag || '').slice(0, 60),
+              feeText: String(article.feeText || '').slice(0, 40),
+              sourceTitle: String(article.sourceTitle || '').slice(0, 110),
+              sourceUrl: String(article.sourceUrl || '').slice(0, 380),
+              isBreaking: Boolean(article.isBreaking),
+              authorUid: uid,
+              createdAt: article.createdAt ?? now,
+              updatedAt: now,
+            };
+            await putLocalNews(newsItem);
+            addedNews.push(newsItem);
+          }
+          if (addedNews.length > 0) {
+            setNews(addedNews);
+          }
+
+          const restoredOverrides: Record<string, MarketOverride> = {};
+          for (const ov of (bundle.adminData.marketOverrides ?? []).slice(0, 40)) {
+            const safePlayerId = String(ov.playerId || '')
+              .replace(/[^a-zA-Z0-9_-]/g, '')
+              .slice(0, 120);
+            const safeClubId = String(ov.clubId || '')
+              .replace(/[^a-zA-Z0-9_-]/g, '')
+              .slice(0, 120);
+            if (!safePlayerId || !safeClubId) continue;
+            const ovPayload: MarketOverride = {
+              playerId: safePlayerId,
+              clubId: safeClubId,
+              marketValueM: Math.max(0.5, Math.min(500, Number(ov.marketValueM) || 10)),
+              rating: Math.max(45, Math.min(99, Math.round(Number(ov.rating) || 75))),
+              transferStatus: ['available', 'listed', 'untouchable', 'loan'].includes(
+                ov.transferStatus
+              )
+                ? ov.transferStatus
+                : 'available',
+              updatedBy: uid,
+              updatedAt: now,
+            };
+            await putLocalMarketOverride(ovPayload);
+            restoredOverrides[safePlayerId] = ovPayload;
+          }
+          if (Object.keys(restoredOverrides).length > 0) {
+            setMarketOverrides((prev) => ({ ...prev, ...restoredOverrides }));
+          }
+
+          const restoredNotifs: PushNotificationItem[] = [];
+          for (const n of (bundle.adminData.notifications ?? []).slice(0, 15)) {
+            const safeNotifId = String(n.id || `push-${Date.now()}`)
+              .replace(/[^a-zA-Z0-9_-]/g, '')
+              .slice(0, 120);
+            if (!safeNotifId) continue;
+            const notifItem: PushNotificationItem = {
+              id: safeNotifId,
+              title: String(n.title || 'Thông báo').slice(0, 135),
+              body: String(n.body || 'Cập nhật hệ thống.').slice(0, 480),
+              category: ['transfer', 'matchday', 'system', 'urgent'].includes(n.category)
+                ? n.category
+                : 'system',
+              authorUid: uid,
+              createdAt: n.createdAt ?? now,
+            };
+            await putLocalNotification(notifItem);
+            restoredNotifs.push(notifItem);
+          }
+          if (restoredNotifs.length > 0) {
+            setNotifications(restoredNotifs);
+          }
+        }
+
+        prevCareerRef.current = restoredCareer;
+        setCareer(restoredCareer);
+        setProfile(nextProfile);
+        setNeedsProfile(false);
+        setActiveTab('home');
+
+        return {
+          ok: true,
+          message: `Phục hồi thành công ${bundle.profile.clubName} (${restoredCareer.season} · Vòng ${restoredCareer.matchweek}) vào thiết bị!`,
+        };
+      } catch (err) {
+        console.error('Lỗi phục hồi dữ liệu cục bộ:', err);
+        return {
+          ok: false,
+          message:
+            err instanceof Error ? err.message : 'Lỗi khi ghi dữ liệu phục hồi vào bộ nhớ cục bộ.',
+        };
+      }
+    },
+    [localUser, isAdmin]
+  );
+
   const saveArenaProfileCloud = useCallback(async (nextArena: ArenaProfile) => {
-    if (hasFirestoreQuotaExceeded()) return;
-    const { updatedAt: _omitUpdatedAt, ...rest } = nextArena;
+    const payload: ArenaProfile = {
+      ...nextArena,
+      visibility: 'public',
+      updatedAt: Date.now(),
+    };
+    setCloudArenaProfiles((prev) => [payload, ...prev.filter((p) => p.uid !== payload.uid)]);
     try {
-      await setDoc(
-        doc(db, 'arenaProfiles', nextArena.uid),
-        sanitizeForFirestore({
-          ...rest,
-          visibility: 'public',
-          updatedAt: serverTimestamp(),
-        }) as Record<string, unknown>
-      );
+      await putLocalArenaProfile(payload);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `arenaProfiles/${nextArena.uid}`);
+      console.error('Lỗi lưu hồ sơ Đấu trường cục bộ:', err);
     }
   }, []);
 
-  // Sync user's tactical squad snapshot only when viewing Online Arena and squad differs from cloud
+  // Sync user's tactical squad snapshot when viewing Online Arena
   useEffect(() => {
     if (
       activeTab !== 'online' ||
-      !firebaseUser?.emailVerified ||
+      !localUser ||
       !arenaLoadedRef.current ||
-      !userArena ||
-      hasFirestoreQuotaExceeded()
+      !userArena
     ) {
       return;
     }
@@ -2008,32 +2008,10 @@ export default function App() {
 
     if (arenaSyncTimerRef.current) window.clearTimeout(arenaSyncTimerRef.current);
     arenaSyncTimerRef.current = window.setTimeout(() => {
-      if (hasFirestoreQuotaExceeded()) return;
       lastSyncedArenaSigRef.current = desiredSig;
-      if (existingUserArena) {
-        void updateDoc(
-          doc(db, 'arenaProfiles', userArena.uid),
-          sanitizeForFirestore({
-            managerName: userArena.managerName,
-            nationality: userArena.nationality,
-            clubId: userArena.clubId,
-            clubName: userArena.clubName,
-            formation: userArena.formation,
-            squadOverall: userArena.squadOverall,
-            attackRating: userArena.attackRating,
-            midfieldRating: userArena.midfieldRating,
-            defenseRating: userArena.defenseRating,
-            starters: userArena.starters,
-            updatedAt: serverTimestamp(),
-          }) as Record<string, unknown>
-        ).catch((err) => {
-          handleFirestoreError(err, OperationType.UPDATE, `arenaProfiles/${userArena.uid}`);
-        });
-      } else {
-        void saveArenaProfileCloud(userArena);
-      }
-    }, 1500);
-  }, [activeTab, firebaseUser, userArena, existingUserArena, saveArenaProfileCloud]);
+      void saveArenaProfileCloud(userArena);
+    }, 600);
+  }, [activeTab, localUser, userArena, existingUserArena, saveArenaProfileCloud]);
 
   const recordCompletedArenaMatch = useCallback(
     async (
@@ -2044,13 +2022,14 @@ export default function App() {
       winnerUid?: string,
       note?: string
     ) => {
-      if (!firebaseUser || hasFirestoreQuotaExceeded()) return;
+      if (!localUser) return;
       const chId = `ch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const safeName = (n: string) => {
         const s = (n || 'HLV').trim().slice(0, 60);
         return s.length < 2 ? `${s} XI` : s;
       };
-      const docData: Record<string, unknown> = {
+      const now = Date.now();
+      const challengeDoc: ArenaChallenge = {
         id: chId,
         participants: [from.uid, to.uid],
         fromUid: from.uid,
@@ -2064,21 +2043,22 @@ export default function App() {
         homeGoals: summary.homeGoals,
         awayGoals: summary.awayGoals,
         report: toCompactMatchReport(summary),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: now,
+        updatedAt: now,
+        ...(summary.penaltiesHome !== undefined ? { penaltiesHome: summary.penaltiesHome } : {}),
+        ...(summary.penaltiesAway !== undefined ? { penaltiesAway: summary.penaltiesAway } : {}),
+        ...(winnerUid ? { winnerUid: winnerUid.slice(0, 128) } : {}),
+        ...(note ? { note: note.slice(0, 160) } : {}),
       };
-      if (summary.penaltiesHome !== undefined) docData.penaltiesHome = summary.penaltiesHome;
-      if (summary.penaltiesAway !== undefined) docData.penaltiesAway = summary.penaltiesAway;
-      if (winnerUid) docData.winnerUid = winnerUid.slice(0, 128);
-      if (note) docData.note = note.slice(0, 160);
 
+      setArenaChallenges((prev) => [challengeDoc, ...prev].slice(0, 30));
       try {
-        await setDoc(doc(db, 'arenaChallenges', chId), sanitizeForFirestore(docData) as Record<string, unknown>);
+        await putLocalArenaChallenge(challengeDoc);
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `arenaChallenges/${chId}`);
+        console.error('Lỗi lưu lịch sử trận Đấu trường:', err);
       }
     },
-    [firebaseUser]
+    [localUser]
   );
 
   const handlePlayRankedMatch = useCallback(async (): Promise<{
@@ -2088,7 +2068,7 @@ export default function App() {
     summary?: MatchResultSummary;
     rankedResult?: RankedOutcomeResult;
   }> => {
-    if (!firebaseUser || !hydratedCareer || !userArena) {
+    if (!localUser || !hydratedCareer || !userArena) {
       return { ok: false, message: 'Chưa sẵn sàng dữ liệu Đấu Hạng.' };
     }
     const candidates = leaderboard.filter((p) => p.uid !== userArena.uid);
@@ -2191,7 +2171,7 @@ export default function App() {
       rankedResult,
     };
   }, [
-    firebaseUser,
+    localUser,
     hydratedCareer,
     userArena,
     leaderboard,
@@ -2206,7 +2186,7 @@ export default function App() {
       opponent: ArenaProfile,
       mode: 'duel' | 'friendly'
     ): Promise<{ ok: boolean; message: string; summary?: MatchResultSummary }> => {
-      if (!firebaseUser || !hydratedCareer || !userArena) {
+      if (!localUser || !hydratedCareer || !userArena) {
         return { ok: false, message: 'Chưa sẵn sàng dữ liệu Đấu Online.' };
       }
       const { summary, winnerUid } = simulateOnlineMatch(userArena, opponent, {
@@ -2262,7 +2242,7 @@ export default function App() {
       };
     },
     [
-      firebaseUser,
+      localUser,
       hydratedCareer,
       userArena,
       saveArenaProfileCloud,
@@ -2274,47 +2254,44 @@ export default function App() {
 
   const handleSendChallengeInvite = useCallback(
     async (opponent: ArenaProfile): Promise<{ ok: boolean; message: string }> => {
-      if (!firebaseUser || !userArena) {
+      if (!localUser || !userArena) {
         return { ok: false, message: 'Cần đăng nhập để gửi lời mời.' };
       }
       if (opponent.isBot) {
         return { ok: false, message: 'Hãy bấm "Đá ngay" để tỷ thí trực tiếp với Bot AI.' };
       }
-      if (hasFirestoreQuotaExceeded()) {
-        return {
-          ok: false,
-          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore. Hạn mức sẽ tự đặt lại vào ngày mai.',
-        };
-      }
       const chId = `inv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const now = Date.now();
+      const challengeDoc: ArenaChallenge = {
+        id: chId,
+        participants: [userArena.uid, opponent.uid],
+        fromUid: userArena.uid,
+        fromManagerName: userArena.managerName.slice(0, 60),
+        fromClubId: userArena.clubId,
+        toUid: opponent.uid,
+        toManagerName: opponent.managerName.slice(0, 60),
+        toClubId: opponent.clubId,
+        mode: 'duel',
+        status: 'pending',
+        note: `Tỷ thí chiến thuật (${userArena.formation} · OVR ${userArena.squadOverall})`,
+        createdAt: now,
+        updatedAt: now,
+      };
       try {
-        await setDoc(doc(db, 'arenaChallenges', chId), {
-          id: chId,
-          participants: [userArena.uid, opponent.uid],
-          fromUid: userArena.uid,
-          fromManagerName: userArena.managerName.slice(0, 60),
-          fromClubId: userArena.clubId,
-          toUid: opponent.uid,
-          toManagerName: opponent.managerName.slice(0, 60),
-          toClubId: opponent.clubId,
-          mode: 'duel',
-          status: 'pending',
-          note: `Tỷ thí chiến thuật (${userArena.formation} · OVR ${userArena.squadOverall})`,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await putLocalArenaChallenge(challengeDoc);
+        setArenaChallenges((prev) => [challengeDoc, ...prev].slice(0, 30));
         await pushClubNotification(
           'online',
           `Đã gửi lời mời tỷ thí tới ${opponent.managerName}`,
-          `Khi ${opponent.managerName} chấp nhận lời mời trong mục Đấu Online, kết quả trận đấu sẽ được cập nhật.`
+          `Khi đăng nhập tài khoản ${opponent.managerName} trên thiết bị này, bạn có thể chấp nhận lời mời trong mục Đấu Online.`
         );
         return { ok: true, message: `Đã gửi lời mời tỷ thí tới ${opponent.managerName}!` };
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `arenaChallenges/${chId}`);
+        console.error('Lỗi gửi lời mời tỷ thí:', err);
         return { ok: false, message: 'Không thể gửi lời mời tỷ thí lúc này.' };
       }
     },
-    [firebaseUser, userArena, pushClubNotification]
+    [localUser, userArena, pushClubNotification]
   );
 
   const handleRespondChallengeInvite = useCallback(
@@ -2322,24 +2299,18 @@ export default function App() {
       ch: ArenaChallenge,
       accept: boolean
     ): Promise<{ ok: boolean; message: string; summary?: MatchResultSummary }> => {
-      if (!firebaseUser || !userArena || !hydratedCareer) {
+      if (!localUser || !userArena || !hydratedCareer) {
         return { ok: false, message: 'Chưa sẵn sàng dữ liệu.' };
-      }
-      if (hasFirestoreQuotaExceeded()) {
-        return {
-          ok: false,
-          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore. Hạn mức sẽ tự đặt lại vào ngày mai.',
-        };
       }
       if (!accept) {
         try {
-          await updateDoc(doc(db, 'arenaChallenges', ch.id), {
-            status: 'declined',
-            updatedAt: serverTimestamp(),
-          });
+          const updated = await updateLocalArenaChallenge(ch.id, { status: 'declined' });
+          if (updated) {
+            setArenaChallenges((prev) => prev.map((item) => (item.id === ch.id ? updated : item)));
+          }
           return { ok: true, message: `Đã từ chối lời mời từ ${ch.fromManagerName}.` };
         } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `arenaChallenges/${ch.id}`);
+          console.error('Lỗi từ chối lời mời:', err);
           return { ok: false, message: 'Không thể cập nhật lời mời.' };
         }
       }
@@ -2358,24 +2329,23 @@ export default function App() {
         isKnockout: false,
       });
 
-      const updatePayload: Record<string, unknown> = {
+      const patch: Partial<ArenaChallenge> = {
         status: 'completed',
         homeGoals: summary.homeGoals,
         awayGoals: summary.awayGoals,
         report: toCompactMatchReport(summary),
-        updatedAt: serverTimestamp(),
+        ...(summary.penaltiesHome !== undefined ? { penaltiesHome: summary.penaltiesHome } : {}),
+        ...(summary.penaltiesAway !== undefined ? { penaltiesAway: summary.penaltiesAway } : {}),
+        ...(winnerUid ? { winnerUid } : {}),
       };
-      if (summary.penaltiesHome !== undefined) updatePayload.penaltiesHome = summary.penaltiesHome;
-      if (summary.penaltiesAway !== undefined) updatePayload.penaltiesAway = summary.penaltiesAway;
-      if (winnerUid) updatePayload.winnerUid = winnerUid;
 
       try {
-        await updateDoc(
-          doc(db, 'arenaChallenges', ch.id),
-          sanitizeForFirestore(updatePayload) as Record<string, unknown>
-        );
+        const updated = await updateLocalArenaChallenge(ch.id, patch);
+        if (updated) {
+          setArenaChallenges((prev) => prev.map((item) => (item.id === ch.id ? updated : item)));
+        }
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `arenaChallenges/${ch.id}`);
+        console.error('Lỗi lưu kết quả tỷ thí:', err);
         return { ok: false, message: 'Lỗi khi lưu kết quả trận tỷ thí.' };
       }
 
@@ -2407,7 +2377,7 @@ export default function App() {
       };
     },
     [
-      firebaseUser,
+      localUser,
       userArena,
       hydratedCareer,
       leaderboard,
@@ -2418,20 +2388,16 @@ export default function App() {
 
   const handleCancelChallengeInvite = useCallback(
     async (challengeId: string): Promise<{ ok: boolean; message: string }> => {
-      if (hasFirestoreQuotaExceeded()) {
-        return {
-          ok: false,
-          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore.',
-        };
-      }
       try {
-        await updateDoc(doc(db, 'arenaChallenges', challengeId), {
-          status: 'cancelled',
-          updatedAt: serverTimestamp(),
-        });
+        const updated = await updateLocalArenaChallenge(challengeId, { status: 'cancelled' });
+        if (updated) {
+          setArenaChallenges((prev) =>
+            prev.map((item) => (item.id === challengeId ? updated : item))
+          );
+        }
         return { ok: true, message: 'Đã hủy lời mời tỷ thí.' };
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `arenaChallenges/${challengeId}`);
+        console.error('Lỗi hủy lời mời tỷ thí:', err);
         return { ok: false, message: 'Không thể hủy lời mời.' };
       }
     },
@@ -2565,35 +2531,32 @@ export default function App() {
 
   const handleSendFriendRequest = useCallback(
     async (target: ArenaProfile): Promise<{ ok: boolean; message: string }> => {
-      if (!firebaseUser || !userArena) {
+      if (!localUser || !userArena) {
         return { ok: false, message: 'Chưa sẵn sàng dữ liệu tài khoản.' };
       }
       if (target.uid === userArena.uid) {
         return { ok: false, message: 'Không thể kết bạn với chính mình.' };
       }
-      if (hasFirestoreQuotaExceeded()) {
-        return {
-          ok: false,
-          message: 'Đã hết hạn mức ghi dữ liệu miễn phí hôm nay của Firestore. Hạn mức sẽ tự đặt lại vào ngày mai.',
-        };
-      }
       const fId = getFriendshipDocId(userArena.uid, target.uid);
       const status = target.isBot ? 'accepted' : 'pending';
+      const now = Date.now();
+      const fDoc: Friendship = {
+        id: fId,
+        participants: [userArena.uid, target.uid],
+        requesterUid: userArena.uid,
+        recipientUid: target.uid,
+        requesterName: userArena.managerName.slice(0, 60),
+        requesterClubId: userArena.clubId,
+        recipientName: target.managerName.slice(0, 60),
+        recipientClubId: target.clubId,
+        recipientIsBot: Boolean(target.isBot),
+        status,
+        createdAt: now,
+        updatedAt: now,
+      };
       try {
-        await setDoc(doc(db, 'friendships', fId), {
-          id: fId,
-          participants: [userArena.uid, target.uid],
-          requesterUid: userArena.uid,
-          recipientUid: target.uid,
-          requesterName: userArena.managerName.slice(0, 60),
-          requesterClubId: userArena.clubId,
-          recipientName: target.managerName.slice(0, 60),
-          recipientClubId: target.clubId,
-          recipientIsBot: Boolean(target.isBot),
-          status,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await putLocalFriendship(fDoc);
+        setFriendships((prev) => [fDoc, ...prev.filter((item) => item.id !== fDoc.id)]);
         await pushClubNotification(
           'online',
           target.isBot
@@ -2610,20 +2573,24 @@ export default function App() {
             : `Đã gửi lời mời kết bạn tới ${target.managerName}!`,
         };
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `friendships/${fId}`);
+        console.error('Lỗi gửi lời mời kết bạn:', err);
         return { ok: false, message: 'Không thể gửi lời mời kết bạn lúc này.' };
       }
     },
-    [firebaseUser, userArena, pushClubNotification]
+    [localUser, userArena, pushClubNotification]
   );
 
   const handleRespondFriendRequest = useCallback(
     async (friendship: Friendship, accept: boolean): Promise<{ ok: boolean; message: string }> => {
       try {
-        await updateDoc(doc(db, 'friendships', friendship.id), {
+        const updated = await updateLocalFriendship(friendship.id, {
           status: accept ? 'accepted' : 'declined',
-          updatedAt: serverTimestamp(),
         });
+        if (updated) {
+          setFriendships((prev) =>
+            prev.map((item) => (item.id === friendship.id ? updated : item))
+          );
+        }
         if (accept) {
           await pushClubNotification(
             'online',
@@ -2638,7 +2605,7 @@ export default function App() {
             : `Đã từ chối lời mời kết bạn từ ${friendship.requesterName}.`,
         };
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `friendships/${friendship.id}`);
+        console.error('Lỗi phản hồi lời mời kết bạn:', err);
         return { ok: false, message: 'Không thể phản hồi lời mời kết bạn.' };
       }
     },
@@ -2648,10 +2615,11 @@ export default function App() {
   const handleRemoveFriendship = useCallback(
     async (friendshipId: string): Promise<{ ok: boolean; message: string }> => {
       try {
-        await deleteDoc(doc(db, 'friendships', friendshipId));
+        await deleteLocalFriendship(friendshipId);
+        setFriendships((prev) => prev.filter((item) => item.id !== friendshipId));
         return { ok: true, message: 'Đã cập nhật danh sách bạn bè.' };
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `friendships/${friendshipId}`);
+        console.error('Lỗi xóa kết nối bạn bè:', err);
         return { ok: false, message: 'Không thể xóa kết nối bạn bè.' };
       }
     },
@@ -2663,34 +2631,19 @@ export default function App() {
       <div className="min-h-screen bg-[#0B1117] text-slate-200 flex items-center justify-center">
         <div className="text-center space-y-2">
           <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-400">Đang đồng bộ dữ liệu đám mây...</p>
+          <p className="text-xs text-slate-400">Đang khởi tạo dữ liệu cục bộ...</p>
         </div>
       </div>
     );
   }
 
-  if (!firebaseUser || !firebaseUser.emailVerified || needsProfile) {
+  if (!localUser || needsProfile) {
     return (
       <AuthOnboarding
-        firebaseUser={firebaseUser}
+        localUser={localUser}
         needsProfile={needsProfile}
         onCompleteOnboarding={handleCompleteOnboarding}
-        onEmailVerifiedRefresh={async () => {
-          if (auth.currentUser) {
-            await auth.currentUser.reload();
-            const refreshed = auth.currentUser;
-            setFirebaseUser({ ...refreshed } as User);
-            if (refreshed.emailVerified) {
-              const snap = await getDoc(doc(db, 'users', refreshed.uid));
-              if (!snap.exists()) {
-                setNeedsProfile(true);
-              } else {
-                setProfile(snap.data() as UserProfile);
-                setNeedsProfile(false);
-              }
-            }
-          }
-        }}
+        onRestoreBackup={handleRestoreBackup}
       />
     );
   }
@@ -2705,7 +2658,7 @@ export default function App() {
           </p>
           <button
             type="button"
-            onClick={() => signOut(auth)}
+            onClick={() => logoutLocalAccount()}
             className="w-full h-11 rounded-xl bg-slate-800 text-white text-sm font-semibold"
           >
             Đăng xuất
@@ -2720,7 +2673,7 @@ export default function App() {
       <div className="min-h-screen bg-[#0B1117] text-slate-200 flex items-center justify-center">
         <div className="text-center space-y-2">
           <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-400">Đang tải câu lạc bộ từ Firebase...</p>
+          <p className="text-xs text-slate-400">Đang tải câu lạc bộ từ bộ nhớ thiết bị...</p>
         </div>
       </div>
     );
@@ -2730,10 +2683,10 @@ export default function App() {
   const unopenedPackCount = getTotalUnopenedPacks(hydratedCareer.inventory);
   const onlineBadgeCount =
     arenaChallenges.filter(
-      (c) => c.toUid === firebaseUser.uid && c.status === 'pending'
+      (c) => c.toUid === localUser.uid && c.status === 'pending'
     ).length +
     friendships.filter(
-      (f) => f.recipientUid === firebaseUser.uid && f.status === 'pending'
+      (f) => f.recipientUid === localUser.uid && f.status === 'pending'
     ).length;
 
   return (
@@ -2802,7 +2755,7 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => signOut(auth)}
+            onClick={() => logoutLocalAccount()}
             className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/5"
             title="Đăng xuất"
             aria-label="Đăng xuất"
@@ -2811,47 +2764,6 @@ export default function App() {
           </button>
         </div>
       </header>
-
-      {/* Firestore Daily Write Quota Notice Banner */}
-      {quotaExceeded && !quotaBannerDismissed && (
-        <div className="bg-amber-500/15 border-b border-amber-400/40 px-4 py-2.5 text-xs text-amber-100">
-          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div className="space-y-0.5">
-              <p className="font-bold text-amber-300">
-                Đã chạm hạn mức ghi dữ liệu miễn phí hằng ngày của Firestore (Free daily write units).
-              </p>
-              <p className="text-[11px] text-amber-100/90">
-                Hạn mức sẽ tự động đặt lại vào ngày hôm sau. Bạn vẫn có thể chơi cục bộ trong phiên hiện tại (thay đổi mới tạm chưa lưu lên đám mây). Xem chi tiết gói{' '}
-                <a
-                  href="https://firebase.google.com/pricing#cloud-firestore"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline font-semibold text-white"
-                >
-                  Spark / Enterprise tại đây
-                </a>{' '}
-                hoặc mở{' '}
-                <a
-                  href={FIRESTORE_QUOTA_UPGRADE_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline font-semibold text-white"
-                >
-                  Firebase Console
-                </a>
-                .
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setQuotaBannerDismissed(true)}
-              className="self-start sm:self-center px-2.5 py-1 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 font-semibold shrink-0"
-            >
-              Ẩn thông báo
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 pt-4 pb-24 lg:pb-10">
@@ -2867,6 +2779,7 @@ export default function App() {
               profile={profile}
               career={hydratedCareer}
               news={news}
+              isAdmin={isAdmin}
               pushPermission={pushPermission}
               onEnablePush={handleEnablePush}
               onNavigateTab={(t) => setActiveTab(t === 'club' ? 'home' : t)}
@@ -2875,6 +2788,8 @@ export default function App() {
               onRecoverPlayerFitness={handleRecoverPlayerFitness}
               onRecoverSquadFitness={handleRecoverSquadFitness}
               onStartNextSeason={handleStartNextSeason}
+              onExportBackup={handleExportBackup}
+              onRestoreBackup={handleRestoreBackup}
             />
           )}
 
@@ -2922,7 +2837,7 @@ export default function App() {
 
           {activeTab === 'online' && userArena && (
             <OnlineArenaView
-              currentUid={firebaseUser.uid}
+              currentUid={localUser.uid}
               career={hydratedCareer}
               userArena={userArena}
               leaderboard={leaderboard}
@@ -2943,10 +2858,30 @@ export default function App() {
 
           {activeTab === 'admin' && isAdmin && (
             <AdminDashboardView
-              currentAdminUid={firebaseUser.uid}
+              currentAdminUid={localUser.uid}
               news={news}
               notifications={notifications}
               marketOverrides={marketOverrides}
+              onNewsAdded={(items) =>
+                setNews((prev) => [...items, ...prev].slice(0, 25))
+              }
+              onNewsDeleted={(id) =>
+                setNews((prev) => prev.filter((item) => item.id !== id))
+              }
+              onMarketOverrideSaved={(override) =>
+                setMarketOverrides((prev) => ({
+                  ...prev,
+                  [override.playerId]: override,
+                }))
+              }
+              onNotificationAdded={(item) =>
+                setNotifications((prev) => [item, ...prev].slice(0, 20))
+              }
+              onNotificationDeleted={(id) =>
+                setNotifications((prev) => prev.filter((item) => item.id !== id))
+              }
+              onExportBackup={handleExportBackup}
+              onRestoreBackup={handleRestoreBackup}
             />
           )}
         </Suspense>
@@ -3088,6 +3023,7 @@ export default function App() {
       {/* Notification Center Drawer */}
       {showNotifDrawer && (() => {
         const toMs = (ts: unknown): number => {
+          if (typeof ts === 'number' && Number.isFinite(ts)) return ts;
           if (ts && typeof (ts as { toMillis?: () => number }).toMillis === 'function') {
             return (ts as { toMillis: () => number }).toMillis();
           }
