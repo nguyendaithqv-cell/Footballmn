@@ -14,16 +14,22 @@ import {
   Activity,
   BarChart3,
   BellRing,
+  CheckCircle2,
+  Download,
   Globe,
   Newspaper,
   Send,
+  Share,
   ShieldAlert,
+  Smartphone,
   Trash2,
   TrendingUp,
   UserCheck,
   Users,
+  X,
 } from 'lucide-react';
 import { ALL_CLUBS, CLUBS, INITIAL_PLAYERS } from '../data/footballDatabase';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   ActivityLog,
@@ -82,6 +88,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [pushCategory, setPushCategory] = useState<PushNotificationItem['category']>('transfer');
   const [sendingPush, setSendingPush] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
+
+  const handleInstallAppClick = async () => {
+    if (isInstallable) {
+      const accepted = await install();
+      if (accepted) {
+        setStatusBanner('Đã cài đặt Touchline XI lên màn hình chính thiết bị!');
+      }
+      return;
+    }
+    setShowInstallGuide(true);
+  };
 
   useEffect(() => {
     setOvClubId(marketOverrides[targetPlayer.id]?.clubId ?? targetPlayer.clubId);
@@ -806,6 +825,99 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile PWA App Install Section at bottom of Admin */}
+      <div className="rounded-2xl bg-[#121B24] border border-emerald-500/25 p-4 space-y-3">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
+            <Smartphone className="w-5 h-5 text-emerald-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-bold text-white">Cài đặt App lên Điện thoại</h3>
+            <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+              Thêm Touchline XI ra màn hình chính để mở toàn màn hình như ứng dụng thật trên Android & iPhone.
+            </p>
+          </div>
+        </div>
+
+        {isInstalled ? (
+          <div className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>Ứng dụng đã được cài đặt trên thiết bị này</span>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleInstallAppClick}
+            className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.99] text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-all"
+          >
+            <Download className="w-4 h-4 shrink-0" />
+            <span>
+              {isInstallable
+                ? 'Cài đặt App ngay lên Điện thoại'
+                : 'Cài đặt App lên Điện thoại (Hướng dẫn)'}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {showInstallGuide && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-[#121B24] border border-white/15 p-5 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-display text-lg font-bold text-white">
+                  Cài đặt App lên Điện thoại
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInstallGuide(false)}
+                className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/5"
+                aria-label="Đóng hướng dẫn cài đặt"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
+              {isIOS ? (
+                <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3.5 space-y-2">
+                  <p className="font-bold text-emerald-400 flex items-center gap-1.5">
+                    <Share className="w-3.5 h-3.5" />
+                    Trên iPhone / iPad (Safari):
+                  </p>
+                  <p>1. Mở link web bằng trình duyệt <strong className="text-white">Safari</strong>.</p>
+                  <p>2. Nhấn nút <strong className="text-white">Chia sẻ (biểu tượng ô vuông có mũi tên lên)</strong> ở thanh dưới.</p>
+                  <p>3. Cuộn xuống chọn <strong className="text-emerald-400">Thêm vào MH chính (Add to Home Screen)</strong> rồi bấm <strong className="text-white">Thêm</strong>.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3.5 space-y-1.5">
+                    <p className="font-bold text-emerald-400">Trên Android (Google Chrome):</p>
+                    <p>1. Mở link web trực tiếp bằng trình duyệt <strong className="text-white">Chrome</strong> (không mở bên trong Zalo/Messenger).</p>
+                    <p>2. Nhấn dấu <strong className="text-white">3 chấm (⋮)</strong> góc trên bên phải Chrome.</p>
+                    <p>3. Chọn <strong className="text-emerald-400">Thêm vào màn hình chính</strong> hoặc <strong className="text-emerald-400">Cài đặt ứng dụng</strong>.</p>
+                  </div>
+                  <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3.5 space-y-1.5">
+                    <p className="font-bold text-amber-400">Trên iPhone / iPad (Safari):</p>
+                    <p>Nhấn nút <strong className="text-white">Chia sẻ (Share)</strong> ở Safari &rarr; chọn <strong className="text-emerald-400">Thêm vào MH chính</strong>.</p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowInstallGuide(false)}
+              className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm"
+            >
+              Đã hiểu
+            </button>
           </div>
         </div>
       )}

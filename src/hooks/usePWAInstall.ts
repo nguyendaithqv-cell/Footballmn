@@ -5,55 +5,87 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
+let cachedDeferredPrompt: BeforeInstallPromptEvent | null = null;
+let cachedIsInstalled = false;
+let listenersInitialized = false;
+const subscribers = new Set<() => void>();
+
+function notifySubscribers() {
+  subscribers.forEach((cb) => cb());
+}
+
+function detectStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (window.navigator as unknown as { standalone?: boolean }).standalone === true
+  );
+}
+
+function initGlobalListeners() {
+  if (listenersInitialized || typeof window === 'undefined') return;
+  listenersInitialized = true;
+  cachedIsInstalled = detectStandalone();
+
+  window.addEventListener('beforeinstallprompt', (e: Event) => {
+    e.preventDefault();
+    cachedDeferredPrompt = e as BeforeInstallPromptEvent;
+    notifySubscribers();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    cachedIsInstalled = true;
+    cachedDeferredPrompt = null;
+    notifySubscribers();
+  });
+}
+
+if (typeof window !== 'undefined') {
+  initGlobalListeners();
+}
+
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
+  const [, setTick] = useState(0);
   const [isIOS, setIsIOS] = useState(false);
+  const [isAndroid, setIsAndroid] = useState(false);
 
   useEffect(() => {
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
-    setIsInstalled(isStandalone);
+    initGlobalListeners();
+    cachedIsInstalled = detectStandalone();
 
     const userAgent = window.navigator.userAgent.toLowerCase();
     setIsIOS(/iphone|ipad|ipod/.test(userAgent));
+    setIsAndroid(/android/.test(userAgent));
 
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
-    };
-
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
+    const handleChange = () => setTick((t) => t + 1);
+    subscribers.add(handleChange);
+    handleChange();
 
     return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
+      subscribers.delete(handleChange);
     };
   }, []);
 
   const install = async () => {
-    if (!deferredPrompt) return false;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
+    if (!cachedDeferredPrompt) return false;
+    const promptEvent = cachedDeferredPrompt;
+    await promptEvent.prompt();
+    const { outcome } = await promptEvent.userChoice;
+    cachedDeferredPrompt = null;
     if (outcome === 'accepted') {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
+      cachedIsInstalled = true;
+      notifySubscribers();
       return true;
     }
+    notifySubscribers();
     return false;
   };
 
   return {
-    isInstallable: !!deferredPrompt,
-    isInstalled,
+    isInstallable: !!cachedDeferredPrompt,
+    isInstalled: cachedIsInstalled,
     isIOS,
+    isAndroid,
     install,
   };
 }
