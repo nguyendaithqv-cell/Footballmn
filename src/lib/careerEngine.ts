@@ -35,6 +35,12 @@ import {
   TrophyItem,
 } from '../types/game';
 import { createStarterInventory, normalizeInventory } from './inventoryEngine';
+import {
+  advanceAcademyOnNewSeason,
+  createEmptyClubRecords,
+  ensureClubRecords,
+  ensureYouthAcademy,
+} from './legacyAcademyEngine';
 
 export const COMPETITION_LABEL_MAP: Record<CompetitionId, string> = {
   league: 'Super League',
@@ -1284,6 +1290,12 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
   const hasBoardObjectives = Array.isArray(career.boardObjectives) && career.boardObjectives.length > 0;
   const hasFinancialLedger = Array.isArray(career.financialLedger);
   const hasPayrollHistory = Array.isArray(career.payrollHistory);
+  const hasYouthAcademy = Boolean(
+    career.youthAcademy && Array.isArray(career.youthAcademy.prospects)
+  );
+  const hasClubRecords = Boolean(
+    career.clubRecords && career.clubRecords.playerLegends && career.clubRecords.headToHead
+  );
 
   if (
     hasComps &&
@@ -1297,7 +1309,9 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     !needsSquadPadding &&
     hasBoardObjectives &&
     hasFinancialLedger &&
-    hasPayrollHistory
+    hasPayrollHistory &&
+    hasYouthAcademy &&
+    hasClubRecords
   ) {
     return career;
   }
@@ -1342,6 +1356,8 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
       ? career.financialLedger!
       : backfillLegacyFinancialLedger(career),
     payrollHistory: career.payrollHistory ?? [],
+    youthAcademy: hasYouthAcademy ? career.youthAcademy : ensureYouthAcademy(career),
+    clubRecords: hasClubRecords ? career.clubRecords : ensureClubRecords(career),
     inventory: career.inventory
       ? normalizeInventory(career.inventory)
       : createStarterInventory(),
@@ -1435,6 +1451,12 @@ export function createInitialCareer(
     boardObjectives: generateSeasonObjectives(club.id, '2026/27', clubSquad),
     financialLedger: [],
     payrollHistory: [],
+    youthAcademy: ensureYouthAcademy({
+      uid,
+      clubId: club.id,
+      season: '2026/27',
+    } as CareerSave),
+    clubRecords: createEmptyClubRecords(),
     inventory: createStarterInventory(),
   };
 }
@@ -4234,6 +4256,8 @@ export function createNextSeasonCareer(career: CareerSave): {
     boardObjectives: generateSeasonObjectives(hydrated.clubId, nextSeason, nextSquad),
     claimedSeasonRewardSeason: undefined,
     settledPayrollSeason: undefined,
+    youthAcademy: advanceAcademyOnNewSeason(hydrated.youthAcademy, hydrated.clubId, nextSeason),
+    clubRecords: ensureClubRecords(hydrated),
     ...(nextLedger ? { financialLedger: nextLedger } : {}),
     inventory: nextInventory,
   };

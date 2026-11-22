@@ -58,6 +58,8 @@ export interface Player {
   appearances: number;
   transferStatus: 'available' | 'listed' | 'untouchable' | 'loan';
   role?: PlayerRole;
+  isYouthGraduate?: boolean;
+  graduatedSeason?: string;
   attributes: PlayerAttributes;
   appearance: {
     skin: string;
@@ -598,7 +600,8 @@ export type FinancialLedgerCategory =
   | 'payroll_settlement'
   | 'pack_purchase'
   | 'star_upgrade'
-  | 'medical_recovery';
+  | 'medical_recovery'
+  | 'academy';
 
 export interface FinancialLedgerEntry {
   id: string;
@@ -631,6 +634,91 @@ export interface SeasonPayrollBreakdown {
   settledAt?: string;
 }
 
+export interface YouthProspect {
+  id: string;
+  name: string;
+  shortName: string;
+  position: Position;
+  secondaryPos?: Position;
+  age: number;
+  nationality: string;
+  flagCode: string;
+  rating: number;
+  potential: number;
+  trainingPoints: number; // 0-100 progress toward next +1 OVR in academy
+  totalTrainedLevels: number;
+  scoutedSeason: string;
+  archetype: string;
+  estimatedValueM: number;
+  attributes: PlayerAttributes;
+  appearance: Player['appearance'];
+}
+
+export interface YouthAcademyState {
+  level: 1 | 2 | 3;
+  prospects: YouthProspect[];
+  lastIntakeSeason: string;
+  extraScoutedSeason?: string;
+  promotedCount: number;
+  releasedCount: number;
+}
+
+export interface ClubPlayerCareerRecord {
+  playerId: string;
+  playerName: string;
+  shortName: string;
+  position: Position;
+  nationality: string;
+  flagCode: string;
+  isYouthGraduate?: boolean;
+  cardTier?: CardTier;
+  seasonsActive: string[];
+  appearances: number;
+  goals: number;
+  assists: number;
+  motmCount: number;
+  peakRating: number;
+}
+
+export interface ClubMatchRecordSummary {
+  matchId: string;
+  opponentClubId: string;
+  scoreText: string;
+  margin: number;
+  competitionLabel: string;
+  season: string;
+  matchweek: number;
+}
+
+export interface ClubHeadToHeadRecord {
+  opponentClubId: string;
+  played: number;
+  won: number;
+  drawn: number;
+  lost: number;
+  gf: number;
+  ga: number;
+}
+
+export interface ClubRecordsState {
+  totalMatches: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsFor: number;
+  goalsAgainst: number;
+  currentUnbeatenStreak: number;
+  longestUnbeatenStreak: number;
+  currentWinStreak: number;
+  longestWinStreak: number;
+  biggestWin?: ClubMatchRecordSummary;
+  highestScoringMatch?: ClubMatchRecordSummary;
+  playerLegends: Record<string, ClubPlayerCareerRecord>;
+  headToHead: Record<string, ClubHeadToHeadRecord>;
+  peakSquadValueM?: number;
+  peakSquadOvr?: number;
+}
+
 export interface CareerSave {
   uid: string;
   clubId: string;
@@ -659,6 +747,8 @@ export interface CareerSave {
   settledPayrollSeason?: string;
   financialLedger?: FinancialLedgerEntry[];
   payrollHistory?: SeasonPayrollBreakdown[];
+  youthAcademy?: YouthAcademyState;
+  clubRecords?: ClubRecordsState;
   inventory?: InventoryState;
   onlineTournament?: OnlineTournamentState;
   updatedAt?: unknown;

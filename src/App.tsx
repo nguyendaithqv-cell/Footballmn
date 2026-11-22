@@ -65,6 +65,17 @@ import {
   downloadBackupFile,
 } from './lib/backupEngine';
 import {
+  advanceAcademyOnMatch,
+  buildPromotedPlayerFromProspect,
+  ensureYouthAcademy,
+  generateAcademyProspect,
+  getAcademyUpgradeCostM,
+  getExtraScoutCostM,
+  getProspectIntensiveTrainCostM,
+  recordOfficialMatchInClubRecords,
+  trainAcademyProspectIntensive,
+} from './lib/legacyAcademyEngine';
+import {
   deleteLocalClubNotification,
   deleteLocalFriendship,
   getLocalArenaProfile,
@@ -1285,6 +1296,209 @@ export default function App() {
           ? `Đã quyết toán xong quỹ lương mùa ${hydratedCareer.season} (-€${deductedBudgetM}M ngân sách, BHL tạm ứng bù €${bailoutUsedM}M).`
           : `Đã quyết toán đầy đủ €${breakdown.totalPayrollM}M quỹ lương toàn CLB! Đã mở khóa chuyển sang mùa mới.`,
     };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleUpgradeAcademy = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const academy = ensureYouthAcademy(hydratedCareer);
+    if (academy.level >= 3) return { ok: false, message: 'Học viện đã đạt cấp tối đa (Cấp 3).' };
+    const costM = getAcademyUpgradeCostM(academy.level);
+    if (hydratedCareer.transferBudget < costM) {
+      return { ok: false, message: `Ngân sách không đủ nâng cấp (€${costM}M cần thiết).` };
+    }
+
+    const nextLevel = (academy.level + 1) as 2 | 3;
+    const newProspect = generateAcademyProspect(hydratedCareer.clubId, hydratedCareer.season, nextLevel);
+    const nextAcademy = {
+      ...academy,
+      level: nextLevel,
+      prospects: [newProspect, ...academy.prospects].slice(0, 6),
+    };
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget - costM).toFixed(1)),
+      youthAcademy: nextAcademy,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'expense',
+          category: 'academy',
+          title: `Nâng cấp Học viện Trẻ lên Cấp ${nextLevel}`,
+          detail: `Đầu tư cơ sở vật chất & tuyển thêm tài năng trẻ`,
+          amountM: costM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('training', `Nâng cấp Học viện thành công!`, `Học viện đã lên Cấp ${nextLevel}. Nhận thêm 1 học viên tài năng mới vào trung tâm!`);
+    return { ok: true, message: `Đã nâng cấp Học viện lên Cấp ${nextLevel} thành công!` };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleExtraScoutAcademy = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const academy = ensureYouthAcademy(hydratedCareer);
+    if (academy.extraScoutedSeason === hydratedCareer.season) {
+      return { ok: false, message: `Mỗi mùa giải chỉ được tuyển trạch đặc biệt 1 lần.` };
+    }
+    if (academy.prospects.length >= 6) {
+      return { ok: false, message: 'Học viện đã đầy (tối đa 6 học viên).' };
+    }
+    const costM = getExtraScoutCostM(academy.level);
+    if (hydratedCareer.transferBudget < costM) {
+      return { ok: false, message: `Ngân sách không đủ tuyển trạch (€${costM}M).` };
+    }
+
+    const prospect = generateAcademyProspect(hydratedCareer.clubId, hydratedCareer.season, academy.level);
+    const nextAcademy = {
+      ...academy,
+      prospects: [prospect, ...academy.prospects],
+      extraScoutedSeason: hydratedCareer.season,
+    };
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget - costM).toFixed(1)),
+      youthAcademy: nextAcademy,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'expense',
+          category: 'academy',
+          title: `Tuyển trạch Đặc biệt: ${prospect.name} (${prospect.rating} OVR)`,
+          detail: `Tìm kiếm tài năng trẻ tiềm năng ${prospect.potential} POT`,
+          amountM: costM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('training', `Tuyển trạch tài năng trẻ mới!`, `Phát hiện thần đồng ${prospect.name} (${prospect.position}, ${prospect.rating} OVR, POT ${prospect.potential}) gia nhập Học viện.`);
+    return { ok: true, message: `Tuyển trạch thành công thần đồng ${prospect.name} (${prospect.rating} OVR, POT ${prospect.potential})!` };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleTrainAcademyProspect = useCallback(async (prospectId: string): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const academy = ensureYouthAcademy(hydratedCareer);
+    const prospect = academy.prospects.find((p) => p.id === prospectId);
+    if (!prospect) return { ok: false, message: 'Không tìm thấy học viên.' };
+
+    const costM = getProspectIntensiveTrainCostM(prospect);
+    if (hydratedCareer.transferBudget < costM) {
+      return { ok: false, message: `Ngân sách không đủ để tập riêng (€${costM}M).` };
+    }
+
+    const { nextAcademy, prospect: updated, leveledUp } = trainAcademyProspectIntensive(academy, prospectId);
+    if (!updated) return { ok: false, message: 'Lỗi tập luyện.' };
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget - costM).toFixed(1)),
+      youthAcademy: nextAcademy,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'expense',
+          category: 'academy',
+          title: `Huấn luyện chuyên sâu: ${updated.name}`,
+          detail: `Tập luyện tăng cường kỹ năng`,
+          amountM: costM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    return {
+      ok: true,
+      message: leveledUp
+        ? `Huấn luyện thành công! ${updated.name} đã tăng lên ${updated.rating} OVR!`
+        : `Đã huấn luyện chuyên sâu cho ${updated.name} (Tiến độ: ${updated.trainingPoints}%).`,
+    };
+  }, [hydratedCareer, localUser, saveCareerCloud]);
+
+  const handlePromoteAcademyProspect = useCallback(async (prospectId: string): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    if (hydratedCareer.squad.length >= 40) {
+      return { ok: false, message: 'Đội 1 đã đạt giới hạn tối đa 40 cầu thủ.' };
+    }
+    const academy = ensureYouthAcademy(hydratedCareer);
+    const prospect = academy.prospects.find((p) => p.id === prospectId);
+    if (!prospect) return { ok: false, message: 'Không tìm thấy học viên.' };
+
+    const newPlayer = buildPromotedPlayerFromProspect(prospect, hydratedCareer);
+    const nextSquad = [...hydratedCareer.squad, newPlayer];
+    const nextProspects = academy.prospects.filter((p) => p.id !== prospectId);
+    const nextAcademy = {
+      ...academy,
+      prospects: nextProspects,
+      promotedCount: academy.promotedCount + 1,
+    };
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      squad: nextSquad,
+      youthAcademy: nextAcademy,
+      clubRecords: recordOfficialMatchInClubRecords(hydratedCareer, {
+        matchId: `promo-${Date.now()}`,
+        opponentClubId: hydratedCareer.clubId,
+        myGoals: 0,
+        oppGoals: 0,
+        won: false,
+        drawn: true,
+        competitionLabel: 'Đôn lên Đội 1',
+        matchweek: hydratedCareer.matchweek,
+        participatedPlayerIds: new Set(),
+        goalEvents: [],
+        nextSquad,
+      }),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('training', `Đôn học viên trẻ lên Đội 1!`, `${prospect.name} (${prospect.position}, ${prospect.rating} OVR) đã ký hợp đồng chuyên nghiệp và chính thức gia nhập đội một.`);
+    return { ok: true, message: `Đã đôn ${prospect.name} (${prospect.rating} OVR) lên Đội 1 thành công!` };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleReleaseAcademyProspect = useCallback(async (prospectId: string): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const academy = ensureYouthAcademy(hydratedCareer);
+    const prospect = academy.prospects.find((p) => p.id === prospectId);
+    if (!prospect) return { ok: false, message: 'Not found' };
+
+    const feeM = Number(Math.max(1, prospect.estimatedValueM * 0.7).toFixed(1));
+    const nextProspects = academy.prospects.filter((p) => p.id !== prospectId);
+    const nextAcademy = {
+      ...academy,
+      prospects: nextProspects,
+      releasedCount: academy.releasedCount + 1,
+    };
+
+    const replacement = generateAcademyProspect(hydratedCareer.clubId, hydratedCareer.season, academy.level, prospect.position);
+    nextAcademy.prospects.push(replacement);
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(1)),
+      youthAcademy: nextAcademy,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'income',
+          category: 'academy',
+          title: `Chuyển nhượng/Bán tài năng trẻ: ${prospect.name}`,
+          detail: `Thương vụ bán học viên tuổi teen`,
+          amountM: feeM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('transfer', `Bán tài năng trẻ Học viện!`, `CLB đã hoàn tất bán học viên ${prospect.name} với giá €${feeM}M vào ngân sách.`);
+    return { ok: true, message: `Đã bán học viên ${prospect.name} thu về +€${feeM}M!` };
   }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
 
   const handleStartNextSeason = useCallback(async () => {
@@ -3459,6 +3673,11 @@ export default function App() {
               onClaimSeasonRewards={handleClaimSeasonRewards}
               onSettleSeasonPayroll={handleSettleSeasonPayroll}
               onStartNextSeason={handleStartNextSeason}
+              onUpgradeAcademy={handleUpgradeAcademy}
+              onExtraScoutAcademy={handleExtraScoutAcademy}
+              onTrainAcademyProspect={handleTrainAcademyProspect}
+              onPromoteAcademyProspect={handlePromoteAcademyProspect}
+              onReleaseAcademyProspect={handleReleaseAcademyProspect}
               subTabRequest={clubSubTabRequest}
               onExportBackup={handleExportBackup}
               onRestoreBackup={handleRestoreBackup}

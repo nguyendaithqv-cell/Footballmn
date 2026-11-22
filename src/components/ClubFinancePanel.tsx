@@ -43,6 +43,7 @@ const CATEGORY_LABELS: Record<FinancialLedgerCategory, string> = {
   pack_purchase: 'Mua gói thẻ',
   star_upgrade: 'Phí nâng sao',
   medical_recovery: 'Chi phí y tế',
+  academy: 'Học viện & Tài năng trẻ',
 };
 
 export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({

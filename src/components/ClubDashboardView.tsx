@@ -47,6 +47,8 @@ import { CareerSave, NewsArticle, Player, UserProfile } from '../types/game';
 import { BackupRestoreCard } from './BackupRestoreCard';
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 import { ClubFinancePanel } from './ClubFinancePanel';
+import { ClubRecordsPanel } from './ClubRecordsPanel';
+import { YouthAcademyPanel } from './YouthAcademyPanel';
 
 interface ClubDashboardViewProps {
   profile: UserProfile;
@@ -71,8 +73,13 @@ interface ClubDashboardViewProps {
   onClaimSeasonRewards?: () => Promise<{ ok: boolean; message: string }>;
   onSettleSeasonPayroll: () => Promise<{ ok: boolean; message: string }>;
   onStartNextSeason: () => Promise<void>;
+  onUpgradeAcademy: () => Promise<{ ok: boolean; message: string }>;
+  onExtraScoutAcademy: () => Promise<{ ok: boolean; message: string }>;
+  onTrainAcademyProspect: (prospectId: string) => Promise<{ ok: boolean; message: string }>;
+  onPromoteAcademyProspect: (prospectId: string) => Promise<{ ok: boolean; message: string }>;
+  onReleaseAcademyProspect: (prospectId: string) => Promise<{ ok: boolean; message: string }>;
   subTabRequest?: {
-    tab: 'overview' | 'squad' | 'finance' | 'training' | 'managers';
+    tab: 'overview' | 'squad' | 'finance' | 'academy' | 'records' | 'training' | 'managers';
     nonce: number;
   } | null;
   onExportBackup: (includeAdminData: boolean) => Promise<void>;
@@ -99,12 +106,17 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   onClaimSeasonRewards,
   onSettleSeasonPayroll,
   onStartNextSeason,
+  onUpgradeAcademy,
+  onExtraScoutAcademy,
+  onTrainAcademyProspect,
+  onPromoteAcademyProspect,
+  onReleaseAcademyProspect,
   subTabRequest,
   onExportBackup,
   onRestoreBackup,
 }) => {
   const [clubSubTab, setClubSubTab] = useState<
-    'overview' | 'squad' | 'finance' | 'training' | 'managers'
+    'overview' | 'squad' | 'finance' | 'academy' | 'records' | 'training' | 'managers'
   >('overview');
 
   useEffect(() => {
@@ -181,11 +193,13 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   return (
     <div className="space-y-4">
       {/* Sub-navigation */}
-      <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
         {[
           { id: 'overview', label: 'Tổng quan' },
           { id: 'squad', label: 'Đội hình' },
           { id: 'finance', label: 'Tài chính' },
+          { id: 'academy', label: 'Học viện Trẻ' },
+          { id: 'records', label: 'Kỷ lục CLB' },
           { id: 'training', label: 'Tập luyện' },
           { id: 'managers', label: 'HLV & BHL' },
         ].map((t) => (
@@ -540,16 +554,25 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                   <Trophy className="w-3.5 h-3.5 text-amber-400" />
                   Phòng Truyền thống ({career.trophyCabinet?.length ?? 0} Cúp · {career.seasonHistory?.length ?? 0} mùa)
                 </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMuseumTab('trophies');
-                    setShowTrophyMuseum(true);
-                  }}
-                  className="text-xs font-bold text-emerald-400 hover:underline flex items-center gap-0.5 shrink-0"
-                >
-                  Bảo tàng &amp; ĐHTB <ChevronRight className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setClubSubTab('records')}
+                    className="text-xs font-bold text-amber-400 hover:underline flex items-center gap-0.5 shrink-0"
+                  >
+                    Huyền thoại &amp; Kỷ lục
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMuseumTab('trophies');
+                      setShowTrophyMuseum(true);
+                    }}
+                    className="text-xs font-bold text-emerald-400 hover:underline flex items-center gap-0.5 shrink-0"
+                  >
+                    Bảo tàng &amp; ĐHTB <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               {career.trophyCabinet && career.trophyCabinet.length > 0 && (
@@ -651,6 +674,19 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
           onStartNextSeason={onStartNextSeason}
         />
       )}
+
+      {clubSubTab === 'academy' && (
+        <YouthAcademyPanel
+          career={career}
+          onUpgradeAcademy={onUpgradeAcademy}
+          onExtraScout={onExtraScoutAcademy}
+          onTrainProspect={onTrainAcademyProspect}
+          onPromoteProspect={onPromoteAcademyProspect}
+          onReleaseProspect={onReleaseAcademyProspect}
+        />
+      )}
+
+      {clubSubTab === 'records' && <ClubRecordsPanel career={career} />}
 
       {clubSubTab === 'squad' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">

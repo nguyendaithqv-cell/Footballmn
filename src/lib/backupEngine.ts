@@ -210,6 +210,8 @@ export function buildCompactCareerForStorage(rawCareer: CareerSave, targetUid: s
       : {}),
     financialLedger: (hydrated.financialLedger ?? []).slice(0, 300),
     payrollHistory: (hydrated.payrollHistory ?? []).slice(0, 50),
+    ...(hydrated.youthAcademy ? { youthAcademy: hydrated.youthAcademy } : {}),
+    ...(hydrated.clubRecords ? { clubRecords: hydrated.clubRecords } : {}),
     inventory: normalizeInventory(hydrated.inventory),
   };
 }
