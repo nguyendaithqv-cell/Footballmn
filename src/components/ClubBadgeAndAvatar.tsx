@@ -64,15 +64,18 @@ interface PlayerAvatarProps {
   club?: Club;
   size?: number;
   showNumber?: boolean;
+  isUserCard?: boolean;
 }
 
 export const PlayerAvatar: React.FC<PlayerAvatarProps> = React.memo(
-  ({ player, club, size = 44, showNumber = true }) => {
+  ({ player, club, size = 44, showNumber = true, isUserCard = false }) => {
     const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
     const isUcl17 = player.cardTier === 'ucl17' || player.clubId === 'rma-ucl-2017';
     const isGlobal = player.cardTier === 'global';
+    const stars = Math.max(1, Math.min(5, player.stars ?? 1));
     const primary = isIcon ? '#D97706' : isUcl17 ? '#312E81' : club?.primaryColor ?? '#10B981';
     const secondary = isIcon ? '#FDE68A' : isUcl17 ? '#F59E0B' : club?.secondaryColor ?? '#0F172A';
+    const clubTrim = club?.accentColor ?? club?.primaryColor ?? '#10B981';
     const { skin, hair, hairStyle } = player.appearance;
     const borderCls = isIcon
       ? 'border-2 border-amber-400 shadow-md shadow-amber-500/25'
@@ -80,51 +83,83 @@ export const PlayerAvatar: React.FC<PlayerAvatarProps> = React.memo(
         ? 'border-2 border-indigo-400 shadow-md shadow-indigo-500/30'
         : isGlobal
           ? 'border-2 border-pink-400/75'
-          : 'border border-white/15';
+          : isUserCard
+            ? stars >= 5
+              ? 'border-2 border-amber-400 shadow-md shadow-amber-500/25'
+              : 'border-2 border-white/25'
+            : 'border border-white/15';
 
     return (
-      <div
-        className={`relative shrink-0 rounded-full overflow-hidden bg-slate-900 ${borderCls}`}
-        style={{ width: size, height: size }}
-      >
-        <svg viewBox="0 0 64 64" className="w-full h-full" aria-label={player.name}>
-          <rect width="64" height="64" fill="#131E29" />
-          <circle cx="32" cy="24" r="24" fill={primary} opacity="0.18" />
-          {/* Jersey */}
-          <path d="M12 64C14 47 21 42 32 42C43 42 50 47 52 64Z" fill={primary} />
-          {club?.pattern === 'stripes' && (
-            <path d="M24 43H30V64H24ZM36 43H42V64H36Z" fill={secondary} opacity="0.9" />
-          )}
-          <path d="M25 42L32 48L39 42" fill="none" stroke="#FFFFFF" strokeWidth="2" opacity="0.85" />
-          {/* Neck & Head */}
-          <rect x="28" y="34" width="8" height="10" rx="3" fill={skin} />
-          <ellipse cx="32" cy="26" rx="10.5" ry="12" fill={skin} />
-          {/* Hair */}
-          {hairStyle === 'short' && (
-            <path d="M21 24C21 15 26 12 32 12C38 12 43 15 43 24C41 19 37 17 32 17C27 17 23 19 21 24Z" fill={hair} />
-          )}
-          {hairStyle === 'fade' && (
-            <path d="M22 21C22 14 26 11 32 11C38 11 42 14 42 21C39 16 25 16 22 21Z" fill={hair} />
-          )}
-          {hairStyle === 'curly' && (
-            <path
-              d="M20 24C19 16 24 10 32 10C40 10 45 16 44 24C41 20 38 18 32 18C26 18 23 20 20 24Z"
-              fill={hair}
-            />
-          )}
-          {hairStyle === 'long' && (
-            <path
-              d="M20 26C19 14 25 10 32 10C39 10 45 14 44 26L45 34H40L40 22C36 18 28 18 24 22L24 34H19L20 26Z"
-              fill={hair}
-            />
-          )}
-          {hairStyle === 'buzz' && (
-            <path d="M22 21C22 15 26 13 32 13C38 13 42 15 42 21C38 18 26 18 22 21Z" fill={hair} opacity="0.6" />
-          )}
-          {/* Subtle eyes */}
-          <circle cx="28" cy="26" r="1.2" fill="#0F172A" />
-          <circle cx="36" cy="26" r="1.2" fill="#0F172A" />
-        </svg>
+      <div className="relative shrink-0" style={{ width: size, height: size }}>
+        <div className={`w-full h-full rounded-full overflow-hidden bg-slate-900 ${borderCls}`}>
+          <svg viewBox="0 0 64 64" className="w-full h-full" aria-label={player.name}>
+            <rect width="64" height="64" fill="#131E29" />
+            <circle cx="32" cy="24" r="24" fill={primary} opacity={isUserCard ? 0.28 : 0.18} />
+            {isUserCard && club && (
+              <circle
+                cx="32"
+                cy="32"
+                r="30.5"
+                fill="none"
+                stroke={stars >= 5 ? '#FBBF24' : clubTrim}
+                strokeWidth={stars >= 3 ? 3 : 2}
+                opacity="0.92"
+              />
+            )}
+            {/* Jersey */}
+            <path d="M12 64C14 47 21 42 32 42C43 42 50 47 52 64Z" fill={primary} />
+            {club?.pattern === 'stripes' && !isIcon && !isUcl17 && (
+              <path d="M24 43H30V64H24ZM36 43H42V64H36Z" fill={secondary} opacity="0.9" />
+            )}
+            {isUserCard && club && (isIcon || isUcl17) && (
+              <path d="M21 44L32 52L43 44" fill="none" stroke={club.primaryColor} strokeWidth="3.5" opacity="0.9" />
+            )}
+            <path d="M25 42L32 48L39 42" fill="none" stroke="#FFFFFF" strokeWidth="2" opacity="0.85" />
+            {/* Neck & Head */}
+            <rect x="28" y="34" width="8" height="10" rx="3" fill={skin} />
+            <ellipse cx="32" cy="26" rx="10.5" ry="12" fill={skin} />
+            {/* Hair */}
+            {hairStyle === 'short' && (
+              <path d="M21 24C21 15 26 12 32 12C38 12 43 15 43 24C41 19 37 17 32 17C27 17 23 19 21 24Z" fill={hair} />
+            )}
+            {hairStyle === 'fade' && (
+              <path d="M22 21C22 14 26 11 32 11C38 11 42 14 42 21C39 16 25 16 22 21Z" fill={hair} />
+            )}
+            {hairStyle === 'curly' && (
+              <path
+                d="M20 24C19 16 24 10 32 10C40 10 45 16 44 24C41 20 38 18 32 18C26 18 23 20 20 24Z"
+                fill={hair}
+              />
+            )}
+            {hairStyle === 'long' && (
+              <path
+                d="M20 26C19 14 25 10 32 10C39 10 45 14 44 26L45 34H40L40 22C36 18 28 18 24 22L24 34H19L20 26Z"
+                fill={hair}
+              />
+            )}
+            {hairStyle === 'buzz' && (
+              <path d="M22 21C22 15 26 13 32 13C38 13 42 15 42 21C38 18 26 18 22 21Z" fill={hair} opacity="0.6" />
+            )}
+            {/* Subtle eyes */}
+            <circle cx="28" cy="26" r="1.2" fill="#0F172A" />
+            <circle cx="36" cy="26" r="1.2" fill="#0F172A" />
+          </svg>
+        </div>
+        {isUserCard && (
+          <span
+            className={`absolute -top-1 -left-1 font-mono-num font-extrabold leading-none rounded px-1 py-0.5 border shadow ${
+              size <= 28 ? 'text-[8px]' : 'text-[9px]'
+            } ${
+              stars >= 5
+                ? 'bg-amber-400 text-slate-950 border-amber-200'
+                : stars >= 3
+                  ? 'bg-slate-950 text-amber-300 border-amber-400/70'
+                  : 'bg-slate-950 text-emerald-300 border-emerald-400/60'
+            }`}
+          >
+            {stars}★
+          </span>
+        )}
         {showNumber && (
           <span className="absolute bottom-0 right-0 bg-slate-950/90 text-white font-mono-num text-[9px] font-bold px-1 leading-tight rounded-tl">
             {player.number}

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   ArrowLeftRight,
   ArrowUpCircle,
+  Award,
   CheckCircle2,
   Crown,
   DollarSign,
@@ -15,14 +16,24 @@ import {
 import { getClubById, getIconShardCost } from '../data/footballDatabase';
 import { getPlayerRecoveryCostM } from '../lib/careerEngine';
 import { getStarUpgradePlan, normalizeInventory } from '../lib/inventoryEngine';
-import { InventoryState, Player } from '../types/game';
+import {
+  CompetitionAwardWinner,
+  InventoryState,
+  Player,
+  SeasonRecord,
+  TrophyItem,
+} from '../types/game';
 import { ClubCrest, PlayerAvatar } from './ClubBadgeAndAvatar';
 
 interface PlayerDetailSheetProps {
   player: Player;
   isOwnPlayer: boolean;
   transferBudgetM: number;
+  squadLength?: number;
   inventory?: InventoryState;
+  trophyCabinet?: TrophyItem[];
+  seasonAwards?: CompetitionAwardWinner[];
+  seasonHistory?: SeasonRecord[];
   onClose: () => void;
   onToggleTransferList?: (playerId: string) => void;
   onSellPlayer?: (playerId: string) => void;
@@ -37,7 +48,11 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   player,
   isOwnPlayer,
   transferBudgetM,
+  squadLength,
   inventory,
+  trophyCabinet,
+  seasonAwards,
+  seasonHistory,
   onClose,
   onToggleTransferList,
   onSellPlayer,
@@ -99,7 +114,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
         {/* Header */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3.5 min-w-0">
-            <PlayerAvatar player={player} club={club} size={64} />
+            <PlayerAvatar player={player} club={club} size={64} isUserCard={isOwnPlayer} />
             <div className="min-w-0">
               <p className="text-xs text-slate-400">
                 {player.position} · #{player.number} · {player.nationality} (
@@ -113,6 +128,14 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 <ClubCrest club={club} size={20} />
                 <span className="text-xs font-medium text-slate-300">{club.name}</span>
+                {isOwnPlayer && (
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-[10px] font-extrabold text-emerald-200 inline-flex items-center gap-1">
+                    <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                      <circle cx="4" cy="4" r="4" fill={club.primaryColor} stroke={club.accentColor} strokeWidth="1.5" />
+                    </svg>
+                    THẺ CLB {club.shortName} · {upgradePlan.currentStars}★
+                  </span>
+                )}
                 {isIcon && (
                   <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-[10px] font-extrabold text-amber-300">
                     HUYỀN THOẠI
@@ -241,6 +264,71 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
           </div>
         </div>
 
+        {/* Player Career Honors & TOTS Badges */}
+        {(() => {
+          const personalAwards = (seasonAwards ?? []).filter(
+            (aw) => aw.playerId === player.id && aw.clubId === player.clubId
+          );
+          const totsHonors = (seasonHistory ?? [])
+            .filter((rec) =>
+              rec.teamOfTheSeason?.some(
+                (t) => t.playerId === player.id && t.clubId === player.clubId
+              )
+            )
+            .map((rec) => ({
+              season: rec.season,
+              entry: rec.teamOfTheSeason!.find(
+                (t) => t.playerId === player.id && t.clubId === player.clubId
+              )!,
+            }));
+          const clubSilverware = isOwnPlayer
+            ? (trophyCabinet ?? []).filter(
+                (t) => t.clubId === player.clubId && (!t.awardType || t.awardType === 'team')
+              )
+            : [];
+          if (personalAwards.length === 0 && totsHonors.length === 0 && clubSilverware.length === 0) {
+            return null;
+          }
+          return (
+            <div className="rounded-xl bg-[#0B1117] border border-amber-400/25 p-3 space-y-2">
+              <p className="text-[11px] font-bold text-amber-400 flex items-center gap-1.5">
+                <Award className="w-3.5 h-3.5" />
+                Thành tích &amp; Danh hiệu Cá nhân
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {personalAwards.map((aw) => (
+                  <span
+                    key={aw.id}
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${
+                      aw.awardType === 'mvp'
+                        ? 'bg-amber-500/20 border-amber-400/45 text-amber-200'
+                        : 'bg-emerald-500/20 border-emerald-400/45 text-emerald-200'
+                    }`}
+                  >
+                    {aw.awardType === 'mvp' ? '👑' : '⚽'} {aw.awardTitle} {aw.competitionTitle} ({aw.season})
+                  </span>
+                ))}
+                {totsHonors.map((th) => (
+                  <span
+                    key={`tots-${th.season}`}
+                    className="px-2 py-0.5 rounded-lg bg-sky-500/20 border border-sky-400/45 text-[10px] font-bold text-sky-200"
+                  >
+                    ⭐ ĐHTB TOTS {th.season} ({th.entry.avgRating.toFixed(1)}★)
+                  </span>
+                ))}
+                {clubSilverware.slice(0, 6).map((tr) => (
+                  <span
+                    key={tr.id}
+                    className="px-2 py-0.5 rounded-lg bg-white/5 border border-white/15 text-[10px] font-semibold text-slate-200"
+                  >
+                    🏆 {tr.title}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {feedback && (
           <div
             className={`rounded-xl p-3 text-xs flex items-center gap-2 border ${
@@ -261,11 +349,18 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
             {onUpgradeStar && (
               <div className="rounded-2xl bg-[#0B1117] border border-amber-400/30 p-3.5 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                    Ghép Thẻ Nâng Sao
-                  </span>
-                  <span className="font-mono-num text-xs font-bold text-amber-400">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="text-xs font-bold text-white truncate">
+                      Nâng Sao ({upgradePlan.tierLabel})
+                    </span>
+                    {upgradePlan.loyaltyDiscountApplied && !upgradePlan.isMax && (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-[9px] font-bold text-emerald-300 shrink-0">
+                        -20% Mảnh
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-mono-num text-xs font-bold text-amber-400 shrink-0">
                     {upgradePlan.isMax
                       ? '5★ Tối đa'
                       : `${upgradePlan.currentStars}★ → ${upgradePlan.nextStars}★ (OVR ${player.rating} → ${upgradePlan.previewRating})`}
@@ -274,29 +369,33 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
 
                 {upgradePlan.isMax ? (
                   <p className="text-[11px] text-amber-300">
-                    Cầu thủ đã đạt cấp tối đa 5★ Siêu Sao Đột Phá.
+                    Cầu thủ đạt cảnh giới tối đa 5★: Miễn giảm OVR do tuổi tác &amp; tăng hiệu suất thi đấu đỉnh cao.
                   </p>
                 ) : (
                   <>
                     <div className="grid grid-cols-3 gap-2 text-[11px] text-center">
                       <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
-                        <p className="text-slate-400">Thẻ bản sao</p>
-                        <p className="font-mono-num font-bold text-white mt-0.5">
-                          {upgradePlan.cardsToUse}/{upgradePlan.step?.cardsRequired} (Có {upgradePlan.ownedDuplicateCards})
-                        </p>
-                      </div>
-                      <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
-                        <p className="text-slate-400">Mảnh bù</p>
+                        <p className="text-slate-400">Thẻ trùng (Bắt buộc)</p>
                         <p
                           className={`font-mono-num font-bold mt-0.5 ${
-                            upgradePlan.canAffordMaterials ? 'text-amber-400' : 'text-red-400'
+                            upgradePlan.hasEnoughCards ? 'text-emerald-400' : 'text-red-400'
                           }`}
                         >
-                          {upgradePlan.shardsToUse} / {normInventory.universalShards}
+                          {upgradePlan.ownedDuplicateCards}/{upgradePlan.cardsRequired} thẻ
                         </p>
                       </div>
                       <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
-                        <p className="text-slate-400">Phí ghép</p>
+                        <p className="text-slate-400">Mảnh Ngôi Sao</p>
+                        <p
+                          className={`font-mono-num font-bold mt-0.5 ${
+                            upgradePlan.hasEnoughShards ? 'text-amber-400' : 'text-red-400'
+                          }`}
+                        >
+                          {upgradePlan.ownedShards}/{upgradePlan.shardsRequired}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-[#121B24] border border-white/5 p-2">
+                        <p className="text-slate-400">Phí nâng sao</p>
                         <p
                           className={`font-mono-num font-bold mt-0.5 ${
                             upgradePlan.canAffordBudget ? 'text-emerald-400' : 'text-red-400'
@@ -305,6 +404,21 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                           €{upgradePlan.feeM}M
                         </p>
                       </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400 px-0.5">
+                      <span>
+                        Chỉ số +{upgradePlan.step?.ovrGain} OVR ·{' '}
+                        <strong className="text-emerald-300">
+                          PAC+{upgradePlan.attrGains.pac} SHO+{upgradePlan.attrGains.sho} PAS+{upgradePlan.attrGains.pas} DRI+{upgradePlan.attrGains.dri} DEF+{upgradePlan.attrGains.def} PHY+{upgradePlan.attrGains.phy}
+                        </strong>
+                      </span>
+                      {upgradePlan.nextStars === 3 && (
+                        <span className="text-sky-300 font-semibold">Mở khóa 3★: -20% hao thể lực</span>
+                      )}
+                      {upgradePlan.nextStars === 5 && (
+                        <span className="text-amber-300 font-semibold">Mở khóa 5★: Bất tử tuổi tác</span>
+                      )}
                     </div>
 
                     <button
@@ -324,8 +438,14 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                     >
                       <ArrowUpCircle className="w-4 h-4" />
                       {upgrading
-                        ? 'Đang ghép nâng sao...'
-                        : `Ghép lên ${upgradePlan.nextStars}★ (+${upgradePlan.step?.ovrGain} OVR, +${upgradePlan.step?.attrGain} tất cả chỉ số)`}
+                        ? 'Đang nâng sao...'
+                        : !upgradePlan.hasEnoughCards
+                          ? `Thiếu ${upgradePlan.cardsMissing} thẻ trùng của ${player.shortName}`
+                          : !upgradePlan.hasEnoughShards
+                            ? `Thiếu ${upgradePlan.shardsMissing} Mảnh Ngôi Sao`
+                            : !upgradePlan.canAffordBudget
+                              ? `Không đủ ngân sách (€${upgradePlan.feeM}M)`
+                              : `Nâng lên ${upgradePlan.nextStars}★ (+${upgradePlan.step?.ovrGain} OVR)`}
                     </button>
                   </>
                 )}
@@ -403,19 +523,27 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                   {player.transferStatus === 'listed' ? 'Gỡ rao bán' : 'Đưa lên sàn'}
                 </button>
               )}
-              {onSellPlayer && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onSellPlayer(player.id);
-                    onClose();
-                  }}
-                  className="h-11 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5"
-                >
-                  <DollarSign className="w-3.5 h-3.5" />
-                  Bán (€{Math.round(player.marketValueM * 0.92)}M)
-                </button>
-              )}
+              {onSellPlayer && (() => {
+                const blockedMinSquad = typeof squadLength === 'number' && squadLength <= 21;
+                return (
+                  <button
+                    type="button"
+                    disabled={blockedMinSquad}
+                    onClick={() => {
+                      if (blockedMinSquad) return;
+                      onSellPlayer(player.id);
+                      onClose();
+                    }}
+                    title={blockedMinSquad ? 'Đội hình cần tối thiểu 21 cầu thủ (11 đá chính + 10 dự bị)' : undefined}
+                    className="h-11 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-45"
+                  >
+                    <DollarSign className="w-3.5 h-3.5" />
+                    {blockedMinSquad
+                      ? 'Tối thiểu 21 người'
+                      : `Bán (€${Math.round(player.marketValueM * 0.92)}M)`}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         ) : (

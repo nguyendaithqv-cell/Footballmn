@@ -43,6 +43,7 @@ export interface Player {
   nationality: string;
   flagCode: string;
   rating: number;
+  baseRating?: number;
   potential: number;
   stars?: number; // 1-5 star upgrade tier
   cardTier?: CardTier;
@@ -258,6 +259,7 @@ export interface MatchResultSummary {
   venue?: string;
   manOfTheMatch?: ManOfTheMatch;
   playerRatings?: MatchPlayerRating[];
+  participatedUserPlayerIds?: string[];
   events: MatchEvent[];
   playedAt: string;
 }
@@ -356,6 +358,39 @@ export interface TrophyItem {
   playerId?: string;
 }
 
+export interface TeamOfTheSeasonPlayer {
+  playerId: string;
+  playerName: string;
+  shortName: string;
+  clubId: string;
+  position: Position;
+  slotLabel: Position;
+  avgRating: number;
+  goals: number;
+  assists: number;
+  matches: number;
+  isUserPlayer: boolean;
+}
+
+export type BoardObjectiveTargetType =
+  | 'league_rank'
+  | 'cup_semi'
+  | 'cup_champion'
+  | 'top_scorer'
+  | 'star_upgrade';
+
+export interface BoardObjective {
+  id: string;
+  title: string;
+  description: string;
+  targetType: BoardObjectiveTargetType;
+  targetValue: number;
+  rewardBudgetM: number;
+  rewardShards: number;
+  status: 'in_progress' | 'completed' | 'failed';
+  progressText?: string;
+}
+
 export interface SeasonRecord {
   season: string;
   clubId: string;
@@ -371,6 +406,9 @@ export interface SeasonRecord {
   mvpPlayerClubId?: string;
   mvpAvgRating?: number;
   trophiesWon: string[];
+  teamOfTheSeason?: TeamOfTheSeasonPlayer[];
+  completedObjectivesCount?: number;
+  totalObjectivesCount?: number;
 }
 
 export interface TransferRecord {
@@ -400,6 +438,7 @@ export interface InventoryState {
   universalShards: number;
   fitnessBoosters: number;
   totalPacksOpened?: number;
+  dailyPackPurchases?: Partial<Record<PackTier, string>>;
 }
 
 export interface OpenedCardReward {
@@ -571,6 +610,7 @@ export interface CareerSave {
   trophyCabinet?: TrophyItem[];
   seasonAwards?: CompetitionAwardWinner[];
   seasonHistory?: SeasonRecord[];
+  boardObjectives?: BoardObjective[];
   inventory?: InventoryState;
   onlineTournament?: OnlineTournamentState;
   updatedAt?: unknown;

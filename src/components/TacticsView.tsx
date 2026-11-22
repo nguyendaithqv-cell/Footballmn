@@ -90,6 +90,102 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
     [opponentClub]
   );
 
+  const startingXIPlayers = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Player[] = [];
+    for (const s of career.tactics.slots) {
+      const p = playerMap.get(s.playerId);
+      if (p && !seen.has(p.id)) {
+        seen.add(p.id);
+        list.push(p);
+      }
+    }
+    return list;
+  }, [career.tactics.slots, playerMap]);
+
+  const sortedXIBySho = useMemo(
+    () =>
+      [...startingXIPlayers].sort((a, b) => {
+        if (a.position === 'GK' && b.position !== 'GK') return 1;
+        if (b.position === 'GK' && a.position !== 'GK') return -1;
+        return b.attributes.sho - a.attributes.sho;
+      }),
+    [startingXIPlayers]
+  );
+
+  const sanitizedShootoutTakers = useMemo(() => {
+    const xiIds = new Set(startingXIPlayers.map((p) => p.id));
+    const ordered: string[] = [];
+    const used = new Set<string>();
+    for (const id of career.tactics.penaltyTakerIds ?? []) {
+      if (id && xiIds.has(id) && !used.has(id)) {
+        ordered.push(id);
+        used.add(id);
+      }
+    }
+    for (const p of sortedXIBySho) {
+      if (ordered.length >= 10) break;
+      if (!used.has(p.id)) {
+        ordered.push(p.id);
+        used.add(p.id);
+      }
+    }
+    return ordered.slice(0, 10);
+  }, [career.tactics.penaltyTakerIds, startingXIPlayers, sortedXIBySho]);
+
+  const sanitizedDesignatedPenaltyId = useMemo(() => {
+    const cur = career.tactics.designatedPenaltyTakerId;
+    if (cur && starterIds.has(cur)) return cur;
+    return sortedXIBySho[0]?.id ?? '';
+  }, [career.tactics.designatedPenaltyTakerId, starterIds, sortedXIBySho]);
+
+  const syncPenaltyTakersForSlots = (
+    slots: TacticSettings['slots'],
+    prevTactics: TacticSettings,
+    replacedOutId?: string,
+    incomingId?: string
+  ) => {
+    const xiSet = new Set(slots.map((s) => s.playerId));
+    const xiSorted = slots
+      .map((s) => playerMap.get(s.playerId))
+      .filter((p): p is Player => Boolean(p))
+      .sort((a, b) => {
+        if (a.position === 'GK' && b.position !== 'GK') return 1;
+        if (b.position === 'GK' && a.position !== 'GK') return -1;
+        return b.attributes.sho - a.attributes.sho;
+      });
+
+    let nextPenId = prevTactics.designatedPenaltyTakerId;
+    if (replacedOutId && nextPenId === replacedOutId && incomingId && xiSet.has(incomingId)) {
+      nextPenId = incomingId;
+    }
+    if (!nextPenId || !xiSet.has(nextPenId)) {
+      nextPenId = xiSorted[0]?.id;
+    }
+
+    const nextList: string[] = [];
+    const used = new Set<string>();
+    for (const id of prevTactics.penaltyTakerIds ?? []) {
+      const mappedId = replacedOutId && id === replacedOutId && incomingId ? incomingId : id;
+      if (mappedId && xiSet.has(mappedId) && !used.has(mappedId)) {
+        nextList.push(mappedId);
+        used.add(mappedId);
+      }
+    }
+    for (const p of xiSorted) {
+      if (nextList.length >= 10) break;
+      if (!used.has(p.id)) {
+        nextList.push(p.id);
+        used.add(p.id);
+      }
+    }
+
+    return {
+      designatedPenaltyTakerId: nextPenId,
+      penaltyTakerIds: nextList.slice(0, 10),
+    };
+  };
+
   const handleFormationChange = (formation: FormationId) => {
     const template = FORMATION_TEMPLATES[formation];
     const validSquadIds = new Set(career.squad.map((p) => p.id));
@@ -118,13 +214,15 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
       playerId: uniqueStarters[i] ?? '',
       role: tpl.defaultRole,
     }));
-    onUpdateTactics({ ...career.tactics, formation, slots: newSlots });
+    const penSync = syncPenaltyTakersForSlots(newSlots, career.tactics);
+    onUpdateTactics({ ...career.tactics, formation, slots: newSlots, ...penSync });
     setSelectedSlotIdx(null);
   };
 
   const handleAutoPick = () => {
     const autoSlots = buildAutoLineupSlots(career.tactics.formation, career.squad);
-    onUpdateTactics({ ...career.tactics, slots: autoSlots });
+    const penSync = syncPenaltyTakersForSlots(autoSlots, career.tactics);
+    onUpdateTactics({ ...career.tactics, slots: autoSlots, ...penSync });
     setSelectedSlotIdx(null);
   };
 
@@ -154,10 +252,12 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
       if (p) onSelectPlayer(p);
       return;
     }
+    const outgoingId = career.tactics.slots[selectedSlotIdx]?.playerId;
     const nextSlots = career.tactics.slots.map((s, idx) =>
       idx === selectedSlotIdx ? { ...s, playerId: benchPlayerId } : s
     );
-    onUpdateTactics({ ...career.tactics, slots: nextSlots });
+    const penSync = syncPenaltyTakersForSlots(nextSlots, career.tactics, outgoingId, benchPlayerId);
+    onUpdateTactics({ ...career.tactics, slots: nextSlots, ...penSync });
     setSelectedSlotIdx(null);
   };
 
@@ -300,7 +400,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                   }`}
                 >
                   {p ? (
-                    <PlayerAvatar player={p} club={club} size={40} showNumber={false} />
+                    <PlayerAvatar player={p} club={club} size={40} showNumber={false} isUserCard />
                   ) : (
                     <div className="w-10 h-10 rounded-full bg-slate-800" />
                   )}
@@ -324,7 +424,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
           <div className="rounded-2xl bg-[#121B24] border border-amber-400/40 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <PlayerAvatar player={selectedPlayer} club={club} size={40} />
+                <PlayerAvatar player={selectedPlayer} club={club} size={40} isUserCard />
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-white truncate">{selectedPlayer.name}</p>
                   <p className="text-xs text-slate-400">
@@ -382,7 +482,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <PlayerAvatar player={bp} club={club} size={32} />
+                  <PlayerAvatar player={bp} club={club} size={32} isUserCard />
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-white truncate">{bp.shortName}</p>
                     <p className="text-[11px] font-mono-num text-emerald-400">
@@ -706,15 +806,35 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
 
         {/* Penalty & Shootout Takers Management */}
         <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-3">
-          <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <Target className="w-4 h-4 text-emerald-400" />
-            Chỉ định cầu thủ Sút phạt đền &amp; Luân lưu (Penalties)
-          </h3>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Target className="w-4 h-4 text-emerald-400" />
+                Sút phạt đền &amp; Luân lưu (Penalties)
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Chỉ chọn từ 11 cầu thủ đang đá chính trên sân (theo đúng luật).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onUpdateTactics({
+                  ...career.tactics,
+                  designatedPenaltyTakerId: sortedXIBySho[0]?.id,
+                  penaltyTakerIds: sortedXIBySho.slice(0, 10).map((p) => p.id),
+                });
+              }}
+              className="h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-emerald-300 shrink-0"
+            >
+              Xếp theo Sút
+            </button>
+          </div>
           <div className="space-y-3">
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Cầu thủ sút Penalty chính</label>
+              <label className="text-xs text-slate-400 block mb-1">Cầu thủ sút Penalty chính (trong trận)</label>
               <select
-                value={career.tactics.designatedPenaltyTakerId ?? career.squad[0]?.id ?? ''}
+                value={sanitizedDesignatedPenaltyId}
                 onChange={(e) =>
                   onUpdateTactics({
                     ...career.tactics,
@@ -723,7 +843,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                 }
                 className="w-full h-11 px-3 rounded-xl bg-[#0B1117] border border-white/10 text-xs text-white focus:outline-none focus:border-emerald-500"
               >
-                {[...career.squad].sort((a, b) => b.attributes.sho - a.attributes.sho).map((p) => (
+                {sortedXIBySho.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} ({p.position} · Sút {p.attributes.sho} · OVR {p.rating})
                   </option>
@@ -733,14 +853,15 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
 
             <div>
               <label className="text-xs text-slate-400 block mb-1">
-                Thứ tự sút luân lưu (5 Lượt chính thức & 5 Lượt dự bị Sudden Death)
+                Thứ tự sút luân lưu (5 Lượt chính thức &amp; 5 Lượt dự bị Sudden Death)
               </label>
-              
-              <div className="mb-2 text-[11px] font-semibold text-emerald-400">5 Lượt chính thức (Top 5 Main Takers)</div>
+
+              <div className="mb-2 text-[11px] font-semibold text-emerald-400">
+                5 Lượt chính thức (Main Takers)
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 mb-3">
                 {[0, 1, 2, 3, 4].map((slotIdx) => {
-                  const currentTakers = career.tactics.penaltyTakerIds ?? career.squad.slice(0, 10).map(p => p.id);
-                  const selectedId = currentTakers[slotIdx] ?? career.squad[slotIdx]?.id ?? '';
+                  const selectedId = sanitizedShootoutTakers[slotIdx] ?? '';
                   return (
                     <div key={slotIdx} className="space-y-1">
                       <span className="text-[10px] font-mono-num text-emerald-400 font-bold">
@@ -749,9 +870,13 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                       <select
                         value={selectedId}
                         onChange={(e) => {
-                          const next = [...currentTakers];
-                          while (next.length < 10) next.push('');
-                          next[slotIdx] = e.target.value;
+                          const next = [...sanitizedShootoutTakers];
+                          const newVal = e.target.value;
+                          const prevIdx = next.findIndex((id, idx) => idx !== slotIdx && id === newVal);
+                          if (prevIdx !== -1) {
+                            next[prevIdx] = selectedId;
+                          }
+                          next[slotIdx] = newVal;
                           onUpdateTactics({
                             ...career.tactics,
                             penaltyTakerIds: next,
@@ -759,15 +884,16 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                         }}
                         className="w-full h-10 px-2 rounded-xl bg-[#0B1117] border border-white/10 text-[11px] text-white focus:outline-none focus:border-emerald-500"
                       >
-                        {[...career.squad]
-                          .sort((a, b) => b.attributes.sho - a.attributes.sho)
+                        {sortedXIBySho
                           .filter((p) => {
-                            const isUsedElsewhere = currentTakers.some((id, idx) => idx !== slotIdx && id === p.id);
-                            return !isUsedElsewhere;
+                            const isUsedElsewhere = sanitizedShootoutTakers.some(
+                              (id, idx) => idx !== slotIdx && id === p.id
+                            );
+                            return !isUsedElsewhere || p.id === selectedId;
                           })
                           .map((p) => (
                             <option key={p.id} value={p.id}>
-                              {p.shortName} (Sút {p.attributes.sho})
+                              {p.shortName} ({p.position} · {p.attributes.sho})
                             </option>
                           ))}
                       </select>
@@ -776,22 +902,27 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                 })}
               </div>
 
-              <div className="mb-2 text-[11px] font-semibold text-cyan-400">5 Lượt dự bị / Đột tử (Sudden Death Reserves)</div>
+              <div className="mb-2 text-[11px] font-semibold text-cyan-400">
+                5 Lượt tiếp theo (Sudden Death)
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
                 {[5, 6, 7, 8, 9].map((slotIdx) => {
-                  const currentTakers = career.tactics.penaltyTakerIds ?? career.squad.slice(0, 10).map(p => p.id);
-                  const selectedId = currentTakers[slotIdx] ?? career.squad[slotIdx]?.id ?? '';
+                  const selectedId = sanitizedShootoutTakers[slotIdx] ?? '';
                   return (
                     <div key={slotIdx} className="space-y-1">
                       <span className="text-[10px] font-mono-num text-cyan-400 font-bold">
-                        Dự bị #{slotIdx - 4}
+                        Lượt #{slotIdx + 1}
                       </span>
                       <select
                         value={selectedId}
                         onChange={(e) => {
-                          const next = [...currentTakers];
-                          while (next.length < 10) next.push('');
-                          next[slotIdx] = e.target.value;
+                          const next = [...sanitizedShootoutTakers];
+                          const newVal = e.target.value;
+                          const prevIdx = next.findIndex((id, idx) => idx !== slotIdx && id === newVal);
+                          if (prevIdx !== -1) {
+                            next[prevIdx] = selectedId;
+                          }
+                          next[slotIdx] = newVal;
                           onUpdateTactics({
                             ...career.tactics,
                             penaltyTakerIds: next,
@@ -799,15 +930,16 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                         }}
                         className="w-full h-10 px-2 rounded-xl bg-[#0B1117] border border-white/10 text-[11px] text-white focus:outline-none focus:border-emerald-500"
                       >
-                        {[...career.squad]
-                          .sort((a, b) => b.attributes.sho - a.attributes.sho)
+                        {sortedXIBySho
                           .filter((p) => {
-                            const isUsedElsewhere = currentTakers.some((id, idx) => idx !== slotIdx && id === p.id);
-                            return !isUsedElsewhere;
+                            const isUsedElsewhere = sanitizedShootoutTakers.some(
+                              (id, idx) => idx !== slotIdx && id === p.id
+                            );
+                            return !isUsedElsewhere || p.id === selectedId;
                           })
                           .map((p) => (
                             <option key={p.id} value={p.id}>
-                              {p.shortName} (Sút {p.attributes.sho})
+                              {p.shortName} ({p.position} · {p.attributes.sho})
                             </option>
                           ))}
                       </select>

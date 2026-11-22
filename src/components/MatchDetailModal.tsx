@@ -341,11 +341,13 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
                         ? 'bg-emerald-500/15 border-emerald-500/35 text-white'
                         : ev.type === 'yellow'
                           ? 'bg-amber-500/10 border-amber-400/30 text-amber-200'
-                          : 'bg-[#121B24] border-white/5 text-slate-300'
+                          : ev.type === 'sub'
+                            ? 'bg-sky-500/10 border-sky-400/30 text-sky-200'
+                            : 'bg-[#121B24] border-white/5 text-slate-300'
                     }`}
                   >
                     <span className="font-mono-num font-bold text-emerald-400 mr-2">
-                      {ev.minute}&apos;
+                      {ev.type === 'penalty' ? 'PEN' : `${ev.minute}'`}
                     </span>
                     <span>{ev.description}</span>
                   </div>

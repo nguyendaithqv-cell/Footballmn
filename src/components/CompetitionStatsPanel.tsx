@@ -9,6 +9,7 @@ interface CompetitionStatsPanelProps {
   stats: CompetitionPlayerStat[];
   mode: 'goals' | 'assists' | 'mvp';
   userClubId: string;
+  userSquadStars?: Record<string, number>;
   competitionTitle: string;
   emptyHint?: string;
   isFinished?: boolean;
@@ -22,6 +23,7 @@ export const CompetitionStatsPanel: React.FC<CompetitionStatsPanelProps> = ({
   stats,
   mode,
   userClubId,
+  userSquadStars,
   competitionTitle,
   emptyHint,
   isFinished = false,
@@ -247,9 +249,10 @@ export const CompetitionStatsPanel: React.FC<CompetitionStatsPanelProps> = ({
                   const isMine = row.clubId === userClubId;
                   const mainVal = mode === 'goals' ? row.goals : row.assists;
                   const secVal = mode === 'goals' ? row.assists : row.goals;
+                  const userStars = isMine ? userSquadStars?.[row.playerId] : undefined;
                   return (
                     <tr
-                      key={row.playerId}
+                      key={`${row.clubId}-${row.playerId}`}
                       className={`border-b border-white/5 ${
                         isMine ? 'bg-emerald-500/15' : 'hover:bg-white/[0.02]'
                       }`}
@@ -270,7 +273,7 @@ export const CompetitionStatsPanel: React.FC<CompetitionStatsPanelProps> = ({
                         </span>
                       </td>
                       <td className="py-2.5 px-2">
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <span
                             className={`font-semibold truncate ${
                               isMine ? 'text-emerald-300' : 'text-white'
@@ -278,6 +281,11 @@ export const CompetitionStatsPanel: React.FC<CompetitionStatsPanelProps> = ({
                           >
                             {row.playerName}
                           </span>
+                          {userStars !== undefined && (
+                            <span className="px-1 py-0.5 rounded bg-amber-400/20 border border-amber-400/40 text-[10px] font-mono-num font-bold text-amber-300 shrink-0">
+                              {userStars}★
+                            </span>
+                          )}
                           <span className="px-1.5 py-0.5 rounded bg-white/5 text-[10px] font-mono-num text-slate-400 shrink-0">
                             {row.position}
                           </span>

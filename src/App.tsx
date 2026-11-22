@@ -43,8 +43,11 @@ import {
 import {
   applyPlayerStarUpgrade,
   getCardDismantleShards,
+  getQuickDismantlePlan,
   getStarUpgradePlan,
+  getTodayPurchaseDateKey,
   getTotalUnopenedPacks,
+  hasPurchasedPackToday,
   normalizeInventory,
   openPackFromInventory,
   PACK_CATALOG,
@@ -523,7 +526,11 @@ export default function App() {
 
       const activeMgr = getActiveCareerManager(hydratedCareer);
       const mgrImpact = getManagerImpactSummary(activeMgr, hydratedCareer.tactics);
-      const starterSet = new Set(hydratedCareer.tactics.slots.map((s) => s.playerId));
+      const starterSet = new Set(
+        userMatch.participatedUserPlayerIds && userMatch.participatedUserPlayerIds.length > 0
+          ? userMatch.participatedUserPlayerIds
+          : hydratedCareer.tactics.slots.map((s) => s.playerId)
+      );
       const focusRecoveryBonus = hydratedCareer.trainingFocus === 'Recovery' ? 2 : 0;
       const recoveryBoost =
         (hydratedCareer.trainingIntensity === 'light'
@@ -553,8 +560,9 @@ export default function App() {
         const assisted = goalEvents.filter((e) =>
           e.assistId ? e.assistId === p.id : e.assistName === p.shortName
         ).length;
+        const playerDrain = (p.stars ?? 1) >= 3 ? Math.round(leagueDrain * 0.8) : leagueDrain;
         const nextFit = played
-          ? Math.max(60, Math.min(100, p.fitness - leagueDrain + recoveryBoost))
+          ? Math.max(60, Math.min(100, p.fitness - playerDrain + recoveryBoost))
           : Math.min(100, p.fitness + 8 + Math.max(0, mgrImpact.recoveryBonus));
         const matchRating = ratingByPlayerId.get(p.id);
         const nextForm =
@@ -744,7 +752,11 @@ export default function App() {
           mgrImpact.recoveryBonus;
         const cupDrain = getMatchStaminaDrain(hydratedCareer.tactics, true);
 
-        const starterSet = new Set(hydratedCareer.tactics.slots.map((s) => s.playerId));
+        const starterSet = new Set(
+          userMatch.participatedUserPlayerIds && userMatch.participatedUserPlayerIds.length > 0
+            ? userMatch.participatedUserPlayerIds
+            : hydratedCareer.tactics.slots.map((s) => s.playerId)
+        );
         const goalEvents = userMatch.events.filter(
           (e) => e.type === 'goal' && e.teamId === hydratedCareer.clubId
         );
@@ -766,13 +778,14 @@ export default function App() {
             matchRating !== undefined
               ? Number(Math.max(1, Math.min(10, p.form * 0.4 + matchRating * 0.6)).toFixed(1))
               : p.form;
+          const playerCupDrain = (p.stars ?? 1) >= 3 ? Math.round(cupDrain * 0.8) : cupDrain;
           return {
             ...p,
             appearances: p.appearances + (played ? 1 : 0),
             goals: p.goals + scored,
             assists: p.assists + assisted,
             fitness: played
-              ? Math.max(62, Math.min(100, p.fitness - cupDrain + cupRecoveryBoost))
+              ? Math.max(62, Math.min(100, p.fitness - playerCupDrain + cupRecoveryBoost))
               : Math.min(100, p.fitness + 6 + Math.max(0, mgrImpact.recoveryBonus)),
             form: nextForm,
             morale: Math.max(45, Math.min(100, p.morale + (wonMatch ? 4 : drawnMatch ? 1 : -2))),
@@ -998,7 +1011,11 @@ export default function App() {
       const won = myGoals > oppGoals;
       const drawn = myGoals === oppGoals;
 
-      const starterSet = new Set(hydratedCareer.tactics.slots.map((s) => s.playerId));
+      const starterSet = new Set(
+        userMatch.participatedUserPlayerIds && userMatch.participatedUserPlayerIds.length > 0
+          ? userMatch.participatedUserPlayerIds
+          : hydratedCareer.tactics.slots.map((s) => s.playerId)
+      );
       const ratingByPlayerId = new Map(
         (userMatch.playerRatings ?? [])
           .filter((r) => r.clubId === hydratedCareer.clubId)
@@ -1105,10 +1122,13 @@ export default function App() {
         createdAt: Date.now(),
       });
 
+      const objDone = summary.completedObjectivesCount ?? 0;
+      const objTotal = summary.totalObjectivesCount ?? 0;
+      const totsMine = summary.teamOfTheSeason?.filter((t) => t.isUserPlayer).length ?? 0;
       await pushClubNotification(
         'season',
         `Khởi tranh mùa giải mới ${nextCareer.season}`,
-        `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Nhận thưởng +€${prizeM}M, cập nhật chỉ số cầu thủ và mở rộng 20 CLB (38 vòng).`
+        `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Đạt ${objDone}/${objTotal} mục tiêu BLĐ${totsMine > 0 ? `, có ${totsMine} cầu thủ lọt ĐHTB` : ''}. Nhận tổng thưởng +€${prizeM}M và sang mùa 20 CLB.`
       );
     } catch (err) {
       console.error('Lỗi chuyển mùa giải mới:', err);
@@ -1157,6 +1177,7 @@ export default function App() {
       const signedPlayer: Player = {
         ...player,
         clubId: hydratedCareer.clubId,
+        baseRating: player.baseRating ?? player.rating,
         wageK,
         stars: 1,
         fitness: 95,
@@ -1293,7 +1314,7 @@ export default function App() {
 
   const handleSellPlayer = useCallback(
     (playerId: string) => {
-      if (!hydratedCareer || hydratedCareer.squad.length <= 13) return;
+      if (!hydratedCareer || hydratedCareer.squad.length <= 21) return;
       const target = hydratedCareer.squad.find((p) => p.id === playerId);
       if (!target) return;
       const feeM = Math.round(target.marketValueM * 0.92);
@@ -1312,11 +1333,47 @@ export default function App() {
         if (posMatch) occupiedIds.add(posMatch.id);
         return { ...s, playerId: posMatch?.id ?? '' };
       });
+      const xiIds = new Set(nextSlots.map((s) => s.playerId));
+      const xiSorted = nextSlots
+        .map((s) => nextSquad.find((p) => p.id === s.playerId))
+        .filter((p): p is Player => Boolean(p))
+        .sort((a, b) => {
+          if (a.position === 'GK' && b.position !== 'GK') return 1;
+          if (b.position === 'GK' && a.position !== 'GK') return -1;
+          return b.attributes.sho - a.attributes.sho;
+        });
+      const nextPenId =
+        hydratedCareer.tactics.designatedPenaltyTakerId &&
+        hydratedCareer.tactics.designatedPenaltyTakerId !== playerId &&
+        xiIds.has(hydratedCareer.tactics.designatedPenaltyTakerId)
+          ? hydratedCareer.tactics.designatedPenaltyTakerId
+          : xiSorted[0]?.id;
+      const cleanedPenList: string[] = [];
+      const seenPen = new Set<string>();
+      for (const id of hydratedCareer.tactics.penaltyTakerIds ?? []) {
+        if (id && id !== playerId && xiIds.has(id) && !seenPen.has(id)) {
+          cleanedPenList.push(id);
+          seenPen.add(id);
+        }
+      }
+      for (const p of xiSorted) {
+        if (cleanedPenList.length >= 10) break;
+        if (!seenPen.has(p.id)) {
+          cleanedPenList.push(p.id);
+          seenPen.add(p.id);
+        }
+      }
+
       saveCareerCloud({
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(1)),
         squad: nextSquad,
-        tactics: { ...hydratedCareer.tactics, slots: nextSlots },
+        tactics: {
+          ...hydratedCareer.tactics,
+          slots: nextSlots,
+          designatedPenaltyTakerId: nextPenId,
+          penaltyTakerIds: cleanedPenList,
+        },
       });
       pushClubNotification(
         'transfer',
@@ -1652,6 +1709,13 @@ export default function App() {
       if (!pack || pack.buyPriceM <= 0) {
         return { ok: false, message: 'Gói quà này không được bán trong cửa hàng.' };
       }
+      const inv = normalizeInventory(hydratedCareer.inventory);
+      if (hasPurchasedPackToday(inv, packTier)) {
+        return {
+          ok: false,
+          message: `Hôm nay bạn đã mua ${pack.name} rồi (giới hạn tối đa 1 gói/loại mỗi ngày để chống lạm phát).`,
+        };
+      }
       if (hydratedCareer.transferBudget < pack.buyPriceM) {
         return {
           ok: false,
@@ -1659,12 +1723,16 @@ export default function App() {
         };
       }
 
-      const inv = normalizeInventory(hydratedCareer.inventory);
+      const todayKey = getTodayPurchaseDateKey();
       const nextInv = normalizeInventory({
         ...inv,
         packs: {
           ...inv.packs,
           [packTier]: (inv.packs[packTier] ?? 0) + 1,
+        },
+        dailyPackPurchases: {
+          ...(inv.dailyPackPurchases ?? {}),
+          [packTier]: todayKey,
         },
       });
 
@@ -1703,10 +1771,16 @@ export default function App() {
       if (plan.isMax) {
         return { ok: false, message: `${target.name} đã đạt tối đa 5★.` };
       }
-      if (!plan.canAffordMaterials) {
+      if (!plan.hasEnoughCards) {
         return {
           ok: false,
-          message: `Thiếu phôi nâng sao (Cần thêm ${plan.shardsToUse - inv.universalShards} Mảnh Ngôi Sao hoặc thẻ bản sao của ${target.shortName}).`,
+          message: `Thiếu thẻ trùng lặp! Cần thêm ${plan.cardsMissing} thẻ bản sao của ${target.shortName} (không thể dùng Mảnh bù thẻ).`,
+        };
+      }
+      if (!plan.hasEnoughShards) {
+        return {
+          ok: false,
+          message: `Thiếu Mảnh Ngôi Sao! Cần thêm ${plan.shardsMissing} Mảnh Ngôi Sao (${plan.tierLabel}).`,
         };
       }
       if (!plan.canAffordBudget) {
@@ -1743,13 +1817,13 @@ export default function App() {
 
       await pushClubNotification(
         'upgrade',
-        `Đột phá ${plan.nextStars}★: ${target.name}`,
-        `Ghép thẻ thành công ${target.name} lên ${plan.nextStars}★ · OVR ${target.rating} → ${upgraded.rating} (+${plan.step?.attrGain} toàn bộ chỉ số).`
+        `Đột phá ${plan.nextStars}★ (${plan.tierLabel}): ${target.name}`,
+        `Tiêu thụ ${plan.cardsToUse} thẻ trùng & ${plan.shardsToUse} Mảnh: ${target.name} đạt ${plan.nextStars}★ · OVR ${target.rating} → ${upgraded.rating}.`
       );
 
       return {
         ok: true,
-        message: `Ghép sao thành công! ${target.name} đạt ${plan.nextStars}★ (OVR ${upgraded.rating}).`,
+        message: `Đột phá thành công! ${target.name} lên ${plan.nextStars}★ (OVR ${upgraded.rating}).`,
       };
     },
     [hydratedCareer, saveCareerCloud, pushClubNotification]
@@ -1789,6 +1863,7 @@ export default function App() {
       const recruitedPlayer: Player = {
         ...sourcePlayer,
         clubId: hydratedCareer.clubId,
+        baseRating: sourcePlayer.baseRating ?? sourcePlayer.rating,
         stars: 1,
         transferStatus: 'available',
         morale: 92,
@@ -1838,7 +1913,10 @@ export default function App() {
       const sourcePlayer =
         hydratedCareer.squad.find((p) => p.id === playerId) ??
         mergedPlayers.find((p) => p.id === playerId);
-      const shardsPerCard = getCardDismantleShards(sourcePlayer?.rating ?? 78);
+      const shardsPerCard = getCardDismantleShards(
+        sourcePlayer?.rating ?? 78,
+        sourcePlayer?.cardTier
+      );
       const gainedShards = shardsPerCard * count;
 
       const nextCards = { ...inv.playerCards };
@@ -1863,7 +1941,7 @@ export default function App() {
       await pushClubNotification(
         'inventory',
         `Phân giải thẻ ${sourcePlayer?.shortName ?? 'cầu thủ'}`,
-        `Thu về +${gainedShards} Mảnh Ngôi Sao dùng để bù phôi ghép sao đội hình.`
+        `Thu về +${gainedShards} Mảnh Ngôi Sao dùng để nâng sao đội hình.`
       );
 
       return {
@@ -1873,6 +1951,51 @@ export default function App() {
     },
     [hydratedCareer, marketOverrides, saveCareerCloud, pushClubNotification]
   );
+
+  const handleBulkDismantleCards = useCallback(async (): Promise<{
+    ok: boolean;
+    message: string;
+  }> => {
+    if (!hydratedCareer) {
+      return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+    }
+    const inv = normalizeInventory(hydratedCareer.inventory);
+    const mergedPlayers = applyMarketOverrides(INITIAL_PLAYERS, marketOverrides);
+    const quickPlan = getQuickDismantlePlan(inv, hydratedCareer.squad, mergedPlayers);
+    if (quickPlan.totalCards === 0) {
+      return {
+        ok: false,
+        message: 'Không có thẻ dư thừa an toàn (5★ tối đa hoặc thẻ thường ngoài ĐH) để tách.',
+      };
+    }
+
+    const nextCards = { ...inv.playerCards };
+    for (const item of quickPlan.entries) {
+      delete nextCards[item.playerId];
+    }
+
+    const nextInv = normalizeInventory({
+      ...inv,
+      playerCards: nextCards,
+      universalShards: inv.universalShards + quickPlan.totalShards,
+    });
+
+    await saveCareerCloud({
+      ...hydratedCareer,
+      inventory: nextInv,
+    });
+
+    await pushClubNotification(
+      'inventory',
+      `Tách nhanh ${quickPlan.totalCards} thẻ dư thừa`,
+      `Quy đổi thành công +${quickPlan.totalShards} Mảnh Ngôi Sao (vẫn giữ nguyên các thẻ Siêu Sao/ICON).`
+    );
+
+    return {
+      ok: true,
+      message: `Đã tách ${quickPlan.totalCards} thẻ dư thừa, nhận +${quickPlan.totalShards} Mảnh Ngôi Sao!`,
+    };
+  }, [hydratedCareer, marketOverrides, saveCareerCloud, pushClubNotification]);
 
   const handleUseFitnessBooster = useCallback(
     async (playerId: string): Promise<{ ok: boolean; message: string }> => {
@@ -3029,6 +3152,7 @@ export default function App() {
               onUpgradePlayerStar={handleUpgradePlayerStar}
               onRecruitFromCard={handleRecruitFromCard}
               onDismantleCard={handleDismantleCard}
+              onBulkDismantleCards={handleBulkDismantleCards}
               onUseFitnessBooster={handleUseFitnessBooster}
             />
           )}
@@ -3185,7 +3309,11 @@ export default function App() {
           player={selectedPlayer}
           isOwnPlayer={hydratedCareer.squad.some((p) => p.id === selectedPlayer.id)}
           transferBudgetM={hydratedCareer.transferBudget}
+          squadLength={hydratedCareer.squad.length}
           inventory={hydratedCareer.inventory}
+          trophyCabinet={hydratedCareer.trophyCabinet}
+          seasonAwards={hydratedCareer.seasonAwards}
+          seasonHistory={hydratedCareer.seasonHistory}
           onClose={() => setSelectedPlayer(null)}
           onToggleTransferList={handleToggleTransferList}
           onRenewContract={handleRenewContract}

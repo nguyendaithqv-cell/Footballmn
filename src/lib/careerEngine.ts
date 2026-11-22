@@ -1,5 +1,6 @@
 import { CLUBS, FORMATION_TEMPLATES, INITIAL_PLAYERS, REAL_MANAGERS } from '../data/footballDatabase';
 import {
+  BoardObjective,
   CareerSave,
   ChampionsCupState,
   ChampionsGroup,
@@ -27,6 +28,7 @@ import {
   SuperCupState,
   TacticSettings,
   TacticSlot,
+  TeamOfTheSeasonPlayer,
   TrophyItem,
 } from '../types/game';
 import { createStarterInventory, normalizeInventory } from './inventoryEngine';
@@ -165,21 +167,13 @@ export function applyMarketOverrides(
 }
 
 export function buildEffectiveDatabasePlayers(
-  userSquad: Player[],
+  _userSquad: Player[],
   basePlayers: Player[] = INITIAL_PLAYERS,
   marketOverrides?: Record<string, MarketOverride>
 ): Player[] {
-  const overridden = applyMarketOverrides(basePlayers, marketOverrides ?? {});
-  const squadMap = new Map(userSquad.map((p) => [p.id, p]));
-  const result = overridden.map((p) => squadMap.get(p.id) ?? p);
-  const seen = new Set(result.map((p) => p.id));
-  for (const p of userSquad) {
-    if (!seen.has(p.id)) {
-      result.push(p);
-      seen.add(p.id);
-    }
-  }
-  return result;
+  // Hướng A: Giữ nguyên dữ liệu gốc (+ biến động thị trường) cho các CLB AI thi đấu công bằng,
+  // tách biệt hoàn toàn với phiên bản thẻ nâng cấp riêng trong đội hình của người chơi.
+  return applyMarketOverrides(basePlayers, marketOverrides ?? {});
 }
 
 export function buildAutoLineupSlots(formation: FormationId, clubSquad: Player[]): TacticSlot[] {
@@ -410,9 +404,10 @@ export function mergeMatchResultsIntoLeaderboard(
   userSquad: Player[],
   allPlayers: Player[]
 ): CompetitionPlayerStat[] {
-  const byId = new Map<string, CompetitionPlayerStat>();
+  const byKey = new Map<string, CompetitionPlayerStat>();
   for (const row of existing ?? []) {
-    byId.set(row.playerId, {
+    const mapKey = `${row.clubId}:${row.playerId}`;
+    byKey.set(mapKey, {
       ...row,
       matches: row.matches ?? 0,
       ratingSum: row.ratingSum ?? 0,
@@ -420,23 +415,52 @@ export function mergeMatchResultsIntoLeaderboard(
     });
   }
 
-  const playerLookupById = new Map<string, Player>();
-  const playerLookupByName = new Map<string, Player>();
-  const playerLookupByTeamShort = new Map<string, Player>();
-
-  for (const p of allPlayers) {
-    playerLookupById.set(p.id, p);
-    playerLookupByName.set(p.name, p);
-    playerLookupByTeamShort.set(`${p.clubId}:${p.shortName}`, p);
-  }
+  const userClubIdSet = new Set(userSquad.map((p) => p.clubId));
+  const userById = new Map<string, Player>();
+  const userByName = new Map<string, Player>();
+  const userByShort = new Map<string, Player>();
   for (const p of userSquad) {
-    playerLookupById.set(p.id, p);
-    playerLookupByName.set(p.name, p);
-    playerLookupByTeamShort.set(`${p.clubId}:${p.shortName}`, p);
+    userById.set(p.id, p);
+    userByName.set(p.name, p);
+    userByShort.set(p.shortName, p);
   }
+
+  const aiByClubAndId = new Map<string, Player>();
+  const aiById = new Map<string, Player>();
+  const aiByName = new Map<string, Player>();
+  const aiByTeamShort = new Map<string, Player>();
+  for (const p of allPlayers) {
+    aiByClubAndId.set(`${p.clubId}:${p.id}`, p);
+    aiById.set(p.id, p);
+    aiByName.set(p.name, p);
+    aiByTeamShort.set(`${p.clubId}:${p.shortName}`, p);
+  }
+
+  const resolvePlayerForTeam = (
+    teamId: string,
+    id?: string,
+    fullName?: string,
+    shortName?: string
+  ): Player | undefined => {
+    const cleanTeamId = teamId.replace(/-away$/, '');
+    if (userClubIdSet.has(cleanTeamId)) {
+      return (
+        (id ? userById.get(id) : undefined) ??
+        (fullName ? userByName.get(fullName) : undefined) ??
+        (shortName ? userByShort.get(shortName) : undefined)
+      );
+    }
+    return (
+      (id ? aiByClubAndId.get(`${cleanTeamId}:${id}`) : undefined) ??
+      (shortName ? aiByTeamShort.get(`${cleanTeamId}:${shortName}`) : undefined) ??
+      (id ? aiById.get(id) : undefined) ??
+      (fullName ? aiByName.get(fullName) : undefined)
+    );
+  };
 
   const upsertStat = (
     player: Player | undefined,
+    fallbackId: string | undefined,
     fallbackName: string,
     fallbackShortName: string,
     fallbackPos: Position,
@@ -447,12 +471,14 @@ export function mergeMatchResultsIntoLeaderboard(
     ratingDelta = 0,
     motmDelta = 0
   ) => {
-    const key = player?.id ?? `${teamId}:${fallbackName}`;
-    const cur = byId.get(key) ?? {
-      playerId: key,
+    const playerId = player?.id ?? fallbackId ?? `${teamId}:${fallbackName}`;
+    const resolvedClub = teamId || player?.clubId || '';
+    const mapKey = `${resolvedClub}:${playerId}`;
+    const cur = byKey.get(mapKey) ?? {
+      playerId,
       playerName: player?.name ?? fallbackName,
       shortName: player?.shortName ?? fallbackShortName,
-      clubId: teamId || player?.clubId || '',
+      clubId: resolvedClub,
       position: player?.position ?? fallbackPos,
       goals: 0,
       assists: 0,
@@ -470,30 +496,37 @@ export function mergeMatchResultsIntoLeaderboard(
     cur.matches = (cur.matches ?? 0) + matchDelta;
     cur.ratingSum = Number(((cur.ratingSum ?? 0) + ratingDelta).toFixed(2));
     cur.motmCount = (cur.motmCount ?? 0) + motmDelta;
-    byId.set(key, cur);
+    byKey.set(mapKey, cur);
   };
 
   for (const match of matches) {
     for (const ev of match.events) {
       if (ev.type !== 'goal') continue;
-      const scorer =
-        (ev.playerId ? playerLookupById.get(ev.playerId) : undefined) ??
-        playerLookupByName.get(ev.playerName) ??
-        playerLookupByTeamShort.get(`${ev.teamId}:${ev.playerName}`);
-      upsertStat(scorer, ev.playerName, scorer?.shortName ?? ev.playerName, 'ST', ev.teamId, 1, 0);
+      const scorer = resolvePlayerForTeam(ev.teamId, ev.playerId, ev.playerName, ev.playerName);
+      upsertStat(
+        scorer,
+        ev.playerId,
+        ev.playerName,
+        scorer?.shortName ?? ev.playerName,
+        scorer?.position ?? 'ST',
+        ev.teamId,
+        1,
+        0
+      );
 
       if (ev.assistName || ev.assistId) {
-        const assister =
-          (ev.assistId ? playerLookupById.get(ev.assistId) : undefined) ??
-          (ev.assistName
-            ? playerLookupByTeamShort.get(`${ev.teamId}:${ev.assistName}`) ??
-              playerLookupByName.get(ev.assistName)
-            : undefined);
+        const assister = resolvePlayerForTeam(
+          ev.teamId,
+          ev.assistId,
+          ev.assistName,
+          ev.assistName
+        );
         upsertStat(
           assister,
+          ev.assistId,
           ev.assistName ?? 'Cầu thủ',
-          ev.assistName ?? 'Cầu thủ',
-          'CM',
+          assister?.shortName ?? ev.assistName ?? 'Cầu thủ',
+          assister?.position ?? 'CM',
           ev.teamId,
           0,
           1
@@ -503,20 +536,18 @@ export function mergeMatchResultsIntoLeaderboard(
 
     const ratings = match.playerRatings ?? [];
     for (const r of ratings) {
-      const resolved =
-        playerLookupById.get(r.playerId) ??
-        playerLookupByName.get(r.playerName) ??
-        playerLookupByTeamShort.get(`${r.clubId}:${r.shortName}`);
+      const resolved = resolvePlayerForTeam(r.clubId, r.playerId, r.playerName, r.shortName);
       const isMotm =
         Boolean(r.isMotm) ||
         Boolean(
           match.manOfTheMatch &&
+            match.manOfTheMatch.clubId === r.clubId &&
             ((match.manOfTheMatch.playerId && match.manOfTheMatch.playerId === r.playerId) ||
-              (match.manOfTheMatch.clubId === r.clubId &&
-                match.manOfTheMatch.name === r.playerName))
+              match.manOfTheMatch.name === r.playerName)
         );
       upsertStat(
         resolved,
+        r.playerId,
         r.playerName,
         r.shortName,
         r.position,
@@ -530,7 +561,7 @@ export function mergeMatchResultsIntoLeaderboard(
     }
   }
 
-  return Array.from(byId.values())
+  return Array.from(byKey.values())
     .filter((item) => (item.matches ?? 0) > 0 || item.goals > 0 || item.assists > 0)
     .sort((a, b) => {
       const ga = a.goals + a.assists;
@@ -645,6 +676,243 @@ export function resolveCompetitionAwards(
     mvp: mvpRow ? makeWinner(mvpRow, 'mvp') : null,
     mvpRanking,
   };
+}
+
+export function resolveLeagueTeamOfTheSeason(career: CareerSave): TeamOfTheSeasonPlayer[] {
+  const stats = career.competitions?.leaderboards?.league ?? [];
+  const activePool = stats.filter((s) => (s.matches ?? 0) > 0 || s.goals > 0 || s.assists > 0);
+  if (activePool.length === 0) return [];
+
+  const maxMatches = activePool.reduce((mx, s) => Math.max(mx, s.matches ?? 0), 0);
+  const ranked = activePool
+    .map((s) => {
+      const m = Math.max(1, s.matches ?? 1);
+      const avgRating =
+        typeof s.ratingSum === 'number' && (s.matches ?? 0) > 0
+          ? Number((s.ratingSum / m).toFixed(2))
+          : Number(Math.min(9.5, 6.5 + (s.goals * 0.25 + s.assists * 0.18) / m).toFixed(2));
+      const score = computeCompetitionMvpScore(s, maxMatches);
+      return { stat: s, avgRating, score };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.avgRating - a.avgRating;
+    });
+
+  const usedKeys = new Set<string>();
+  const picked: TeamOfTheSeasonPlayer[] = [];
+  const rowKey = (s: CompetitionPlayerStat) => `${s.clubId}:${s.playerId}`;
+
+  const takeBest = (slotLabel: Position, allowedPositions: Position[]) => {
+    let found = ranked.find(
+      (r) => !usedKeys.has(rowKey(r.stat)) && allowedPositions.includes(r.stat.position)
+    );
+    if (!found) {
+      // Fallback theo tuyến tương ứng
+      const groupFallbacks: Position[] =
+        slotLabel === 'GK'
+          ? ['GK']
+          : slotLabel === 'LB' || slotLabel === 'RB' || slotLabel === 'CB'
+            ? ['CB', 'LB', 'RB', 'CDM']
+            : slotLabel === 'CDM' || slotLabel === 'CM' || slotLabel === 'CAM'
+              ? ['CM', 'CAM', 'CDM', 'LW', 'RW']
+              : ['ST', 'LW', 'RW', 'CAM'];
+      found = ranked.find(
+        (r) => !usedKeys.has(rowKey(r.stat)) && groupFallbacks.includes(r.stat.position)
+      );
+    }
+    if (!found) {
+      found = ranked.find((r) => !usedKeys.has(rowKey(r.stat)));
+    }
+    if (found) {
+      usedKeys.add(rowKey(found.stat));
+      picked.push({
+        playerId: found.stat.playerId,
+        playerName: found.stat.playerName,
+        shortName: found.stat.shortName,
+        clubId: found.stat.clubId,
+        position: found.stat.position,
+        slotLabel,
+        avgRating: found.avgRating,
+        goals: found.stat.goals,
+        assists: found.stat.assists,
+        matches: found.stat.matches ?? 0,
+        isUserPlayer: found.stat.clubId === career.clubId,
+      });
+    }
+  };
+
+  // Sơ đồ tiêu biểu chuẩn 4-3-3
+  takeBest('GK', ['GK']);
+  takeBest('LB', ['LB']);
+  takeBest('CB', ['CB']);
+  takeBest('CB', ['CB']);
+  takeBest('RB', ['RB']);
+  takeBest('CDM', ['CDM', 'CM']);
+  takeBest('CM', ['CM', 'CDM']);
+  takeBest('CAM', ['CAM', 'CM']);
+  takeBest('LW', ['LW', 'ST']);
+  takeBest('ST', ['ST']);
+  takeBest('RW', ['RW', 'ST']);
+
+  return picked;
+}
+
+export function generateSeasonObjectives(
+  clubId: string,
+  season: string,
+  squad: Player[]
+): BoardObjective[] {
+  const club = CLUBS.find((c) => c.id === clubId) ?? CLUBS[0];
+  const rep = club.reputation;
+  const maxStars = squad.reduce((mx, p) => Math.max(mx, p.stars ?? 1), 1);
+  const seasonKey = season.replace('/', '-');
+
+  const leagueTargetRank = rep >= 90 ? 1 : rep >= 86 ? 2 : rep >= 82 ? 4 : rep >= 78 ? 6 : 8;
+  const leagueRewardM = rep >= 89 ? 16 : rep >= 83 ? 12 : 10;
+
+  const cupTarget = rep >= 87 ? 'cup_semi' : 'cup_semi';
+  const goalTarget = rep >= 87 ? 18 : rep >= 82 ? 14 : 11;
+  const starTarget = Math.min(5, Math.max(3, maxStars + 1));
+
+  return [
+    {
+      id: `obj-${seasonKey}-league`,
+      title:
+        leagueTargetRank === 1
+          ? 'Vô địch Super League'
+          : `Top ${leagueTargetRank} Super League`,
+      description: `Kết thúc mùa giải Super League trong Top ${leagueTargetRank} trên bảng xếp hạng.`,
+      targetType: 'league_rank',
+      targetValue: leagueTargetRank,
+      rewardBudgetM: leagueRewardM,
+      rewardShards: 25,
+      status: 'in_progress',
+    },
+    {
+      id: `obj-${seasonKey}-cup`,
+      title: rep >= 87 ? 'Bán kết Champions Cup hoặc Cúp QG' : 'Vào sâu đấu trường Cúp',
+      description: 'Đưa CLB lọt tối thiểu vào vòng Bán kết Champions Cup hoặc Cúp Quốc Gia.',
+      targetType: cupTarget,
+      targetValue: 1,
+      rewardBudgetM: 10,
+      rewardShards: 20,
+      status: 'in_progress',
+    },
+    starTarget <= 5 && maxStars < 5
+      ? {
+          id: `obj-${seasonKey}-star`,
+          title: `Phát triển cầu thủ lên ${starTarget}★`,
+          description: `Nâng cấp sao cho ít nhất 1 cầu thủ trong đội hình đạt mốc ${starTarget}★ trở lên.`,
+          targetType: 'star_upgrade',
+          targetValue: starTarget,
+          rewardBudgetM: 8,
+          rewardShards: 20,
+          status: 'in_progress',
+        }
+      : {
+          id: `obj-${seasonKey}-scorer`,
+          title: `Chân sút chủ lực ghi ${goalTarget}+ bàn`,
+          description: `Có ít nhất 1 cầu thủ của CLB ghi từ ${goalTarget} bàn thắng trở lên trên mọi đấu trường.`,
+          targetType: 'top_scorer',
+          targetValue: goalTarget,
+          rewardBudgetM: 9,
+          rewardShards: 20,
+          status: 'in_progress',
+        },
+  ];
+}
+
+export function evaluateBoardObjectives(
+  career: CareerSave,
+  isSeasonEnding = false
+): BoardObjective[] {
+  const objectives =
+    career.boardObjectives && career.boardObjectives.length > 0
+      ? career.boardObjectives
+      : generateSeasonObjectives(career.clubId, career.season, career.squad);
+
+  const sortedTable = sortStandings(career.standings);
+  const rankIdx = sortedTable.findIndex((r) => r.clubId === career.clubId);
+  const myRank = rankIdx >= 0 ? rankIdx + 1 : 20;
+  const leagueFinished = isCompetitionFinished(career, 'league');
+
+  const ccMatches = career.competitions?.championsCup.matches ?? [];
+  const ncMatches = career.competitions?.nationalCup.matches ?? [];
+  const reachedSemiCup =
+    ccMatches.some(
+      (m) =>
+        (m.stage === 'sf' || m.stage === 'final') &&
+        (m.homeClubId === career.clubId || m.awayClubId === career.clubId)
+    ) ||
+    ncMatches.some(
+      (m) =>
+        (m.stage === 'sf' || m.stage === 'final') &&
+        (m.homeClubId === career.clubId || m.awayClubId === career.clubId)
+    ) ||
+    career.competitions?.championsCup.championClubId === career.clubId ||
+    career.competitions?.nationalCup.championClubId === career.clubId;
+
+  const cupFinishedAll =
+    isCompetitionFinished(career, 'champions-cup') &&
+    isCompetitionFinished(career, 'national-cup');
+
+  const maxSquadGoals = career.squad.reduce((mx, p) => Math.max(mx, p.goals), 0);
+  const maxSquadStars = career.squad.reduce((mx, p) => Math.max(mx, p.stars ?? 1), 1);
+
+  return objectives.map((obj) => {
+    if (obj.targetType === 'league_rank') {
+      const ok = myRank <= obj.targetValue;
+      const status =
+        leagueFinished || isSeasonEnding
+          ? ok
+            ? 'completed'
+            : 'failed'
+          : ok
+            ? 'completed'
+            : 'in_progress';
+      return {
+        ...obj,
+        status,
+        progressText: `Hạng hiện tại: #${myRank} / Mục tiêu Top ${obj.targetValue}`,
+      };
+    }
+
+    if (obj.targetType === 'cup_semi' || obj.targetType === 'cup_champion') {
+      const ok =
+        obj.targetType === 'cup_champion'
+          ? career.competitions?.championsCup.championClubId === career.clubId ||
+            career.competitions?.nationalCup.championClubId === career.clubId
+          : reachedSemiCup;
+      const status = ok
+        ? 'completed'
+        : cupFinishedAll || isSeasonEnding
+          ? 'failed'
+          : 'in_progress';
+      return {
+        ...obj,
+        status,
+        progressText: ok ? 'Đã vượt qua vòng Tứ kết Cúp' : 'Đang thi đấu các vòng Cúp',
+      };
+    }
+
+    if (obj.targetType === 'star_upgrade') {
+      const ok = maxSquadStars >= obj.targetValue;
+      return {
+        ...obj,
+        status: ok ? 'completed' : isSeasonEnding ? 'failed' : 'in_progress',
+        progressText: `Cầu thủ cao nhất: ${maxSquadStars}★ / ${obj.targetValue}★`,
+      };
+    }
+
+    // top_scorer
+    const ok = maxSquadGoals >= obj.targetValue;
+    return {
+      ...obj,
+      status: ok ? 'completed' : isSeasonEnding ? 'failed' : 'in_progress',
+      progressText: `Ghi bàn cao nhất CLB: ${maxSquadGoals} / ${obj.targetValue} bàn`,
+    };
+  });
 }
 
 export function isCompetitionFinished(career: CareerSave, competition: CompetitionId): boolean {
@@ -864,6 +1132,8 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     career.activeManagerId !== undefined &&
     Array.isArray(career.managerHistory) &&
     Array.isArray(career.seasonAwards);
+  const needsSquadPadding = career.squad.length < 21;
+  const hasBoardObjectives = Array.isArray(career.boardObjectives) && career.boardObjectives.length > 0;
 
   if (
     hasComps &&
@@ -873,10 +1143,37 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     career.seasonHistory &&
     hasInventory &&
     hasAllStars &&
-    hasManagerFields
+    hasManagerFields &&
+    !needsSquadPadding &&
+    hasBoardObjectives
   ) {
     return career;
   }
+
+  let paddedSquad: Player[] = hasAllStars
+    ? [...career.squad]
+    : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 }));
+
+  if (paddedSquad.length < 21) {
+    const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
+    const existingIds = new Set(paddedSquad.map((p) => p.id));
+    let acadIdx = paddedSquad.length;
+    let posCursor = 0;
+    while (paddedSquad.length < 21) {
+      const pos = positions[posCursor % positions.length];
+      posCursor++;
+      let candidate = createAcademyFillPlayer(career.clubId, pos, acadIdx++);
+      while (existingIds.has(candidate.id)) {
+        candidate = createAcademyFillPlayer(career.clubId, pos, acadIdx++);
+      }
+      existingIds.add(candidate.id);
+      paddedSquad.push(candidate);
+    }
+  }
+
+  const nextObjectives = hasBoardObjectives
+    ? career.boardObjectives!
+    : generateSeasonObjectives(career.clubId, career.season, paddedSquad);
 
   return {
     ...career,
@@ -884,18 +1181,8 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
       career.activeManagerId === undefined ? clubDefaultMgr : career.activeManagerId,
     managerHistory: career.managerHistory ?? [],
     seasonAwards: career.seasonAwards ?? [],
-    squad: (() => {
-      let sq = hasAllStars ? career.squad : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 }));
-      const neededSq = 21 - sq.length;
-      if (neededSq > 0) {
-        const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
-        for (let i = 0; i < neededSq; i++) {
-          const pos = positions[i % positions.length];
-          sq.push(createAcademyFillPlayer(career.clubId, pos, sq.length + i));
-        }
-      }
-      return sq;
-    })(),
+    boardObjectives: nextObjectives,
+    squad: paddedSquad,
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
     seasonHistory: career.seasonHistory ?? [],
@@ -917,15 +1204,33 @@ export function createInitialCareer(
     .filter((p) => p.clubId === club.id)
     .map((p) => ({ ...p, stars: p.stars ?? 1 }));
 
-  const needed = 21 - clubSquad.length;
-  if (needed > 0) {
+  if (clubSquad.length < 21) {
     const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
-    for (let i = 0; i < needed; i++) {
-      const pos = positions[i % positions.length];
-      clubSquad.push(createAcademyFillPlayer(club.id, pos, clubSquad.length + i));
+    const existingIds = new Set(clubSquad.map((p) => p.id));
+    let acadIdx = clubSquad.length;
+    let posCursor = 0;
+    while (clubSquad.length < 21) {
+      const pos = positions[posCursor % positions.length];
+      posCursor++;
+      let candidate = createAcademyFillPlayer(club.id, pos, acadIdx++);
+      while (existingIds.has(candidate.id)) {
+        candidate = createAcademyFillPlayer(club.id, pos, acadIdx++);
+      }
+      existingIds.add(candidate.id);
+      clubSquad.push(candidate);
     }
   }
   const formation = manager.preferredFormation;
+  const initialSlots = buildAutoLineupSlots(formation, clubSquad);
+  const starterById = new Map(clubSquad.map((p) => [p.id, p]));
+  const starterPlayers = initialSlots
+    .map((s) => starterById.get(s.playerId))
+    .filter((p): p is Player => Boolean(p))
+    .sort((a, b) => {
+      if (a.position === 'GK' && b.position !== 'GK') return 1;
+      if (b.position === 'GK' && a.position !== 'GK') return -1;
+      return b.attributes.sho - a.attributes.sho;
+    });
 
   const tactics: TacticSettings = {
     formation,
@@ -939,7 +1244,9 @@ export function createInitialCareer(
     playOutOfDefence: manager.pressingStyle !== 'Low Compact',
     workBallIntoBox: manager.pressingStyle === 'Positional Control',
     offsideTrap: manager.pressingStyle === 'High Gegenpress',
-    slots: buildAutoLineupSlots(formation, clubSquad),
+    slots: initialSlots,
+    designatedPenaltyTakerId: starterPlayers[0]?.id,
+    penaltyTakerIds: starterPlayers.slice(0, 10).map((p) => p.id),
   };
 
   const standings: LeagueStanding[] = CLUBS.map((c) => makeEmptyStanding(c.id));
@@ -969,6 +1276,7 @@ export function createInitialCareer(
     trophyCabinet: [],
     seasonAwards: [],
     seasonHistory: [],
+    boardObjectives: generateSeasonObjectives(club.id, '2026/27', clubSquad),
     inventory: createStarterInventory(),
   };
 }
@@ -1220,43 +1528,65 @@ interface StarterEntry {
   slotLabel: Position;
 }
 
+const ACADEMY_PLAYER_NAMES = [
+  { name: 'Nguyễn Hoàng Minh', shortName: 'Hoàng Minh', nat: 'Việt Nam' },
+  { name: 'Trần Quang Huy', shortName: 'Quang Huy', nat: 'Việt Nam' },
+  { name: 'Lê Gia Bảo', shortName: 'Gia Bảo', nat: 'Việt Nam' },
+  { name: 'Lucas Fernandez', shortName: 'Fernandez', nat: 'Tây Ban Nha' },
+  { name: 'Mateo Silva', shortName: 'M. Silva', nat: 'Brazil' },
+  { name: 'Noah Lindqvist', shortName: 'Lindqvist', nat: 'Thụy Điển' },
+  { name: 'Ethan Gallagher', shortName: 'Gallagher', nat: 'Anh' },
+  { name: 'Julian Brandtner', shortName: 'Brandtner', nat: 'Đức' },
+  { name: 'Marco Bellini', shortName: 'Bellini', nat: 'Ý' },
+  { name: 'Enzo Chevalier', shortName: 'Chevalier', nat: 'Pháp' },
+  { name: 'Kaito Takahashi', shortName: 'Takahashi', nat: 'Nhật Bản' },
+  { name: 'Phạm Đức Anh', shortName: 'Đức Anh', nat: 'Việt Nam' },
+];
+
 function createAcademyFillPlayer(clubId: string, position: Position, index: number): Player {
   const isGk = position === 'GK';
-  const baseStat = 72;
+  let seed = index * 37;
+  for (let i = 0; i < clubId.length; i++) seed += clubId.charCodeAt(i) * (i + 3);
+  const picked = ACADEMY_PLAYER_NAMES[Math.abs(seed) % ACADEMY_PLAYER_NAMES.length];
+  const baseStat = 71 + (Math.abs(seed) % 5); // 71..75
+  const potStat = Math.min(86, baseStat + 6 + (Math.abs(seed) % 5));
+  const shirtNum = 35 + (index % 60);
+  const isAtk = position === 'ST' || position === 'LW' || position === 'RW' || position === 'CAM';
+  const isDef = position === 'CB' || position === 'LB' || position === 'RB' || position === 'CDM';
   return {
     id: `acad-${clubId}-${index}`,
-    name: `Học viện Trẻ #${index + 1}`,
-    shortName: `Trẻ #${index + 1}`,
+    name: picked.name,
+    shortName: picked.shortName,
     clubId,
     position,
-    number: 40 + index,
-    age: 18,
-    nationality: 'Việt Nam',
+    number: shirtNum,
+    age: 18 + (Math.abs(seed) % 4),
+    nationality: picked.nat,
     flagCode: 'UN',
     rating: baseStat,
-    potential: 76,
-    marketValueM: 1.5,
-    wageK: 8,
-    contractUntil: 2029,
-    fitness: 95,
-    morale: 80,
-    form: 6.8,
+    potential: potStat,
+    marketValueM: Number((1.8 + (baseStat - 70) * 0.7).toFixed(1)),
+    wageK: 10 + (baseStat - 70) * 2,
+    contractUntil: 2030,
+    fitness: 96,
+    morale: 82,
+    form: 6.9,
     goals: 0,
     assists: 0,
     appearances: 0,
-    transferStatus: 'untouchable',
+    transferStatus: 'available',
     attributes: {
-      pac: isGk ? 55 : 73,
-      sho: isGk ? 40 : 69,
-      pas: 71,
-      dri: isGk ? 50 : 71,
-      def: isGk ? 62 : 70,
-      phy: 72,
+      pac: isGk ? 56 : Math.min(86, baseStat + (isAtk ? 4 : 1)),
+      sho: isGk ? 42 : Math.min(85, baseStat + (isAtk ? 4 : isDef ? -8 : 0)),
+      pas: Math.min(84, baseStat + (isDef ? -2 : 2)),
+      dri: isGk ? 52 : Math.min(85, baseStat + (isAtk ? 3 : -1)),
+      def: isGk ? 64 : Math.min(84, baseStat + (isDef ? 5 : -14)),
+      phy: baseStat + (isDef ? 3 : 0),
     },
     appearance: {
       skin: '#E0AC8B',
       hair: '#1E293B',
-      hairStyle: 'short',
+      hairStyle: (['short', 'fade', 'curly'] as const)[Math.abs(seed) % 3],
     },
     stars: 1,
   };
@@ -1489,8 +1819,14 @@ function computeUserConditionBonus(starters: StarterEntry[], cohesion: number): 
   const moraleMod = (avgMorale - 80) * 0.05;
   const formMod = (avgForm - 7.1) * 0.45;
   const cohesionMod = cohesion >= 88 ? (cohesion - 88) * 0.06 : (cohesion - 88) * 0.14;
+  const starPerkBonus = starters.reduce((sum, e) => {
+    const st = Math.max(1, Math.min(5, e.player.stars ?? 1));
+    if (st >= 5) return sum + 0.16;
+    if (st >= 3) return sum + 0.06;
+    return sum;
+  }, 0);
 
-  return Math.max(-4.5, Math.min(3.5, fitMod + moraleMod + formMod + cohesionMod));
+  return Math.max(-4.5, Math.min(4.2, fitMod + moraleMod + formMod + cohesionMod + Math.min(1.5, starPerkBonus)));
 }
 
 function computeAITeamProfile(
@@ -1659,6 +1995,192 @@ function computePressingYellowCount(pressingAggression: number): number {
   return Math.min(4, whole + extra);
 }
 
+function simulatePenaltyShootout(params: {
+  homeId: string;
+  awayId: string;
+  homeClub: Club;
+  awayClub: Club;
+  homeStarters: StarterEntry[];
+  awayStarters: StarterEntry[];
+  isUserHome: boolean;
+  isUserAway: boolean;
+  userTactics?: TacticSettings;
+  events: MatchEvent[];
+}): { penaltiesHome: number; penaltiesAway: number; winnerId: string } {
+  const {
+    homeId,
+    awayId,
+    homeClub,
+    awayClub,
+    homeStarters,
+    awayStarters,
+    isUserHome,
+    isUserAway,
+    userTactics,
+    events,
+  } = params;
+
+  const getShootoutTakers = (
+    starters: StarterEntry[],
+    isUserTeam: boolean,
+    tactics?: TacticSettings
+  ) => {
+    const roster = starters.map((s) => s.player);
+    const designatedList = isUserTeam ? tactics?.penaltyTakerIds : undefined;
+
+    const ordered: Player[] = [];
+    const used = new Set<string>();
+
+    if (designatedList) {
+      for (const id of designatedList) {
+        if (!id || used.has(id)) continue;
+        const p = roster.find((x) => x.id === id);
+        if (p) {
+          ordered.push(p);
+          used.add(p.id);
+        }
+      }
+    }
+
+    const rest = [...roster].sort((a, b) => {
+      if (a.position === 'GK' && b.position !== 'GK') return 1;
+      if (b.position === 'GK' && a.position !== 'GK') return -1;
+      return b.attributes.sho * 0.7 + b.rating * 0.3 - (a.attributes.sho * 0.7 + a.rating * 0.3);
+    });
+    for (const p of rest) {
+      if (!used.has(p.id)) {
+        used.add(p.id);
+        ordered.push(p);
+      }
+    }
+    return ordered.slice(0, 11);
+  };
+
+  const homeTakers = getShootoutTakers(
+    homeStarters,
+    isUserHome,
+    isUserHome ? userTactics : undefined
+  );
+  const awayTakers = getShootoutTakers(
+    awayStarters,
+    isUserAway,
+    isUserAway ? userTactics : undefined
+  );
+
+  let hScore = 0;
+  let aScore = 0;
+  events.push({
+    minute: 90,
+    type: 'penalty',
+    teamId: homeId,
+    playerName: 'Loạt luân lưu',
+    description: `LUÂN LƯU 11M BẮT ĐẦU! Hai đội bước vào loạt sút penalty phân định thắng thua tại ${homeClub.stadium}.`,
+  });
+
+  for (let round = 0; round < 5; round++) {
+    const hPlayer = homeTakers[round] ?? homeTakers[round % Math.max(1, homeTakers.length)];
+    const aPlayer = awayTakers[round] ?? awayTakers[round % Math.max(1, awayTakers.length)];
+
+    const hSuccess =
+      Math.random() <
+      Math.min(0.93, Math.max(0.66, 0.76 + (hPlayer.attributes.sho - 75) * 0.005));
+    if (hSuccess) hScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: homeId,
+      playerName: hPlayer.name,
+      description: `Loạt luân lưu [Lượt ${round + 1}] - ${homeClub.shortName}: ${hPlayer.shortName} bước lên sút... ${hSuccess ? 'VÀO! Cú sút hiểm hóc đánh bại thủ môn.' : 'KHÔNG VÀO! Cú sút bị thủ môn cản phá xuất thần.'}`,
+      playerId: hPlayer.id,
+    });
+
+    const remHAfterH = 4 - round;
+    const remAAfterH = 5 - round;
+    if (hScore > aScore + remAAfterH || aScore > hScore + remHAfterH) {
+      break;
+    }
+
+    const aSuccess =
+      Math.random() <
+      Math.min(0.93, Math.max(0.66, 0.76 + (aPlayer.attributes.sho - 75) * 0.005));
+    if (aSuccess) aScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: awayId,
+      playerName: aPlayer.name,
+      description: `Loạt luân lưu [Lượt ${round + 1}] - ${awayClub.shortName}: ${aPlayer.shortName} sút... ${aSuccess ? 'VÀO! Khúc cua hoàn hảo làm rung lưới.' : 'HỎNG ĂN! Áp lực quá lớn khiến cú sút đi ra ngoài.'}`,
+      playerId: aPlayer.id,
+    });
+
+    const remBoth = 4 - round;
+    if (hScore > aScore + remBoth || aScore > hScore + remBoth) {
+      break;
+    }
+  }
+
+  // Sudden death rounds if tied after 5 rounds
+  let suddenDeathRound = 0;
+  while (hScore === aScore && suddenDeathRound < 6) {
+    const rIdx = 5 + suddenDeathRound;
+    const hPlayer = homeTakers[rIdx] ?? homeTakers[suddenDeathRound % homeTakers.length];
+    const aPlayer = awayTakers[rIdx] ?? awayTakers[suddenDeathRound % awayTakers.length];
+
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: homeId,
+      playerName: 'Loạt đột tử',
+      description: `Loạt luân lưu [Loạt đột tử #${suddenDeathRound + 1}] - Căng thẳng tuyệt đỉnh!`,
+    });
+
+    const hSuccess =
+      Math.random() <
+      Math.min(0.93, Math.max(0.66, 0.76 + (hPlayer.attributes.sho - 75) * 0.005));
+    if (hSuccess) hScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: homeId,
+      playerName: hPlayer.name,
+      description: `Loạt luân lưu [Đột tử #${suddenDeathRound + 1}] - ${homeClub.shortName}: ${hPlayer.shortName} sút... ${hSuccess ? 'VÀO! Bản lĩnh thép.' : 'HỎNG! Áp lực đè nặng.'}`,
+      playerId: hPlayer.id,
+    });
+
+    const aSuccess =
+      Math.random() <
+      Math.min(0.93, Math.max(0.66, 0.76 + (aPlayer.attributes.sho - 75) * 0.005));
+    if (aSuccess) aScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: awayId,
+      playerName: aPlayer.name,
+      description: `Loạt luân lưu [Đột tử #${suddenDeathRound + 1}] - ${awayClub.shortName}: ${aPlayer.shortName} sút... ${aSuccess ? 'VÀO! Tuyệt vời.' : 'HỎNG! Không chiến thắng được áp lực.'}`,
+      playerId: aPlayer.id,
+    });
+
+    suddenDeathRound++;
+  }
+
+  if (hScore === aScore) {
+    hScore += Math.random() > 0.5 ? 1 : 0;
+    if (hScore === aScore) aScore += 1;
+  }
+
+  const winnerId = hScore > aScore ? homeId : awayId;
+  const winnerClub = winnerId === homeId ? homeClub : awayClub;
+  events.push({
+    minute: 90,
+    type: 'penalty',
+    teamId: winnerId,
+    playerName: winnerClub.shortName,
+    description: `KẾT QUẢ LUÂN LƯU: ${homeClub.shortName} ${hScore} - ${aScore} ${awayClub.shortName}! ${winnerClub.name} giành chiến thắng chung cuộc!`,
+  });
+
+  return { penaltiesHome: hScore, penaltiesAway: aScore, winnerId };
+}
+
 export function simulateMatchFull(
   homeId: string,
   awayId: string,
@@ -1682,13 +2204,12 @@ export function simulateMatchFull(
   const homeClub = CLUBS.find((c) => c.id === homeId) ?? CLUBS[0];
   const awayClub = CLUBS.find((c) => c.id === awayId) ?? CLUBS[1];
 
-  const userSquadIds = new Set(userSquad.map((p) => p.id));
   const homeRoster = isUserHome
     ? userSquad
-    : allPlayers.filter((p) => p.clubId === homeId && !userSquadIds.has(p.id));
+    : allPlayers.filter((p) => p.clubId === homeId);
   const awayRoster = isUserAway
     ? userSquad
-    : allPlayers.filter((p) => p.clubId === awayId && !userSquadIds.has(p.id));
+    : allPlayers.filter((p) => p.clubId === awayId);
 
   const defaultHomeMgr = REAL_MANAGERS.find((m) => m.id === homeClub.managerId) ?? REAL_MANAGERS[0];
   const defaultAwayMgr = REAL_MANAGERS.find((m) => m.id === awayClub.managerId) ?? REAL_MANAGERS[1];
@@ -1744,9 +2265,6 @@ export function simulateMatchFull(
       }
     : computeAITeamProfile(awayId, awayRoster, awayClub.reputation);
 
-  const homeStrength = homeProfile.overall;
-  const awayStrength = awayProfile.overall;
-
   // Match pace adjustment from user tempo/mentality applies symmetrically to openness while keeping edge fair
   const userActive = isUserHome || isUserAway;
   const tempoPace = userActive ? 1 + (userTactics.tempo - 3) * 0.05 : 1;
@@ -1800,9 +2318,12 @@ export function simulateMatchFull(
     },
   ];
 
+  const homePenId = isUserHome ? userTactics.designatedPenaltyTakerId : undefined;
+  const awayPenId = isUserAway ? userTactics.designatedPenaltyTakerId : undefined;
+
   for (let i = 0; i < homeGoals; i++) {
     const min = Math.floor(Math.random() * 88) + 2;
-    const scorer = pickScorerFromXI(homePlayingXI);
+    const scorer = pickScorerFromXI(homePlayingXI, homePenId);
     const assist = pickAssisterFromXI(homePlayingXI, scorer?.id);
     const ev: MatchEvent = {
       minute: min,
@@ -1819,7 +2340,7 @@ export function simulateMatchFull(
 
   for (let i = 0; i < awayGoals; i++) {
     const min = Math.floor(Math.random() * 88) + 2;
-    const scorer = pickScorerFromXI(awayPlayingXI);
+    const scorer = pickScorerFromXI(awayPlayingXI, awayPenId);
     const assist = pickAssisterFromXI(awayPlayingXI, scorer?.id);
     const ev: MatchEvent = {
       minute: min,
@@ -1901,163 +2422,16 @@ export function simulateMatchFull(
     events.push(ev);
   }
 
-function simulatePenaltyShootout(params: {
-  homeId: string;
-  awayId: string;
-  homeClub: Club;
-  awayClub: Club;
-  homeStarters: StarterEntry[];
-  awayStarters: StarterEntry[];
-  isUserHome: boolean;
-  isUserAway: boolean;
-  userTactics?: TacticSettings;
-  events: MatchEvent[];
-}): { penaltiesHome: number; penaltiesAway: number; winnerId: string } {
-  const { homeId, awayId, homeClub, awayClub, homeStarters, awayStarters, isUserHome, isUserAway, userTactics, events } = params;
+  // Sort 1' - 89' match events chronologically before 90' FT and shootout
+  events.sort((a, b) => a.minute - b.minute);
 
-  const getShootoutTakers = (clubId: string, starters: StarterEntry[], isUserTeam: boolean, tactics?: TacticSettings) => {
-    const roster = starters.map((s) => s.player);
-    const designatedId = isUserTeam ? tactics?.designatedPenaltyTakerId : undefined;
-    const designatedList = isUserTeam ? tactics?.penaltyTakerIds : undefined;
-
-    const ordered: Player[] = [];
-    const used = new Set<string>();
-
-    if (designatedId) {
-      const p = roster.find((x) => x.id === designatedId);
-      if (p) {
-        ordered.push(p);
-        used.add(p.id);
-      }
-    }
-
-    if (designatedList) {
-      for (const id of designatedList) {
-        if (!used.has(id)) {
-          const p = roster.find((x) => x.id === id);
-          if (p) {
-            ordered.push(p);
-            used.add(p.id);
-          }
-        }
-      }
-    }
-
-    const rest = [...roster].sort(
-      (a, b) => b.attributes.sho * 0.7 + b.rating * 0.3 - (a.attributes.sho * 0.7 + b.rating * 0.3)
-    );
-    for (const p of rest) {
-      if (!used.has(p.id)) {
-        used.add(p.id);
-        ordered.push(p);
-      }
-    }
-    return ordered.slice(0, 11);
-  };
-
-  const homeTakers = getShootoutTakers(homeId, homeStarters, isUserHome, isUserHome ? userTactics : undefined);
-  const awayTakers = getShootoutTakers(awayId, awayStarters, isUserAway, isUserAway ? userTactics : undefined);
-
-  let hScore = 0;
-  let aScore = 0;
   events.push({
     minute: 90,
-    type: 'penalty',
+    type: 'fulltime',
     teamId: homeId,
-    playerName: 'Loạt luân lưu',
-    description: `LUÂN LƯU 11M BẮT ĐẦU! Hai đội bước vào loạt sút penalty phân định thắng thua tại ${homeClub.stadium}.`,
+    playerName: 'FT',
+    description: `Hết giờ! ${homeClub.name} ${homeGoals} - ${awayGoals} ${awayClub.name}.`,
   });
-
-  for (let round = 0; round < 5; round++) {
-    const hPlayer = homeTakers[round] ?? homeTakers[0];
-    const aPlayer = awayTakers[round] ?? awayTakers[0];
-
-    const hSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (hPlayer.attributes.sho - 75) * 0.005));
-    if (hSuccess) hScore++;
-    events.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: homeId,
-      playerName: hPlayer.name,
-      description: `Luật luân lưu [Lượt ${round + 1}] - ${homeClub.shortName}: ${hPlayer.shortName} bước lên sút... ${hSuccess ? 'VÀO! Cú sút hiểm hóc đánh bại thủ môn.' : 'KHÔNG VÀO! Cú sút bị thủ môn cản phá xuất thần.'}`,
-      playerId: hPlayer.id,
-    });
-
-    const aSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (aPlayer.attributes.sho - 75) * 0.005));
-    if (aSuccess) aScore++;
-    events.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: awayId,
-      playerName: aPlayer.name,
-      description: `Luật luân lưu [Lượt ${round + 1}] - ${awayClub.shortName}: ${aPlayer.shortName} sút... ${aSuccess ? 'VÀO! Khúc cua hoàn hảo làm rung lưới.' : 'HỎNG ĂN! Áp lực quá lớn khiến cú sút đi ra ngoài.'}`,
-      playerId: aPlayer.id,
-    });
-
-    const remainingH = 4 - round;
-    const remainingA = 4 - round;
-    if (hScore > aScore + remainingA + 1 || aScore > hScore + remainingH + 1) {
-      break;
-    }
-  }
-
-  // Sudden death rounds if tied after 5 rounds
-  let suddenDeathRound = 0;
-  while (hScore === aScore && suddenDeathRound < 6) {
-    const rIdx = 5 + suddenDeathRound;
-    const hPlayer = homeTakers[rIdx] ?? homeTakers[suddenDeathRound % homeTakers.length];
-    const aPlayer = awayTakers[rIdx] ?? awayTakers[suddenDeathRound % awayTakers.length];
-
-    events.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: homeId,
-      playerName: 'Loạt đột tử',
-      description: `Luật luân lưu [Loạt đột tử #${suddenDeathRound + 1}] - Căng thẳng tuyệt đỉnh!`,
-    });
-
-    const hSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (hPlayer.attributes.sho - 75) * 0.005));
-    if (hSuccess) hScore++;
-    events.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: homeId,
-      playerName: hPlayer.name,
-      description: `Luật luân lưu [Đột tử #${suddenDeathRound + 1}] - ${homeClub.shortName}: ${hPlayer.shortName} sút... ${hSuccess ? 'VÀO! Bản lĩnh thép.' : 'HỎNG! Áp lực đè nặng.'}`,
-      playerId: hPlayer.id,
-    });
-
-    const aSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (aPlayer.attributes.sho - 75) * 0.005));
-    if (aSuccess) aScore++;
-    events.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: awayId,
-      playerName: aPlayer.name,
-      description: `Luật luân lưu [Đột tử #${suddenDeathRound + 1}] - ${awayClub.shortName}: ${aPlayer.shortName} sút... ${aSuccess ? 'VÀO! Tuyệt vời.' : 'HỎNG! Không chiến thắng được áp lực.'}`,
-      playerId: aPlayer.id,
-    });
-
-    suddenDeathRound++;
-  }
-
-  if (hScore === aScore) {
-    hScore += Math.random() > 0.5 ? 1 : 0;
-    if (hScore === aScore) aScore += 1;
-  }
-
-  const winnerId = hScore > aScore ? homeId : awayId;
-  const winnerClub = winnerId === homeId ? homeClub : awayClub;
-  events.push({
-    minute: 90,
-    type: 'penalty',
-    teamId: winnerId,
-    playerName: winnerClub.shortName,
-    description: `KẾT QUẢ LUÂN LƯU: ${homeClub.shortName} ${hScore} - ${aScore} ${awayClub.shortName}! ${winnerClub.name} giành chiến thắng chung cuộc!`,
-  });
-
-  return { penaltiesHome: hScore, penaltiesAway: aScore, winnerId };
-}
 
   let penaltiesHome: number | undefined;
   let penaltiesAway: number | undefined;
@@ -2084,16 +2458,6 @@ function simulatePenaltyShootout(params: {
     penaltiesAway = shootoutRes.penaltiesAway;
     winnerId = shootoutRes.winnerId;
   }
-
-  events.push({
-    minute: 90,
-    type: 'fulltime',
-    teamId: homeId,
-    playerName: 'FT',
-    description: `Hết giờ! ${homeClub.name} ${homeGoals} - ${awayGoals} ${awayClub.name}.`,
-  });
-
-  events.sort((a, b) => a.minute - b.minute);
 
   // Dynamic possession comparing both teams' midfield + tactical style bias
   const midDiffPoss = (homeProfile.midfield - awayProfile.midfield) * 1.15;
@@ -2195,6 +2559,8 @@ function simulatePenaltyShootout(params: {
   if (penaltiesHome !== undefined) summary.penaltiesHome = penaltiesHome;
   if (penaltiesAway !== undefined) summary.penaltiesAway = penaltiesAway;
   if (winnerId !== undefined) summary.winnerId = winnerId;
+  if (isUserHome) summary.participatedUserPlayerIds = homeStarters.map((s) => s.player.id);
+  else if (isUserAway) summary.participatedUserPlayerIds = awayStarters.map((s) => s.player.id);
 
   return summary;
 }
@@ -2209,6 +2575,8 @@ export function resimulateMatchFromMinute(params: {
   userManager?: RealManager | null;
   isKnockout?: boolean;
   isNeutralVenue?: boolean;
+  subEvent?: MatchEvent;
+  participatedUserPlayerIds?: string[];
 }): MatchResultSummary {
   const {
     currentMatch,
@@ -2220,6 +2588,8 @@ export function resimulateMatchFromMinute(params: {
     userManager,
     isKnockout = false,
     isNeutralVenue: explicitNeutral,
+    subEvent,
+    participatedUserPlayerIds,
   } = params;
 
   const homeId = currentMatch.homeClubId;
@@ -2230,13 +2600,12 @@ export function resimulateMatchFromMinute(params: {
   const homeClub = CLUBS.find((c) => c.id === homeId) ?? CLUBS[0];
   const awayClub = CLUBS.find((c) => c.id === awayId) ?? CLUBS[1];
 
-  const userSquadIds = new Set(userSquad.map((p) => p.id));
   const homeRoster = isUserHome
     ? userSquad
-    : allPlayers.filter((p) => p.clubId === homeId && !userSquadIds.has(p.id));
+    : allPlayers.filter((p) => p.clubId === homeId);
   const awayRoster = isUserAway
     ? userSquad
-    : allPlayers.filter((p) => p.clubId === awayId && !userSquadIds.has(p.id));
+    : allPlayers.filter((p) => p.clubId === awayId);
 
   const defaultHomeMgr = REAL_MANAGERS.find((m) => m.id === homeClub.managerId) ?? REAL_MANAGERS[0];
   const defaultAwayMgr = REAL_MANAGERS.find((m) => m.id === awayClub.managerId) ?? REAL_MANAGERS[1];
@@ -2351,24 +2720,31 @@ export function resimulateMatchFromMinute(params: {
   );
 
   const newEvents: MatchEvent[] = [...keptEvents];
-  const tacticalLabelMap: Record<TacticSettings['mentality'], string> = {
-    Cautious: 'Thận trọng',
-    Balanced: 'Cân bằng',
-    Positive: 'Tích cực',
-    Attacking: 'Tấn công',
-    'Very Attacking': 'Tổng lực',
-  };
-  newEvents.push({
-    minute: fromMinute,
-    type: 'sub',
-    teamId: userClubId,
-    playerName: userMgrResolved?.name ?? 'HLV',
-    description: `Chỉ đạo từ đường biên: Chuyển sang thế trận ${tacticalLabelMap[nextUserTactics.mentality]}!`,
-  });
+  if (subEvent) {
+    newEvents.push(subEvent);
+  } else {
+    const tacticalLabelMap: Record<TacticSettings['mentality'], string> = {
+      Cautious: 'Thận trọng',
+      Balanced: 'Cân bằng',
+      Positive: 'Tích cực',
+      Attacking: 'Tấn công',
+      'Very Attacking': 'Tổng lực',
+    };
+    newEvents.push({
+      minute: fromMinute,
+      type: 'sub',
+      teamId: userClubId,
+      playerName: userMgrResolved?.name ?? 'HLV',
+      description: `Chỉ đạo từ đường biên: Chuyển sang thế trận ${tacticalLabelMap[nextUserTactics.mentality]}!`,
+    });
+  }
+
+  const homePenId = isUserHome ? nextUserTactics.designatedPenaltyTakerId : undefined;
+  const awayPenId = isUserAway ? nextUserTactics.designatedPenaltyTakerId : undefined;
 
   for (let i = 0; i < remHomeGoals; i++) {
     const min = minFloor + Math.floor(Math.random() * span);
-    const scorer = pickScorerFromXI(homePlayingXI);
+    const scorer = pickScorerFromXI(homePlayingXI, homePenId);
     const assist = pickAssisterFromXI(homePlayingXI, scorer?.id);
     const ev: MatchEvent = {
       minute: min,
@@ -2385,7 +2761,7 @@ export function resimulateMatchFromMinute(params: {
 
   for (let i = 0; i < remAwayGoals; i++) {
     const min = minFloor + Math.floor(Math.random() * span);
-    const scorer = pickScorerFromXI(awayPlayingXI);
+    const scorer = pickScorerFromXI(awayPlayingXI, awayPenId);
     const assist = pickAssisterFromXI(awayPlayingXI, scorer?.id);
     const ev: MatchEvent = {
       minute: min,
@@ -2467,6 +2843,16 @@ export function resimulateMatchFromMinute(params: {
   const yellowsHome = baseYellowsHome + remYellowsHome;
   const yellowsAway = baseYellowsAway + remYellowsAway;
 
+  // Sort 1' - 89' events first so FT and penalty shootout stay in sequence
+  newEvents.sort((a, b) => a.minute - b.minute);
+  newEvents.push({
+    minute: 90,
+    type: 'fulltime',
+    teamId: homeId,
+    playerName: 'FT',
+    description: `Hết giờ! ${homeClub.name} ${homeGoals} - ${awayGoals} ${awayClub.name}.`,
+  });
+
   let penaltiesHome: number | undefined;
   let penaltiesAway: number | undefined;
   let winnerId: string | undefined;
@@ -2476,36 +2862,22 @@ export function resimulateMatchFromMinute(params: {
   } else if (awayGoals > homeGoals) {
     winnerId = awayId;
   } else if (isKnockout) {
-    const homeEdgePen = homeProfile.overall >= awayProfile.overall ? 0.53 : 0.47;
-    const homeWinsPen = Math.random() < homeEdgePen;
-    const baseScore = Math.floor(Math.random() * 2) + 4;
-    if (homeWinsPen) {
-      penaltiesHome = baseScore;
-      penaltiesAway = baseScore - (Math.random() > 0.4 ? 1 : 2);
-      winnerId = homeId;
-    } else {
-      penaltiesAway = baseScore;
-      penaltiesHome = baseScore - (Math.random() > 0.4 ? 1 : 2);
-      winnerId = awayId;
-    }
-    const winnerClub = winnerId === homeId ? homeClub : awayClub;
-    newEvents.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: winnerId,
-      playerName: winnerClub.shortName,
-      description: `LUÂN LƯU 11M! ${winnerClub.name} thắng ${penaltiesHome} - ${penaltiesAway} trên chấm phạt đền!`,
+    const shootoutRes = simulatePenaltyShootout({
+      homeId,
+      awayId,
+      homeClub,
+      awayClub,
+      homeStarters,
+      awayStarters,
+      isUserHome,
+      isUserAway,
+      userTactics: nextUserTactics,
+      events: newEvents,
     });
+    penaltiesHome = shootoutRes.penaltiesHome;
+    penaltiesAway = shootoutRes.penaltiesAway;
+    winnerId = shootoutRes.winnerId;
   }
-
-  newEvents.push({
-    minute: 90,
-    type: 'fulltime',
-    teamId: homeId,
-    playerName: 'FT',
-    description: `Hết giờ! ${homeClub.name} ${homeGoals} - ${awayGoals} ${awayClub.name}.`,
-  });
-  newEvents.sort((a, b) => a.minute - b.minute);
 
   const midDiffPoss = (homeProfile.midfield - awayProfile.midfield) * 1.15;
   const userPossBias = isUserHome
@@ -2549,6 +2921,59 @@ export function resimulateMatchFromMinute(params: {
     deterministic: false,
   });
 
+  // Preserve or compute ratings for subbed-off user players who played earlier in the match
+  const mergedParticipatedIds = Array.from(
+    new Set([
+      ...(currentMatch.participatedUserPlayerIds ?? []),
+      ...(participatedUserPlayerIds ?? []),
+      ...(isUserHome
+        ? homeStarters.map((s) => s.player.id)
+        : isUserAway
+          ? awayStarters.map((s) => s.player.id)
+          : []),
+    ])
+  );
+
+  const finalRatings = [...playerRatings];
+  if (isUserHome || isUserAway) {
+    const ratedSet = new Set(
+      finalRatings.filter((r) => r.clubId === userClubId).map((r) => r.playerId)
+    );
+    const userById = new Map(userSquad.map((p) => [p.id, p]));
+    const prevRatingsMap = new Map(
+      (currentMatch.playerRatings ?? [])
+        .filter((r) => r.clubId === userClubId)
+        .map((r) => [r.playerId, r])
+    );
+    for (const pid of mergedParticipatedIds) {
+      if (ratedSet.has(pid)) continue;
+      const p = userById.get(pid);
+      if (!p) continue;
+      const prev = prevRatingsMap.get(pid);
+      const pGoals = newEvents.filter(
+        (e) => e.type === 'goal' && e.teamId === userClubId && e.playerId === pid
+      ).length;
+      const pAssists = newEvents.filter(
+        (e) => e.type === 'goal' && e.teamId === userClubId && e.assistId === pid
+      ).length;
+      const pYellow = newEvents.some(
+        (e) => e.type === 'yellow' && e.teamId === userClubId && e.playerId === pid
+      );
+      const baseRating = prev ? prev.rating : Number(Math.max(5.8, Math.min(8.5, 6.4 + pGoals * 1.0 + pAssists * 0.6)).toFixed(1));
+      finalRatings.push({
+        playerId: p.id,
+        playerName: p.name,
+        shortName: p.shortName,
+        clubId: userClubId,
+        position: p.position,
+        rating: baseRating,
+        goals: pGoals,
+        assists: pAssists,
+        ...(pYellow ? { yellowCard: true } : {}),
+      });
+    }
+  }
+
   const updated: MatchResultSummary = {
     ...currentMatch,
     homeGoals,
@@ -2568,10 +2993,14 @@ export function resimulateMatchFromMinute(params: {
     xgAway: awayShotStats.xg,
     homeFormation: isUserHome ? nextUserTactics.formation : currentMatch.homeFormation,
     awayFormation: isUserAway ? nextUserTactics.formation : currentMatch.awayFormation,
-    playerRatings,
+    playerRatings: finalRatings,
     events: newEvents,
     playedAt: new Date().toISOString(),
   };
+
+  if (mergedParticipatedIds.length > 0 && (isUserHome || isUserAway)) {
+    updated.participatedUserPlayerIds = mergedParticipatedIds;
+  }
 
   if (motm) updated.manOfTheMatch = motm;
   if (penaltiesHome !== undefined) updated.penaltiesHome = penaltiesHome;
@@ -3069,9 +3498,21 @@ export function createNextSeasonCareer(career: CareerSave): {
   const topLeagueScorer = leagueAwards.topScorer;
   const leagueMvp = leagueAwards.mvp;
   const topSquadScorer = [...hydrated.squad].sort((a, b) => b.goals - a.goals)[0];
+  const teamOfTheSeason = resolveLeagueTeamOfTheSeason(hydrated);
+  const userTotsPlayers = teamOfTheSeason.filter((t) => t.isUserPlayer);
+  const totsBonusM = userTotsPlayers.length * 2;
+  const totsShards = userTotsPlayers.length * 10;
 
-  const prizeM =
+  const evaluatedObjectives = evaluateBoardObjectives(hydrated, true);
+  const completedObjs = evaluatedObjectives.filter((o) => o.status === 'completed');
+  const objBonusM = completedObjs.reduce((s, o) => s + o.rewardBudgetM, 0);
+  const objShards = completedObjs.reduce((s, o) => s + o.rewardShards, 0);
+  const objConfidenceDelta =
+    completedObjs.length >= 2 ? 8 : completedObjs.length === 1 ? 2 : -6;
+
+  const basePrizeM =
     leagueRank === 1 ? 55 : leagueRank <= 4 ? 35 : leagueRank <= 10 ? 25 : 18;
+  const prizeM = basePrizeM + objBonusM + totsBonusM;
 
   const existingCabinet = [...(hydrated.trophyCabinet ?? [])];
   const trophiesWonTitles: string[] = [];
@@ -3122,6 +3563,9 @@ export function createNextSeasonCareer(career: CareerSave): {
     topScorerName: topLeagueScorer?.playerName ?? topSquadScorer?.name ?? 'Chưa có',
     topScorerGoals: topLeagueScorer?.goals ?? topSquadScorer?.goals ?? 0,
     trophiesWon: trophiesWonTitles,
+    teamOfTheSeason,
+    completedObjectivesCount: completedObjs.length,
+    totalObjectivesCount: evaluatedObjectives.length,
   };
   if (topLeagueScorer?.clubId) summary.topScorerClubId = topLeagueScorer.clubId;
   if (leagueMvp) {
@@ -3139,7 +3583,10 @@ export function createNextSeasonCareer(career: CareerSave): {
   const activeMgr = getActiveCareerManager(hydrated);
   const mgrDevBonus = activeMgr && activeMgr.manManagement >= 93 ? 1 : 0;
   const intensityBonus = hydrated.trainingIntensity === 'intense' ? 1 : 0;
+  const totsUserIds = new Set(userTotsPlayers.map((t) => t.playerId));
+
   const nextSquad = hydrated.squad.map((p) => {
+    const totsMoraleBonus = totsUserIds.has(p.id) ? 5 : 0;
     const isImmortalLegend =
       p.cardTier === 'icon' || p.clubId === 'icons-fc' || p.cardTier === 'ucl17';
     if (isImmortalLegend) {
@@ -3147,7 +3594,7 @@ export function createNextSeasonCareer(career: CareerSave): {
         ...p,
         contractUntil: Math.max(2099, p.contractUntil),
         fitness: 98,
-        morale: Math.min(100, Math.max(85, p.morale + 5 + mgrDevBonus * 2)),
+        morale: Math.min(100, Math.max(85, p.morale + 5 + mgrDevBonus * 2 + totsMoraleBonus)),
         goals: 0,
         assists: 0,
         appearances: 0,
@@ -3160,13 +3607,13 @@ export function createNextSeasonCareer(career: CareerSave): {
       delta = Math.min(p.potential - p.rating, 1 + intensityBonus + mgrDevBonus);
     } else if (nextAge <= 29 && p.rating < p.potential && Math.random() < 0.55 + mgrDevBonus * 0.15) {
       delta = 1;
-    } else if (nextAge >= 34 && p.rating > 70) {
+    } else if (nextAge >= 34 && p.rating > 70 && (p.stars ?? 1) < 5) {
       delta = -1;
     }
 
     const nextRating = Math.max(66, Math.min(99, p.rating + delta));
     const nextVal = Number(
-      Math.max(2, p.marketValueM * (delta > 0 ? 1.12 : delta < 0 ? 0.85 : 1)).toFixed(1)
+      Math.max(2, p.marketValueM * (delta > 0 ? 1.12 : delta < 0 ? 0.85 : 1) * (totsUserIds.has(p.id) ? 1.05 : 1)).toFixed(1)
     );
 
     return {
@@ -3177,7 +3624,7 @@ export function createNextSeasonCareer(career: CareerSave): {
       contractUntil:
         p.contractUntil <= seasonStartYear ? seasonStartYear + 2 : p.contractUntil,
       fitness: 98,
-      morale: Math.min(100, Math.max(75, p.morale + 5 + mgrDevBonus * 2)),
+      morale: Math.min(100, Math.max(75, p.morale + 5 + mgrDevBonus * 2 + totsMoraleBonus)),
       goals: 0,
       assists: 0,
       appearances: 0,
@@ -3212,7 +3659,7 @@ export function createNextSeasonCareer(career: CareerSave): {
       elite_pack: prevInv.packs.elite_pack + 2,
       trophy_gift_box: prevInv.packs.trophy_gift_box + 1,
     },
-    universalShards: prevInv.universalShards + 30,
+    universalShards: prevInv.universalShards + 30 + objShards + totsShards,
   };
 
   const nextCareer: CareerSave = {
@@ -3220,7 +3667,10 @@ export function createNextSeasonCareer(career: CareerSave): {
     season: nextSeason,
     matchweek: 1,
     transferBudget: Number((hydrated.transferBudget + prizeM).toFixed(1)),
-    boardConfidence: Math.min(100, Math.max(70, hydrated.boardConfidence + (leagueRank <= 4 ? 8 : 2))),
+    boardConfidence: Math.min(
+      100,
+      Math.max(45, hydrated.boardConfidence + (leagueRank <= 4 ? 6 : 1) + objConfidenceDelta)
+    ),
     fanSupport: Math.min(100, Math.max(72, hydrated.fanSupport + (leagueRank <= 4 ? 6 : 2))),
     squad: nextSquad,
     standings,
@@ -3229,6 +3679,7 @@ export function createNextSeasonCareer(career: CareerSave): {
     competitions,
     trophyCabinet: existingCabinet.slice(0, 120),
     seasonHistory: [summary, ...(hydrated.seasonHistory ?? [])].slice(0, 50),
+    boardObjectives: generateSeasonObjectives(hydrated.clubId, nextSeason, nextSquad),
     inventory: nextInventory,
   };
 
