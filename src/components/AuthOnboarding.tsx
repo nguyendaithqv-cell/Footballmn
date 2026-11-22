@@ -84,7 +84,7 @@ export const AuthOnboarding: React.FC<AuthGateProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [localUser]);
+  }, [localUser?.uid, localUser?.username]);
 
   const handleSubmitAuth = async (e: React.FormEvent) => {
     e.preventDefault();

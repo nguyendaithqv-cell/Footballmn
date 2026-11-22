@@ -139,6 +139,8 @@ export interface TacticSettings {
   workBallIntoBox: boolean;
   offsideTrap: boolean;
   slots: TacticSlot[];
+  designatedPenaltyTakerId?: string;
+  penaltyTakerIds?: string[];
 }
 
 export interface LeagueStanding {

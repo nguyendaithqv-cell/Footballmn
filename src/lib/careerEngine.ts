@@ -3,6 +3,7 @@ import {
   CareerSave,
   ChampionsCupState,
   ChampionsGroup,
+  Club,
   CompactMatchReport,
   CompetitionAwardWinner,
   CompetitionId,
@@ -883,7 +884,18 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
       career.activeManagerId === undefined ? clubDefaultMgr : career.activeManagerId,
     managerHistory: career.managerHistory ?? [],
     seasonAwards: career.seasonAwards ?? [],
-    squad: hasAllStars ? career.squad : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 })),
+    squad: (() => {
+      let sq = hasAllStars ? career.squad : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 }));
+      const neededSq = 21 - sq.length;
+      if (neededSq > 0) {
+        const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
+        for (let i = 0; i < neededSq; i++) {
+          const pos = positions[i % positions.length];
+          sq.push(createAcademyFillPlayer(career.clubId, pos, sq.length + i));
+        }
+      }
+      return sq;
+    })(),
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
     seasonHistory: career.seasonHistory ?? [],
@@ -901,9 +913,18 @@ export function createInitialCareer(
   const club = CLUBS.find((c) => c.id === clubId) ?? CLUBS[0];
   const manager = REAL_MANAGERS.find((m) => m.id === club.managerId) ?? REAL_MANAGERS[0];
   const allPlayers = applyMarketOverrides(INITIAL_PLAYERS, overrides);
-  const clubSquad = allPlayers
+  let clubSquad: Player[] = allPlayers
     .filter((p) => p.clubId === club.id)
     .map((p) => ({ ...p, stars: p.stars ?? 1 }));
+
+  const needed = 21 - clubSquad.length;
+  if (needed > 0) {
+    const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
+    for (let i = 0; i < needed; i++) {
+      const pos = positions[i % positions.length];
+      clubSquad.push(createAcademyFillPlayer(club.id, pos, clubSquad.length + i));
+    }
+  }
   const formation = manager.preferredFormation;
 
   const tactics: TacticSettings = {
@@ -1237,6 +1258,7 @@ function createAcademyFillPlayer(clubId: string, position: Position, index: numb
       hair: '#1E293B',
       hairStyle: 'short',
     },
+    stars: 1,
   };
 }
 
@@ -1520,20 +1542,26 @@ function pickWeightedItem<T>(items: T[], weightFn: (item: T) => number): T | und
   return items[items.length - 1];
 }
 
-function pickScorerFromXI(roster: Player[]): Player | undefined {
+function pickScorerFromXI(roster: Player[], designatedPenaltyId?: string): Player | undefined {
+  if (designatedPenaltyId && Math.random() < 0.22) {
+    const designated = roster.find((p) => p.id === designatedPenaltyId);
+    if (designated) return designated;
+  }
   const outfield = roster.filter((p) => p.position !== 'GK');
   const pool = outfield.length > 0 ? outfield : roster;
   return pickWeightedItem(pool, (p) => {
     const posWeight =
-      p.position === 'ST'
-        ? 5.5
-        : p.position === 'LW' || p.position === 'RW'
-          ? 3.6
-          : p.position === 'CAM'
-            ? 2.8
-            : p.position === 'CM'
-              ? 1.5
-              : 0.45;
+      p.id === designatedPenaltyId
+        ? 7.5
+        : p.position === 'ST'
+          ? 5.5
+          : p.position === 'LW' || p.position === 'RW'
+            ? 3.6
+            : p.position === 'CAM'
+              ? 2.8
+              : p.position === 'CM'
+                ? 1.5
+                : 0.45;
     return posWeight * (0.6 + p.attributes.sho / 100);
   });
 }
@@ -1873,6 +1901,164 @@ export function simulateMatchFull(
     events.push(ev);
   }
 
+function simulatePenaltyShootout(params: {
+  homeId: string;
+  awayId: string;
+  homeClub: Club;
+  awayClub: Club;
+  homeStarters: StarterEntry[];
+  awayStarters: StarterEntry[];
+  isUserHome: boolean;
+  isUserAway: boolean;
+  userTactics?: TacticSettings;
+  events: MatchEvent[];
+}): { penaltiesHome: number; penaltiesAway: number; winnerId: string } {
+  const { homeId, awayId, homeClub, awayClub, homeStarters, awayStarters, isUserHome, isUserAway, userTactics, events } = params;
+
+  const getShootoutTakers = (clubId: string, starters: StarterEntry[], isUserTeam: boolean, tactics?: TacticSettings) => {
+    const roster = starters.map((s) => s.player);
+    const designatedId = isUserTeam ? tactics?.designatedPenaltyTakerId : undefined;
+    const designatedList = isUserTeam ? tactics?.penaltyTakerIds : undefined;
+
+    const ordered: Player[] = [];
+    const used = new Set<string>();
+
+    if (designatedId) {
+      const p = roster.find((x) => x.id === designatedId);
+      if (p) {
+        ordered.push(p);
+        used.add(p.id);
+      }
+    }
+
+    if (designatedList) {
+      for (const id of designatedList) {
+        if (!used.has(id)) {
+          const p = roster.find((x) => x.id === id);
+          if (p) {
+            ordered.push(p);
+            used.add(p.id);
+          }
+        }
+      }
+    }
+
+    const rest = [...roster].sort(
+      (a, b) => b.attributes.sho * 0.7 + b.rating * 0.3 - (a.attributes.sho * 0.7 + b.rating * 0.3)
+    );
+    for (const p of rest) {
+      if (!used.has(p.id)) {
+        used.add(p.id);
+        ordered.push(p);
+      }
+    }
+    return ordered.slice(0, 11);
+  };
+
+  const homeTakers = getShootoutTakers(homeId, homeStarters, isUserHome, isUserHome ? userTactics : undefined);
+  const awayTakers = getShootoutTakers(awayId, awayStarters, isUserAway, isUserAway ? userTactics : undefined);
+
+  let hScore = 0;
+  let aScore = 0;
+  events.push({
+    minute: 90,
+    type: 'penalty',
+    teamId: homeId,
+    playerName: 'Loạt luân lưu',
+    description: `LUÂN LƯU 11M BẮT ĐẦU! Hai đội bước vào loạt sút penalty phân định thắng thua tại ${homeClub.stadium}.`,
+  });
+
+  for (let round = 0; round < 5; round++) {
+    const hPlayer = homeTakers[round] ?? homeTakers[0];
+    const aPlayer = awayTakers[round] ?? awayTakers[0];
+
+    const hSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (hPlayer.attributes.sho - 75) * 0.005));
+    if (hSuccess) hScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: homeId,
+      playerName: hPlayer.name,
+      description: `Luật luân lưu [Lượt ${round + 1}] - ${homeClub.shortName}: ${hPlayer.shortName} bước lên sút... ${hSuccess ? 'VÀO! Cú sút hiểm hóc đánh bại thủ môn.' : 'KHÔNG VÀO! Cú sút bị thủ môn cản phá xuất thần.'}`,
+      playerId: hPlayer.id,
+    });
+
+    const aSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (aPlayer.attributes.sho - 75) * 0.005));
+    if (aSuccess) aScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: awayId,
+      playerName: aPlayer.name,
+      description: `Luật luân lưu [Lượt ${round + 1}] - ${awayClub.shortName}: ${aPlayer.shortName} sút... ${aSuccess ? 'VÀO! Khúc cua hoàn hảo làm rung lưới.' : 'HỎNG ĂN! Áp lực quá lớn khiến cú sút đi ra ngoài.'}`,
+      playerId: aPlayer.id,
+    });
+
+    const remainingH = 4 - round;
+    const remainingA = 4 - round;
+    if (hScore > aScore + remainingA + 1 || aScore > hScore + remainingH + 1) {
+      break;
+    }
+  }
+
+  // Sudden death rounds if tied after 5 rounds
+  let suddenDeathRound = 0;
+  while (hScore === aScore && suddenDeathRound < 6) {
+    const rIdx = 5 + suddenDeathRound;
+    const hPlayer = homeTakers[rIdx] ?? homeTakers[suddenDeathRound % homeTakers.length];
+    const aPlayer = awayTakers[rIdx] ?? awayTakers[suddenDeathRound % awayTakers.length];
+
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: homeId,
+      playerName: 'Loạt đột tử',
+      description: `Luật luân lưu [Loạt đột tử #${suddenDeathRound + 1}] - Căng thẳng tuyệt đỉnh!`,
+    });
+
+    const hSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (hPlayer.attributes.sho - 75) * 0.005));
+    if (hSuccess) hScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: homeId,
+      playerName: hPlayer.name,
+      description: `Luật luân lưu [Đột tử #${suddenDeathRound + 1}] - ${homeClub.shortName}: ${hPlayer.shortName} sút... ${hSuccess ? 'VÀO! Bản lĩnh thép.' : 'HỎNG! Áp lực đè nặng.'}`,
+      playerId: hPlayer.id,
+    });
+
+    const aSuccess = Math.random() < Math.min(0.93, Math.max(0.66, 0.76 + (aPlayer.attributes.sho - 75) * 0.005));
+    if (aSuccess) aScore++;
+    events.push({
+      minute: 90,
+      type: 'penalty',
+      teamId: awayId,
+      playerName: aPlayer.name,
+      description: `Luật luân lưu [Đột tử #${suddenDeathRound + 1}] - ${awayClub.shortName}: ${aPlayer.shortName} sút... ${aSuccess ? 'VÀO! Tuyệt vời.' : 'HỎNG! Không chiến thắng được áp lực.'}`,
+      playerId: aPlayer.id,
+    });
+
+    suddenDeathRound++;
+  }
+
+  if (hScore === aScore) {
+    hScore += Math.random() > 0.5 ? 1 : 0;
+    if (hScore === aScore) aScore += 1;
+  }
+
+  const winnerId = hScore > aScore ? homeId : awayId;
+  const winnerClub = winnerId === homeId ? homeClub : awayClub;
+  events.push({
+    minute: 90,
+    type: 'penalty',
+    teamId: winnerId,
+    playerName: winnerClub.shortName,
+    description: `KẾT QUẢ LUÂN LƯU: ${homeClub.shortName} ${hScore} - ${aScore} ${awayClub.shortName}! ${winnerClub.name} giành chiến thắng chung cuộc!`,
+  });
+
+  return { penaltiesHome: hScore, penaltiesAway: aScore, winnerId };
+}
+
   let penaltiesHome: number | undefined;
   let penaltiesAway: number | undefined;
   let winnerId: string | undefined;
@@ -1882,26 +2068,21 @@ export function simulateMatchFull(
   } else if (awayGoals > homeGoals) {
     winnerId = awayId;
   } else if (options?.isKnockout) {
-    const homeEdgePen = homeStrength >= awayStrength ? 0.53 : 0.47;
-    const homeWinsPen = Math.random() < homeEdgePen;
-    const baseScore = Math.floor(Math.random() * 2) + 4; // 4 or 5
-    if (homeWinsPen) {
-      penaltiesHome = baseScore;
-      penaltiesAway = baseScore - (Math.random() > 0.4 ? 1 : 2);
-      winnerId = homeId;
-    } else {
-      penaltiesAway = baseScore;
-      penaltiesHome = baseScore - (Math.random() > 0.4 ? 1 : 2);
-      winnerId = awayId;
-    }
-    const winnerClub = winnerId === homeId ? homeClub : awayClub;
-    events.push({
-      minute: 90,
-      type: 'penalty',
-      teamId: winnerId,
-      playerName: winnerClub.shortName,
-      description: `LUÂN LƯU 11M! ${winnerClub.name} thắng ${penaltiesHome} - ${penaltiesAway} trên chấm phạt đền!`,
+    const shootoutRes = simulatePenaltyShootout({
+      homeId,
+      awayId,
+      homeClub,
+      awayClub,
+      homeStarters,
+      awayStarters,
+      isUserHome,
+      isUserAway,
+      userTactics,
+      events,
     });
+    penaltiesHome = shootoutRes.penaltiesHome;
+    penaltiesAway = shootoutRes.penaltiesAway;
+    winnerId = shootoutRes.winnerId;
   }
 
   events.push({

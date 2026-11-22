@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Brain, Check, RefreshCw, Sparkles } from 'lucide-react';
+import { Brain, Check, RefreshCw, Sparkles, Target } from 'lucide-react';
 import {
   CLUBS,
   FORMATION_TEMPLATES,
@@ -360,6 +360,40 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
             </div>
           </div>
         )}
+
+        {/* Bench Strip */}
+        <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-white">Ghế dự bị ({benchPlayers.length})</h3>
+            <span className="text-[11px] text-slate-400">
+              {selectedSlotIdx !== null ? 'Chạm cầu thủ dự bị để thay vào sân' : 'Chạm để xem chỉ số'}
+            </span>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {benchPlayers.map((bp) => (
+              <button
+                key={bp.id}
+                type="button"
+                onClick={() => handleSwapWithBench(bp.id)}
+                className={`min-w-[116px] rounded-xl p-2.5 border text-left transition-colors shrink-0 ${
+                  selectedSlotIdx !== null
+                    ? 'bg-emerald-500/10 border-emerald-500/40 hover:bg-emerald-500/20'
+                    : 'bg-[#0B1117] border-white/10 hover:border-white/25'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <PlayerAvatar player={bp} club={club} size={32} />
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-white truncate">{bp.shortName}</p>
+                    <p className="text-[11px] font-mono-num text-emerald-400">
+                      {bp.position} · {bp.rating}
+                    </p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Right/Bottom: Tactical Controls, Bench & Tactical Scout */}
@@ -670,39 +704,122 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
           )}
         </div>
 
-        {/* Bench Strip */}
-        <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white">Ghế dự bị ({benchPlayers.length})</h3>
-            <span className="text-[11px] text-slate-400">
-              {selectedSlotIdx !== null ? 'Chạm cầu thủ dự bị để thay vào sân' : 'Chạm để xem chỉ số'}
-            </span>
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {benchPlayers.map((bp) => (
-              <button
-                key={bp.id}
-                type="button"
-                onClick={() => handleSwapWithBench(bp.id)}
-                className={`min-w-[116px] rounded-xl p-2.5 border text-left transition-colors shrink-0 ${
-                  selectedSlotIdx !== null
-                    ? 'bg-emerald-500/10 border-emerald-500/40 hover:bg-emerald-500/20'
-                    : 'bg-[#0B1117] border-white/10 hover:border-white/25'
-                }`}
+        {/* Penalty & Shootout Takers Management */}
+        <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-3">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Target className="w-4 h-4 text-emerald-400" />
+            Chỉ định cầu thủ Sút phạt đền &amp; Luân lưu (Penalties)
+          </h3>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Cầu thủ sút Penalty chính</label>
+              <select
+                value={career.tactics.designatedPenaltyTakerId ?? career.squad[0]?.id ?? ''}
+                onChange={(e) =>
+                  onUpdateTactics({
+                    ...career.tactics,
+                    designatedPenaltyTakerId: e.target.value,
+                  })
+                }
+                className="w-full h-11 px-3 rounded-xl bg-[#0B1117] border border-white/10 text-xs text-white focus:outline-none focus:border-emerald-500"
               >
-                <div className="flex items-center gap-2">
-                  <PlayerAvatar player={bp} club={club} size={32} />
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-white truncate">{bp.shortName}</p>
-                    <p className="text-[11px] font-mono-num text-emerald-400">
-                      {bp.position} · {bp.rating}
-                    </p>
-                  </div>
-                </div>
-              </button>
-            ))}
+                {[...career.squad].sort((a, b) => b.attributes.sho - a.attributes.sho).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.position} · Sút {p.attributes.sho} · OVR {p.rating})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">
+                Thứ tự sút luân lưu (5 Lượt chính thức & 5 Lượt dự bị Sudden Death)
+              </label>
+              
+              <div className="mb-2 text-[11px] font-semibold text-emerald-400">5 Lượt chính thức (Top 5 Main Takers)</div>
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 mb-3">
+                {[0, 1, 2, 3, 4].map((slotIdx) => {
+                  const currentTakers = career.tactics.penaltyTakerIds ?? career.squad.slice(0, 10).map(p => p.id);
+                  const selectedId = currentTakers[slotIdx] ?? career.squad[slotIdx]?.id ?? '';
+                  return (
+                    <div key={slotIdx} className="space-y-1">
+                      <span className="text-[10px] font-mono-num text-emerald-400 font-bold">
+                        Lượt #{slotIdx + 1}
+                      </span>
+                      <select
+                        value={selectedId}
+                        onChange={(e) => {
+                          const next = [...currentTakers];
+                          while (next.length < 10) next.push('');
+                          next[slotIdx] = e.target.value;
+                          onUpdateTactics({
+                            ...career.tactics,
+                            penaltyTakerIds: next,
+                          });
+                        }}
+                        className="w-full h-10 px-2 rounded-xl bg-[#0B1117] border border-white/10 text-[11px] text-white focus:outline-none focus:border-emerald-500"
+                      >
+                        {[...career.squad]
+                          .sort((a, b) => b.attributes.sho - a.attributes.sho)
+                          .filter((p) => {
+                            const isUsedElsewhere = currentTakers.some((id, idx) => idx !== slotIdx && id === p.id);
+                            return !isUsedElsewhere;
+                          })
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.shortName} (Sút {p.attributes.sho})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mb-2 text-[11px] font-semibold text-cyan-400">5 Lượt dự bị / Đột tử (Sudden Death Reserves)</div>
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                {[5, 6, 7, 8, 9].map((slotIdx) => {
+                  const currentTakers = career.tactics.penaltyTakerIds ?? career.squad.slice(0, 10).map(p => p.id);
+                  const selectedId = currentTakers[slotIdx] ?? career.squad[slotIdx]?.id ?? '';
+                  return (
+                    <div key={slotIdx} className="space-y-1">
+                      <span className="text-[10px] font-mono-num text-cyan-400 font-bold">
+                        Dự bị #{slotIdx - 4}
+                      </span>
+                      <select
+                        value={selectedId}
+                        onChange={(e) => {
+                          const next = [...currentTakers];
+                          while (next.length < 10) next.push('');
+                          next[slotIdx] = e.target.value;
+                          onUpdateTactics({
+                            ...career.tactics,
+                            penaltyTakerIds: next,
+                          });
+                        }}
+                        className="w-full h-10 px-2 rounded-xl bg-[#0B1117] border border-white/10 text-[11px] text-white focus:outline-none focus:border-emerald-500"
+                      >
+                        {[...career.squad]
+                          .sort((a, b) => b.attributes.sho - a.attributes.sho)
+                          .filter((p) => {
+                            const isUsedElsewhere = currentTakers.some((id, idx) => idx !== slotIdx && id === p.id);
+                            return !isUsedElsewhere;
+                          })
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.shortName} (Sút {p.attributes.sho})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
+
+
 
         {/* Tactical Assistant Analysis */}
         <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-3">

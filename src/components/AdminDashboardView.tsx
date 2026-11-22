@@ -119,12 +119,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setShowInstallGuide(true);
   };
 
+  const currentOv = marketOverrides[targetPlayer?.id];
   useEffect(() => {
-    setOvClubId(marketOverrides[targetPlayer.id]?.clubId ?? targetPlayer.clubId);
-    setOvValueM(marketOverrides[targetPlayer.id]?.marketValueM ?? targetPlayer.marketValueM);
-    setOvRating(marketOverrides[targetPlayer.id]?.rating ?? targetPlayer.rating);
-    setOvStatus(marketOverrides[targetPlayer.id]?.transferStatus ?? targetPlayer.transferStatus);
-  }, [targetPlayer, marketOverrides]);
+    if (!targetPlayer) return;
+    setOvClubId(currentOv?.clubId ?? targetPlayer.clubId);
+    setOvValueM(currentOv?.marketValueM ?? targetPlayer.marketValueM);
+    setOvRating(currentOv?.rating ?? targetPlayer.rating);
+    setOvStatus(currentOv?.transferStatus ?? targetPlayer.transferStatus);
+  }, [targetPlayer?.id, currentOv?.clubId, currentOv?.marketValueM, currentOv?.rating, currentOv?.transferStatus]);
 
   // Load local users & activity logs on mount
   useEffect(() => {
