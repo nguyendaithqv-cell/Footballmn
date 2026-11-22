@@ -281,7 +281,7 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {filteredProspects.map((prospect) => {
             const trainCostM = getProspectIntensiveTrainCostM(prospect);
-            const releaseFeeM = Number(Math.max(1, prospect.estimatedValueM * 0.7).toFixed(1));
+            const releaseFeeM = Number(Math.max(0.05, prospect.estimatedValueM * 0.65).toFixed(2));
             const maxAcademyOvr = Math.min(79, prospect.potential - 7);
             const reachedAcademyCap = prospect.rating >= maxAcademyOvr;
 
@@ -324,7 +324,7 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
                       </span>
                     </div>
                     <p className="font-mono-num text-[11px] text-slate-400 tabular-nums">
-                      Định giá €{prospect.estimatedValueM}M
+                      Định giá €{prospect.estimatedValueM.toFixed(2)}M
                     </p>
                   </div>
                 </div>
@@ -410,7 +410,7 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
                     className="h-10 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-200 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-45"
                   >
                     <Coins className="w-3.5 h-3.5 shrink-0" />
-                    {`Bán đào tạo (+€${releaseFeeM}M)`}
+                    {`Bán đào tạo (+€${releaseFeeM.toFixed(2)}M)`}
                   </button>
                 </div>
               </div>

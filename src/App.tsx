@@ -76,6 +76,14 @@ import {
   trainAcademyProspectIntensive,
 } from './lib/legacyAcademyEngine';
 import {
+  ensureClubFacilities,
+  getContractRenewalCostK,
+  getMedicalUpgradeCostM,
+  getStadiumTicketMultiplier,
+  getStadiumUpgradeCostM,
+  SPONSOR_OFFERS,
+} from './lib/economyEngine';
+import {
   deleteLocalClubNotification,
   deleteLocalFriendship,
   getLocalArenaProfile,
@@ -661,7 +669,11 @@ export default function App() {
 
       const hMatchShort = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
       const aMatchShort = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
-      const matchPrizeM = won ? 3.5 : drawn ? 1.8 : 1.0;
+      const facilities = ensureClubFacilities(hydratedCareer);
+      const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
+      const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
+      const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
+      const matchPrizeM = Number(((won ? 3.5 : drawn ? 1.8 : 1.0) * stadiumMult + sponsorBonus).toFixed(1));
 
       const preAwardCareer: CareerSave = {
         ...hydratedCareer,
@@ -949,7 +961,12 @@ export default function App() {
             : competition === 'national-cup'
               ? 'Cúp QG'
               : 'Siêu Cúp';
-        const matchCash = userMatch ? (wonMatch ? 2.5 : drawnMatch ? 1.2 : 0.6) : 0;
+        const facilities = ensureClubFacilities(hydratedCareer);
+        const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
+        const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
+        const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
+        const baseCupCash = userMatch ? (wonMatch ? 2.5 : drawnMatch ? 1.2 : 0.6) : 0;
+        const matchCash = baseCupCash > 0 ? Number((baseCupCash * stadiumMult + sponsorBonus).toFixed(1)) : 0;
         if (matchCash > 0 && userMatch) {
           const hS = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
           const aS = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
@@ -1468,7 +1485,7 @@ export default function App() {
     const prospect = academy.prospects.find((p) => p.id === prospectId);
     if (!prospect) return { ok: false, message: 'Not found' };
 
-    const feeM = Number(Math.max(1, prospect.estimatedValueM * 0.7).toFixed(1));
+    const feeM = Number(Math.max(0.05, prospect.estimatedValueM * 0.65).toFixed(2));
     const nextProspects = academy.prospects.filter((p) => p.id !== prospectId);
     const nextAcademy = {
       ...academy,
@@ -1481,7 +1498,7 @@ export default function App() {
 
     const nextCareer: CareerSave = {
       ...hydratedCareer,
-      transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(1)),
+      transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(2)),
       youthAcademy: nextAcademy,
       financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
         createLedgerEntry({
@@ -1499,6 +1516,123 @@ export default function App() {
     await saveCareerCloud(nextCareer);
     await pushClubNotification('transfer', `Bán tài năng trẻ Học viện!`, `CLB đã hoàn tất bán học viên ${prospect.name} với giá €${feeM}M vào ngân sách.`);
     return { ok: true, message: `Đã bán học viên ${prospect.name} thu về +€${feeM}M!` };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleSelectSponsor = useCallback(async (sponsorId: string): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const offer = SPONSOR_OFFERS.find((s) => s.id === sponsorId) ?? SPONSOR_OFFERS[0];
+    if (hydratedCareer.activeSponsorId === sponsorId && hydratedCareer.sponsorClaimedSeason === hydratedCareer.season) {
+      return { ok: false, message: `Bạn đã ký gói tài trợ ${offer.name} cho mùa ${hydratedCareer.season} rồi.` };
+    }
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      activeSponsorId: sponsorId,
+      sponsorClaimedSeason: hydratedCareer.season,
+      transferBudget: Number((hydratedCareer.transferBudget + offer.upfrontM).toFixed(1)),
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'income',
+          category: 'sponsor',
+          title: `Lót tay Nhà tài trợ: ${offer.name}`,
+          detail: `Tiền lót tay upfront mùa giải ${hydratedCareer.season}`,
+          amountM: offer.upfrontM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('season', `Ký hợp đồng tài trợ thành công!`, `CLB đã chính thức ký kết với ${offer.name}, nhận ngay +€${offer.upfrontM}M tiền lót tay vào ngân sách.`);
+    return { ok: true, message: `Ký thành công với ${offer.name} (+€${offer.upfrontM}M lót tay)!` };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleUpgradeFacility = useCallback(async (facilityType: 'stadium' | 'medical'): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const facilities = ensureClubFacilities(hydratedCareer);
+    let costM = 0;
+    let nextFacilities = { ...facilities };
+
+    if (facilityType === 'stadium') {
+      if (facilities.stadiumLevel >= 3) return { ok: false, message: 'Sân vận động đã đạt cấp tối đa (Cấp 3).' };
+      costM = getStadiumUpgradeCostM(facilities.stadiumLevel as 1 | 2);
+      if (hydratedCareer.transferBudget < costM) {
+        return { ok: false, message: `Ngân sách không đủ nâng cấp sân vận động (€${costM}M).` };
+      }
+      nextFacilities.stadiumLevel = (facilities.stadiumLevel + 1) as 2 | 3;
+    } else {
+      if (facilities.medicalLevel >= 3) return { ok: false, message: 'Trung tâm y tế đã đạt cấp tối đa (Cấp 3).' };
+      costM = getMedicalUpgradeCostM(facilities.medicalLevel as 1 | 2);
+      if (hydratedCareer.transferBudget < costM) {
+        return { ok: false, message: `Ngân sách không đủ nâng cấp y tế (€${costM}M).` };
+      }
+      nextFacilities.medicalLevel = (facilities.medicalLevel + 1) as 2 | 3;
+    }
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget - costM).toFixed(1)),
+      clubFacilities: nextFacilities,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'expense',
+          category: 'facility_upgrade',
+          title: `Nâng cấp ${facilityType === 'stadium' ? 'Sân vận động' : 'Trung tâm Y tế'} lên Cấp ${nextFacilities[facilityType === 'stadium' ? 'stadiumLevel' : 'medicalLevel']}`,
+          detail: `Đầu tư hạ tầng câu lạc bộ dài hạn`,
+          amountM: costM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('upgrade', `Nâng cấp Cơ sở vật chất thành công!`, `Đã hoàn tất nâng cấp ${facilityType === 'stadium' ? 'Sân vận động' : 'Trung tâm Y tế'} với chi phí €${costM}M.`);
+    return { ok: true, message: `Nâng cấp hạ tầng thành công (-€${costM}M)!` };
+  }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
+
+  const handleExtendContract = useCallback(async (playerId: string): Promise<{ ok: boolean; message: string }> => {
+    if (!hydratedCareer || !localUser) return { ok: false, message: 'Chưa sẵn sàng.' };
+    const player = hydratedCareer.squad.find((p) => p.id === playerId);
+    if (!player) return { ok: false, message: 'Không tìm thấy cầu thủ.' };
+
+    const currentYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+    const { wageIncreaseK, bonusM, targetYears } = getContractRenewalCostK(player);
+    if (hydratedCareer.transferBudget < bonusM) {
+      return { ok: false, message: `Ngân sách không đủ trả phí lót tay gia hạn (€${bonusM}M).` };
+    }
+
+    const nextSquad = hydratedCareer.squad.map((p) => {
+      if (p.id !== playerId) return p;
+      return {
+        ...p,
+        contractUntil: Math.max(p.contractUntil, currentYear) + targetYears,
+        wageK: p.wageK + wageIncreaseK,
+        morale: Math.min(100, p.morale + 10),
+      };
+    });
+
+    const nextCareer: CareerSave = {
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget - bonusM).toFixed(1)),
+      squad: nextSquad,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'expense',
+          category: 'contract_compensation',
+          title: `Gia hạn Hợp đồng: ${player.name}`,
+          detail: `Ký thêm ${targetYears} năm, lương mới €${player.wageK + wageIncreaseK}K/tuần, lót tay €${bonusM}M`,
+          amountM: bonusM,
+        }),
+      ]),
+    };
+
+    await saveCareerCloud(nextCareer);
+    await pushClubNotification('contract', `Gia hạn hợp đồng thành công!`, `${player.name} đã đồng ý gia hạn thêm ${targetYears} năm (đến năm ${Math.max(player.contractUntil, currentYear) + targetYears}, lương €${player.wageK + wageIncreaseK}K/tuần).`);
+    return { ok: true, message: `Đã gia hạn thành công cho ${player.name} thêm ${targetYears} năm!` };
   }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
 
   const handleStartNextSeason = useCallback(async () => {
@@ -1582,9 +1716,10 @@ export default function App() {
             : player.marketValueM * 1.05;
 
       if (bidM < threshold || wageK < player.wageK * 0.95) {
+        const thresholdDisplay = threshold >= 10 ? Math.ceil(threshold) : Number(threshold.toFixed(2));
         return {
           ok: false,
-          message: `CLB chủ quản từ chối €${bidM}M. Hãy đề nghị ít nhất €${Math.ceil(threshold)}M và lương €${player.wageK}K/tuần.`,
+          message: `CLB chủ quản từ chối €${bidM}M. Hãy đề nghị ít nhất €${thresholdDisplay}M và lương €${player.wageK}K/tuần.`,
         };
       }
 
@@ -1614,7 +1749,7 @@ export default function App() {
         CLUBS.find((c) => c.id === player.clubId)?.shortName ?? player.clubId;
       const nextCareer: CareerSave = {
         ...hydratedCareer,
-        transferBudget: Number((hydratedCareer.transferBudget - bidM).toFixed(1)),
+        transferBudget: Number((hydratedCareer.transferBudget - bidM).toFixed(2)),
         squad: [...hydratedCareer.squad, signedPlayer],
         ...(nextInv ? { inventory: nextInv } : {}),
         financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
@@ -1744,7 +1879,7 @@ export default function App() {
       if (!hydratedCareer || hydratedCareer.squad.length <= 21) return;
       const target = hydratedCareer.squad.find((p) => p.id === playerId);
       if (!target) return;
-      const feeM = Math.round(target.marketValueM * 0.92);
+      const feeM = Number(Math.max(0.05, target.marketValueM * 0.92).toFixed(2));
       const nextSquad = hydratedCareer.squad.filter((p) => p.id !== playerId);
       const occupiedIds = new Set(
         hydratedCareer.tactics.slots
@@ -1793,7 +1928,7 @@ export default function App() {
 
       saveCareerCloud({
         ...hydratedCareer,
-        transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(1)),
+        transferBudget: Number((hydratedCareer.transferBudget + feeM).toFixed(2)),
         squad: nextSquad,
         financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
           createLedgerEntry({
@@ -3678,6 +3813,9 @@ export default function App() {
               onTrainAcademyProspect={handleTrainAcademyProspect}
               onPromoteAcademyProspect={handlePromoteAcademyProspect}
               onReleaseAcademyProspect={handleReleaseAcademyProspect}
+              onSelectSponsor={handleSelectSponsor}
+              onUpgradeFacility={handleUpgradeFacility}
+              onExtendContract={handleExtendContract}
               subTabRequest={clubSubTabRequest}
               onExportBackup={handleExportBackup}
               onRestoreBackup={handleRestoreBackup}

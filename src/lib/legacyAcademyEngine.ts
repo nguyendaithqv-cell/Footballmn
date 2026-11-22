@@ -236,10 +236,20 @@ function buildProspectAttributes(position: Position, rating: number): PlayerAttr
 }
 
 function estimateProspectValueM(rating: number, potential: number, age: number): number {
-  const potFactor = Math.max(0, potential - 80) * 0.42;
-  const ovrFactor = Math.max(1, rating - 58) * 0.35;
-  const youthPremium = age <= 17 ? 1.2 : 1.0;
-  return Number(Math.max(1.2, (potFactor + ovrFactor) * youthPremium).toFixed(1));
+  let base = 0.05;
+  if (rating <= 64) {
+    base = 0.05 + Math.max(0, rating - 60) * 0.025; // 60: 0.05, 64: 0.15
+  } else if (rating <= 68) {
+    base = 0.15 + (rating - 64) * 0.05; // 65: 0.20, 68: 0.35
+  } else if (rating <= 72) {
+    base = 0.40 + (rating - 68) * 0.10; // 69: 0.50, 72: 0.80
+  } else {
+    base = 0.90 + (rating - 72) * 0.15; // 73+: 1.05...
+  }
+  const potBonus = Math.max(0, potential - 82) * 0.02;
+  const ageFactor = age <= 16 ? 1.15 : age === 17 ? 1.05 : 1.0;
+  const total = (base + potBonus) * ageFactor;
+  return Number(Math.max(0.05, Math.min(2.0, total)).toFixed(2));
 }
 
 export function generateAcademyProspect(
@@ -312,7 +322,7 @@ export function getExtraScoutCostM(level: 1 | 2 | 3): number {
 }
 
 export function getProspectIntensiveTrainCostM(prospect: YouthProspect): number {
-  return Number((1.0 + Math.max(0, prospect.rating - 64) * 0.1).toFixed(1));
+  return Number((0.3 + Math.max(0, prospect.rating - 64) * 0.05).toFixed(2));
 }
 
 export function ensureYouthAcademy(career: CareerSave): YouthAcademyState {
@@ -485,7 +495,7 @@ export function buildPromotedPlayerFromProspect(
   while (usedNumbers.has(jersey) && jersey < 99) {
     jersey++;
   }
-  const wageK = Math.max(12, Math.round((prospect.rating - 56) * 2.2));
+  const wageK = Math.max(3, Math.round((prospect.rating - 58) * 1.5));
   return {
     id: `grad-${prospect.id}`,
     name: prospect.name,

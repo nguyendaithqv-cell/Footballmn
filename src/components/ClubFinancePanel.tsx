@@ -44,6 +44,8 @@ const CATEGORY_LABELS: Record<FinancialLedgerCategory, string> = {
   star_upgrade: 'Phí nâng sao',
   medical_recovery: 'Chi phí y tế',
   academy: 'Học viện & Tài năng trẻ',
+  sponsor: 'Tài trợ chính',
+  facility_upgrade: 'Nâng cấp hạ tầng',
 };
 
 export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({

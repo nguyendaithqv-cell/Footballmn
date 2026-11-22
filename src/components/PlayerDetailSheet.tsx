@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeftRight,
   ArrowUpCircle,
@@ -71,15 +71,21 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   const isUcl17 = player.cardTier === 'ucl17' || player.clubId === 'rma-ucl-2017';
   const isGlobal = player.cardTier === 'global';
   const iconShardCost = getIconShardCost(player);
-  const minAskM =
+  const rawMinAsk =
     player.transferStatus === 'listed'
-      ? Math.max(1, Math.round(player.marketValueM * 0.85))
+      ? Math.max(0.05, player.marketValueM * 0.85)
       : player.transferStatus === 'untouchable'
-        ? Math.round(player.marketValueM * 1.45)
-        : Math.round(player.marketValueM * 1.1);
+        ? player.marketValueM * 1.45
+        : player.marketValueM * 1.1;
+  const minAskM = Number(rawMinAsk.toFixed(rawMinAsk < 5 ? 2 : 1));
 
   const [bidM, setBidM] = useState<number>(minAskM);
   const [wageK, setWageK] = useState<number>(Math.round(player.wageK * 1.15));
+
+  useEffect(() => {
+    setBidM(minAskM);
+    setWageK(Math.round(player.wageK * 1.15));
+  }, [player.id, minAskM, player.wageK]);
   const [negotiating, setNegotiating] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [upgrading, setUpgrading] = useState(false);
@@ -548,7 +554,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                     <DollarSign className="w-3.5 h-3.5" />
                     {blockedMinSquad
                       ? 'Tối thiểu 21 người'
-                      : `Bán (€${Math.round(player.marketValueM * 0.92)}M)`}
+                      : `Bán (€${(Math.max(0.05, player.marketValueM * 0.92)).toFixed(player.marketValueM < 5 ? 2 : 1)}M)`}
                   </button>
                 );
               })()}
@@ -567,14 +573,15 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
               <div className="space-y-1">
                 <div className="flex justify-between text-xs">
                   <span className="text-slate-400">Phí chuyển nhượng đề xuất</span>
-                  <span className="font-mono-num font-bold text-white">€{bidM}M</span>
+                  <span className="font-mono-num font-bold text-white">€{bidM.toFixed(bidM < 10 ? 2 : 1)}M</span>
                 </div>
                 <input
                   type="range"
-                  min={Math.max(1, Math.round(player.marketValueM * 0.6))}
-                  max={Math.max(20, Math.round(player.marketValueM * 1.9))}
+                  min={Number(Math.max(0.05, player.marketValueM * 0.6).toFixed(2))}
+                  max={Number(Math.max(0.2, player.marketValueM * 1.9).toFixed(2))}
+                  step={player.marketValueM < 2 ? 0.05 : player.marketValueM < 10 ? 0.2 : 0.5}
                   value={bidM}
-                  onChange={(e) => setBidM(Number(e.target.value))}
+                  onChange={(e) => setBidM(Number(Number(e.target.value).toFixed(2)))}
                   className="w-full accent-emerald-500"
                 />
               </div>

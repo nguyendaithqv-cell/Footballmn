@@ -1745,8 +1745,13 @@ function createAcademyFillPlayer(clubId: string, position: Position, index: numb
     flagCode: 'UN',
     rating: baseStat,
     potential: potStat,
-    marketValueM: Number((1.8 + (baseStat - 70) * 0.7).toFixed(1)),
-    wageK: 10 + (baseStat - 70) * 2,
+    marketValueM: Number(
+      (baseStat <= 72
+        ? 0.45 + (baseStat - 71) * 0.25
+        : 1.0 + (baseStat - 73) * 0.45
+      ).toFixed(2)
+    ),
+    wageK: Math.max(6, 6 + (baseStat - 70) * 2),
     contractUntil: 2030,
     fitness: 96,
     morale: 82,
@@ -4166,7 +4171,7 @@ export function createNextSeasonCareer(career: CareerSave): {
 
     const nextRating = Math.max(66, Math.min(99, p.rating + delta));
     const nextVal = Number(
-      Math.max(2, p.marketValueM * (delta > 0 ? 1.12 : delta < 0 ? 0.85 : 1) * (totsUserIds.has(p.id) ? 1.05 : 1)).toFixed(1)
+      Math.max(0.1, p.marketValueM * (delta > 0 ? 1.12 : delta < 0 ? 0.85 : 1) * (totsUserIds.has(p.id) ? 1.05 : 1)).toFixed(2)
     );
 
     return {

@@ -601,7 +601,9 @@ export type FinancialLedgerCategory =
   | 'pack_purchase'
   | 'star_upgrade'
   | 'medical_recovery'
-  | 'academy';
+  | 'academy'
+  | 'sponsor'
+  | 'facility_upgrade';
 
 export interface FinancialLedgerEntry {
   id: string;
@@ -719,6 +721,11 @@ export interface ClubRecordsState {
   peakSquadOvr?: number;
 }
 
+export interface ClubFacilities {
+  stadiumLevel: 1 | 2 | 3;
+  medicalLevel: 1 | 2 | 3;
+}
+
 export interface CareerSave {
   uid: string;
   clubId: string;
@@ -749,6 +756,9 @@ export interface CareerSave {
   payrollHistory?: SeasonPayrollBreakdown[];
   youthAcademy?: YouthAcademyState;
   clubRecords?: ClubRecordsState;
+  activeSponsorId?: string;
+  sponsorClaimedSeason?: string;
+  clubFacilities?: ClubFacilities;
   inventory?: InventoryState;
   onlineTournament?: OnlineTournamentState;
   updatedAt?: unknown;

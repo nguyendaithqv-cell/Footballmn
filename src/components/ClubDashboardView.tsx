@@ -49,6 +49,7 @@ import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 import { ClubFinancePanel } from './ClubFinancePanel';
 import { ClubRecordsPanel } from './ClubRecordsPanel';
 import { YouthAcademyPanel } from './YouthAcademyPanel';
+import { ClubEconomyManagementPanel } from './ClubEconomyManagementPanel';
 
 interface ClubDashboardViewProps {
   profile: UserProfile;
@@ -78,8 +79,11 @@ interface ClubDashboardViewProps {
   onTrainAcademyProspect: (prospectId: string) => Promise<{ ok: boolean; message: string }>;
   onPromoteAcademyProspect: (prospectId: string) => Promise<{ ok: boolean; message: string }>;
   onReleaseAcademyProspect: (prospectId: string) => Promise<{ ok: boolean; message: string }>;
+  onSelectSponsor: (sponsorId: string) => Promise<{ ok: boolean; message: string }>;
+  onUpgradeFacility: (facilityType: 'stadium' | 'medical') => Promise<{ ok: boolean; message: string }>;
+  onExtendContract: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   subTabRequest?: {
-    tab: 'overview' | 'squad' | 'finance' | 'academy' | 'records' | 'training' | 'managers';
+    tab: 'overview' | 'squad' | 'finance' | 'economy' | 'academy' | 'records' | 'training' | 'managers';
     nonce: number;
   } | null;
   onExportBackup: (includeAdminData: boolean) => Promise<void>;
@@ -111,12 +115,15 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   onTrainAcademyProspect,
   onPromoteAcademyProspect,
   onReleaseAcademyProspect,
+  onSelectSponsor,
+  onUpgradeFacility,
+  onExtendContract,
   subTabRequest,
   onExportBackup,
   onRestoreBackup,
 }) => {
   const [clubSubTab, setClubSubTab] = useState<
-    'overview' | 'squad' | 'finance' | 'academy' | 'records' | 'training' | 'managers'
+    'overview' | 'squad' | 'finance' | 'economy' | 'academy' | 'records' | 'training' | 'managers'
   >('overview');
 
   useEffect(() => {
@@ -193,11 +200,12 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   return (
     <div className="space-y-4">
       {/* Sub-navigation */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
         {[
           { id: 'overview', label: 'Tổng quan' },
           { id: 'squad', label: 'Đội hình' },
           { id: 'finance', label: 'Tài chính' },
+          { id: 'economy', label: 'Kinh tế & Sân bãi' },
           { id: 'academy', label: 'Học viện Trẻ' },
           { id: 'records', label: 'Kỷ lục CLB' },
           { id: 'training', label: 'Tập luyện' },
@@ -672,6 +680,15 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
           onSettleSeasonPayroll={onSettleSeasonPayroll}
           onClaimSeasonRewards={onClaimSeasonRewards}
           onStartNextSeason={onStartNextSeason}
+        />
+      )}
+
+      {clubSubTab === 'economy' && (
+        <ClubEconomyManagementPanel
+          career={career}
+          onSelectSponsor={onSelectSponsor}
+          onUpgradeFacility={onUpgradeFacility}
+          onExtendContract={onExtendContract}
         />
       )}
 
