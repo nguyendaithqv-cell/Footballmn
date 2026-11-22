@@ -587,6 +587,50 @@ export interface OnlineTournamentState {
   startedAt: string;
 }
 
+export type FinancialLedgerCategory =
+  | 'match_prize'
+  | 'competition_bonus'
+  | 'season_reward'
+  | 'player_sale'
+  | 'pack_refund'
+  | 'player_purchase'
+  | 'contract_compensation'
+  | 'payroll_settlement'
+  | 'pack_purchase'
+  | 'star_upgrade'
+  | 'medical_recovery';
+
+export interface FinancialLedgerEntry {
+  id: string;
+  season: string;
+  matchweek: number;
+  type: 'income' | 'expense';
+  category: FinancialLedgerCategory;
+  title: string;
+  detail?: string;
+  amountM: number;
+  date: string;
+}
+
+export interface SeasonPayrollBreakdown {
+  season: string;
+  squadWeeklyWageK: number;
+  squadSeasonWageM: number;
+  squadCount: number;
+  managerName: string;
+  managerAnnualSalaryM: number;
+  logisticsAndStaffM: number;
+  logisticsDetails: {
+    medicalM: number;
+    scoutingAcademyM: number;
+    stadiumOpsM: number;
+    travelAdminM: number;
+  };
+  totalPayrollM: number;
+  bailoutUsedM?: number;
+  settledAt?: string;
+}
+
 export interface CareerSave {
   uid: string;
   clubId: string;
@@ -611,6 +655,10 @@ export interface CareerSave {
   seasonAwards?: CompetitionAwardWinner[];
   seasonHistory?: SeasonRecord[];
   boardObjectives?: BoardObjective[];
+  claimedSeasonRewardSeason?: string;
+  settledPayrollSeason?: string;
+  financialLedger?: FinancialLedgerEntry[];
+  payrollHistory?: SeasonPayrollBreakdown[];
   inventory?: InventoryState;
   onlineTournament?: OnlineTournamentState;
   updatedAt?: unknown;

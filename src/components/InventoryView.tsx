@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { getClubById, INITIAL_PLAYERS } from '../data/footballDatabase';
 import {
+  FITNESS_BOOSTER_RECOVERY,
   getCardDismantleShards,
   getCardRarityTier,
   getQuickDismantlePlan,
@@ -277,7 +278,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     try {
       const res = await onUseFitnessBooster(playerId);
       setFeedback({ ok: res.ok, text: res.message });
-      if (res.ok) setShowBoosterPicker(false);
+      if (res.ok && inventory.fitnessBoosters <= 1) {
+        setShowBoosterPicker(false);
+      }
     } finally {
       setBusyKey(null);
     }
@@ -311,7 +314,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           <div>
             <p className="text-[11px] text-slate-400 flex items-center gap-1">
               <HeartPulse className="w-3.5 h-3.5 text-sky-400" />
-              Bình Thể Lực
+              Bình Thể Lực (+{FITNESS_BOOSTER_RECOVERY}%)
             </p>
             <p className="font-mono-num text-xl font-extrabold text-sky-400 mt-1">
               {inventory.fitnessBoosters}
@@ -1053,10 +1056,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-[11px] font-bold text-sky-400 uppercase">
-                  Bình Hồi Thể Lực (Còn {inventory.fitnessBoosters})
+                  Bình Hồi Thể Lực (Còn {inventory.fitnessBoosters} · +{FITNESS_BOOSTER_RECOVERY}%/bình)
                 </p>
                 <h3 className="font-display text-lg font-extrabold text-white">
-                  Chọn cầu thủ cần hồi 100% thể lực
+                  Chọn cầu thủ cần hồi +{FITNESS_BOOSTER_RECOVERY}% thể lực
                 </h3>
               </div>
               <button
@@ -1068,27 +1071,53 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </button>
             </div>
 
-            <div className="space-y-2 max-h-[340px] overflow-y-auto">
-              {tiredSquadPlayers.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  disabled={busyKey === `boost-${p.id}`}
-                  onClick={() => handleUseBoosterAction(p.id)}
-                  className="w-full flex items-center justify-between rounded-xl bg-[#0B1117] border border-white/10 hover:border-sky-400/50 px-3 py-2.5 text-left"
-                >
-                  <div>
-                    <p className="text-sm font-bold text-white">{p.name}</p>
-                    <p className="text-xs text-slate-400">
-                      {p.position} · Thể lực hiện tại: <strong className="text-amber-400">{p.fitness}%</strong>
-                    </p>
-                  </div>
-                  <span className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-xs font-bold">
-                    Hồi 100%
-                  </span>
-                </button>
-              ))}
-            </div>
+            {feedback && (
+              <div
+                className={`rounded-xl p-2.5 text-xs border ${
+                  feedback.ok
+                    ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-200'
+                    : 'bg-red-500/15 border-red-500/35 text-red-200'
+                }`}
+              >
+                {feedback.text}
+              </div>
+            )}
+
+            {tiredSquadPlayers.length === 0 || inventory.fitnessBoosters <= 0 ? (
+              <div className="rounded-xl bg-[#0B1117] border border-white/10 p-4 text-center text-xs text-slate-300">
+                {inventory.fitnessBoosters <= 0
+                  ? 'Bạn đã dùng hết Bình Thể Lực.'
+                  : 'Tất cả cầu thủ đều đã đạt 100% thể lực!'}
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[340px] overflow-y-auto">
+                {tiredSquadPlayers.map((p) => {
+                  const nextFit = Math.min(100, p.fitness + FITNESS_BOOSTER_RECOVERY);
+                  const gain = nextFit - p.fitness;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={busyKey === `boost-${p.id}`}
+                      onClick={() => handleUseBoosterAction(p.id)}
+                      className="w-full flex items-center justify-between rounded-xl bg-[#0B1117] border border-white/10 hover:border-sky-400/50 px-3 py-2.5 text-left"
+                    >
+                      <div>
+                        <p className="text-sm font-bold text-white">{p.name}</p>
+                        <p className="text-xs text-slate-400">
+                          {p.position} · Thể lực:{' '}
+                          <strong className="text-amber-400">{p.fitness}%</strong> →{' '}
+                          <strong className="text-emerald-400">{nextFit}%</strong>
+                        </p>
+                      </div>
+                      <span className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-xs font-bold shrink-0">
+                        {busyKey === `boost-${p.id}` ? 'Đang dùng...' : `Hồi +${gain}%`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

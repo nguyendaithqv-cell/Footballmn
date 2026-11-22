@@ -202,6 +202,14 @@ export function buildCompactCareerForStorage(rawCareer: CareerSave, targetUid: s
     trophyCabinet: (hydrated.trophyCabinet ?? []).slice(0, 120),
     seasonHistory: (hydrated.seasonHistory ?? []).slice(0, 50),
     boardObjectives: (hydrated.boardObjectives ?? []).slice(0, 10),
+    ...(hydrated.claimedSeasonRewardSeason
+      ? { claimedSeasonRewardSeason: String(hydrated.claimedSeasonRewardSeason).slice(0, 16) }
+      : {}),
+    ...(hydrated.settledPayrollSeason
+      ? { settledPayrollSeason: String(hydrated.settledPayrollSeason).slice(0, 16) }
+      : {}),
+    financialLedger: (hydrated.financialLedger ?? []).slice(0, 300),
+    payrollHistory: (hydrated.payrollHistory ?? []).slice(0, 50),
     inventory: normalizeInventory(hydrated.inventory),
   };
 }

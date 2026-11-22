@@ -11,6 +11,8 @@ import {
   CompetitionPlayerStat,
   CompetitionsState,
   CupMatch,
+  FinancialLedgerCategory,
+  FinancialLedgerEntry,
   Fixture,
   FormationId,
   LeagueStanding,
@@ -24,6 +26,7 @@ import {
   PlayerRole,
   Position,
   RealManager,
+  SeasonPayrollBreakdown,
   SeasonRecord,
   SuperCupState,
   TacticSettings,
@@ -40,6 +43,130 @@ export const COMPETITION_LABEL_MAP: Record<CompetitionId, string> = {
   'super-cup': 'Siêu Cúp',
   friendly: 'Giao hữu Quốc tế',
 };
+
+export function createLedgerEntry(params: {
+  season: string;
+  matchweek: number;
+  type: 'income' | 'expense';
+  category: FinancialLedgerCategory;
+  title: string;
+  detail?: string;
+  amountM: number;
+  date?: string;
+  id?: string;
+}): FinancialLedgerEntry {
+  return {
+    id:
+      params.id ??
+      `fin-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    season: params.season,
+    matchweek: params.matchweek,
+    type: params.type,
+    category: params.category,
+    title: params.title,
+    ...(params.detail ? { detail: params.detail } : {}),
+    amountM: Number(Math.max(0, params.amountM).toFixed(2)),
+    date: params.date ?? new Date().toISOString(),
+  };
+}
+
+export function appendLedgerEntries(
+  existing: FinancialLedgerEntry[] | undefined,
+  entries: FinancialLedgerEntry[]
+): FinancialLedgerEntry[] {
+  const valid = entries.filter((e) => e.amountM > 0);
+  if (valid.length === 0) return existing ?? [];
+  const seen = new Set((existing ?? []).map((e) => e.id));
+  const fresh = valid.filter((e) => !seen.has(e.id));
+  return [...fresh, ...(existing ?? [])].slice(0, 300);
+}
+
+export function backfillLegacyFinancialLedger(career: CareerSave): FinancialLedgerEntry[] {
+  const entries: FinancialLedgerEntry[] = [];
+  const season = career.season;
+
+  for (const tr of career.transferHistory ?? []) {
+    if (tr.feeM <= 0) continue;
+    entries.push(
+      createLedgerEntry({
+        id: `legacy-tr-${tr.id}`,
+        season,
+        matchweek: tr.matchweek || 1,
+        type: tr.type === 'sell' ? 'income' : 'expense',
+        category: tr.type === 'sell' ? 'player_sale' : 'player_purchase',
+        title:
+          tr.type === 'sell'
+            ? `Bán cầu thủ: ${tr.playerName}`
+            : `Mua cầu thủ: ${tr.playerName}`,
+        detail: `Lương €${tr.wageK}K/tuần`,
+        amountM: tr.feeM,
+        date: tr.date || new Date().toISOString(),
+      })
+    );
+  }
+
+  for (const mh of career.managerHistory ?? []) {
+    if (!mh.feeM || mh.feeM <= 0) continue;
+    entries.push(
+      createLedgerEntry({
+        id: `legacy-mh-${mh.id}`,
+        season: mh.season || season,
+        matchweek: mh.matchweek || 1,
+        type: 'expense',
+        category: 'contract_compensation',
+        title:
+          mh.action === 'fired'
+            ? `Bồi thường thanh lý HĐ HLV ${mh.managerName}`
+            : `Phí ký kết / giải phóng HĐ HLV ${mh.managerName}`,
+        detail: mh.action === 'fired' ? 'Bồi thường chấm dứt hợp đồng' : 'Bổ nhiệm HLV trưởng',
+        amountM: mh.feeM,
+        date: mh.date || new Date().toISOString(),
+      })
+    );
+  }
+
+  for (const r of career.recentResults ?? []) {
+    const isHome = r.homeClubId === career.clubId;
+    const myG = isHome ? r.homeGoals : r.awayGoals;
+    const oppG = isHome ? r.awayGoals : r.homeGoals;
+    const won = r.winnerId ? r.winnerId === career.clubId : myG > oppG;
+    const drawn = !r.winnerId && myG === oppG;
+    const comp = r.competition ?? 'league';
+    const prize =
+      comp === 'friendly'
+        ? won
+          ? 3.0
+          : 2.0
+        : comp === 'league'
+          ? won
+            ? 3.5
+            : drawn
+              ? 1.8
+              : 1.0
+          : won
+            ? 2.5
+            : drawn
+              ? 1.2
+              : 0.6;
+    const hName = CLUBS.find((c) => c.id === r.homeClubId)?.shortName ?? r.homeClubId;
+    const aName = CLUBS.find((c) => c.id === r.awayClubId)?.shortName ?? r.awayClubId;
+    entries.push(
+      createLedgerEntry({
+        id: `legacy-match-${r.id}`,
+        season,
+        matchweek: r.matchweek || 1,
+        type: 'income',
+        category: 'match_prize',
+        title: `Thưởng trận ${COMPETITION_LABEL_MAP[comp] ?? 'Giải đấu'}: ${hName} ${r.homeGoals}-${r.awayGoals} ${aName}`,
+        detail: r.roundLabel || `Vòng ${r.matchweek}`,
+        amountM: prize,
+        date: r.playedAt || new Date().toISOString(),
+      })
+    );
+  }
+
+  return entries.slice(0, 300);
+}
 
 export function getActiveCareerManager(career: CareerSave): RealManager | null {
   if (career.activeManagerId === null) return null;
@@ -1023,12 +1150,33 @@ export function finalizeFinishedCompetitionAwards(
     }
   }
 
+  const userAwardLabels = candidates
+    .filter((w) => w.isUserPlayer)
+    .map((w) => `${w.awardTitle} (${w.playerName})`)
+    .join(', ');
+
+  const nextLedger =
+    bonusBudgetM > 0
+      ? appendLedgerEntries(career.financialLedger, [
+          createLedgerEntry({
+            season: career.season,
+            matchweek: career.matchweek,
+            type: 'income',
+            category: 'competition_bonus',
+            title: `Thưởng danh hiệu Cá nhân ${COMPETITION_LABEL_MAP[competition] ?? 'Giải đấu'}`,
+            detail: userAwardLabels || undefined,
+            amountM: bonusBudgetM,
+          }),
+        ])
+      : career.financialLedger;
+
   const nextCareer: CareerSave = {
     ...career,
     transferBudget: Number((career.transferBudget + bonusBudgetM).toFixed(1)),
     squad: nextSquad,
     trophyCabinet: nextCabinet.slice(0, 120),
     seasonAwards: existingAwards.slice(0, 120),
+    ...(nextLedger ? { financialLedger: nextLedger } : {}),
     inventory: normalizeInventory({
       ...inv,
       packs: nextPacks,
@@ -1134,6 +1282,8 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     Array.isArray(career.seasonAwards);
   const needsSquadPadding = career.squad.length < 21;
   const hasBoardObjectives = Array.isArray(career.boardObjectives) && career.boardObjectives.length > 0;
+  const hasFinancialLedger = Array.isArray(career.financialLedger);
+  const hasPayrollHistory = Array.isArray(career.payrollHistory);
 
   if (
     hasComps &&
@@ -1145,7 +1295,9 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     hasAllStars &&
     hasManagerFields &&
     !needsSquadPadding &&
-    hasBoardObjectives
+    hasBoardObjectives &&
+    hasFinancialLedger &&
+    hasPayrollHistory
   ) {
     return career;
   }
@@ -1186,6 +1338,10 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
     seasonHistory: career.seasonHistory ?? [],
+    financialLedger: hasFinancialLedger
+      ? career.financialLedger!
+      : backfillLegacyFinancialLedger(career),
+    payrollHistory: career.payrollHistory ?? [],
     inventory: career.inventory
       ? normalizeInventory(career.inventory)
       : createStarterInventory(),
@@ -1277,6 +1433,8 @@ export function createInitialCareer(
     seasonAwards: [],
     seasonHistory: [],
     boardObjectives: generateSeasonObjectives(club.id, '2026/27', clubSquad),
+    financialLedger: [],
+    payrollHistory: [],
     inventory: createStarterInventory(),
   };
 }
@@ -3472,10 +3630,390 @@ export function applyCupMatchResults(
   };
 }
 
+export interface SeasonEndRewardBundle {
+  season: string;
+  alreadyClaimed: boolean;
+  leagueRank: number;
+  championClubId: string;
+  isLeagueChampion: boolean;
+  basePrizeM: number;
+  evaluatedObjectives: BoardObjective[];
+  completedObjectivesCount: number;
+  objBonusM: number;
+  objShards: number;
+  objConfidenceDelta: number;
+  teamOfTheSeason: TeamOfTheSeasonPlayer[];
+  userTotsPlayers: TeamOfTheSeasonPlayer[];
+  totsBonusM: number;
+  totsShards: number;
+  totalPrizeM: number;
+  baseSeasonShards: number;
+  totalShards: number;
+  packs: {
+    legend_pack: number;
+    icon_pack: number;
+    elite_pack: number;
+    trophy_gift_box: number;
+  };
+}
+
+export function computeSeasonEndRewardBundle(career: CareerSave): SeasonEndRewardBundle {
+  const sortedPrev = sortStandings(career.standings);
+  const leagueRank = Math.max(1, sortedPrev.findIndex((r) => r.clubId === career.clubId) + 1);
+  const championClubId = sortedPrev[0]?.clubId ?? career.clubId;
+  const isLeagueChampion = championClubId === career.clubId;
+
+  const teamOfTheSeason = resolveLeagueTeamOfTheSeason(career);
+  const userTotsPlayers = teamOfTheSeason.filter((t) => t.isUserPlayer);
+  const totsBonusM = userTotsPlayers.length * 2;
+  const totsShards = userTotsPlayers.length * 10;
+
+  const evaluatedObjectives = evaluateBoardObjectives(career, true);
+  const completedObjs = evaluatedObjectives.filter((o) => o.status === 'completed');
+  const objBonusM = completedObjs.reduce((s, o) => s + o.rewardBudgetM, 0);
+  const objShards = completedObjs.reduce((s, o) => s + o.rewardShards, 0);
+  const objConfidenceDelta =
+    completedObjs.length >= 2 ? 8 : completedObjs.length === 1 ? 2 : -6;
+
+  const basePrizeM =
+    leagueRank === 1 ? 55 : leagueRank <= 4 ? 35 : leagueRank <= 10 ? 25 : 18;
+  const totalPrizeM = basePrizeM + objBonusM + totsBonusM;
+  const baseSeasonShards = 30;
+  const totalShards = baseSeasonShards + objShards + totsShards;
+
+  return {
+    season: career.season,
+    alreadyClaimed: career.claimedSeasonRewardSeason === career.season,
+    leagueRank,
+    championClubId,
+    isLeagueChampion,
+    basePrizeM,
+    evaluatedObjectives,
+    completedObjectivesCount: completedObjs.length,
+    objBonusM,
+    objShards,
+    objConfidenceDelta,
+    teamOfTheSeason,
+    userTotsPlayers,
+    totsBonusM,
+    totsShards,
+    totalPrizeM,
+    baseSeasonShards,
+    totalShards,
+    packs: {
+      legend_pack: 1,
+      icon_pack: isLeagueChampion ? 1 : 0,
+      elite_pack: 2,
+      trophy_gift_box: 1,
+    },
+  };
+}
+
+export function resolveLeagueIndividualSpotlights(career: CareerSave): {
+  topAssister: (CompetitionPlayerStat & { avgRating: number }) | null;
+  bestGoalkeeper: (CompetitionPlayerStat & { avgRating: number; mvpScore: number }) | null;
+  clubMvp: (CompetitionPlayerStat & { avgRating: number; mvpScore: number }) | null;
+  clubTopScorer: (CompetitionPlayerStat & { avgRating: number }) | null;
+} {
+  const stats = career.competitions?.leaderboards?.league ?? [];
+  const activePool = stats.filter((s) => (s.matches ?? 0) > 0 || s.goals > 0 || s.assists > 0);
+  const maxMatches = activePool.reduce((mx, s) => Math.max(mx, s.matches ?? 0), 0);
+
+  const enriched = activePool.map((s) => {
+    const m = Math.max(1, s.matches ?? 1);
+    const avgRating =
+      typeof s.ratingSum === 'number' && (s.matches ?? 0) > 0
+        ? Number((s.ratingSum / m).toFixed(2))
+        : Number(Math.min(9.5, 6.5 + (s.goals * 0.25 + s.assists * 0.18) / m).toFixed(2));
+    return {
+      ...s,
+      avgRating,
+      mvpScore: computeCompetitionMvpScore(s, maxMatches),
+    };
+  });
+
+  const topAssister =
+    [...enriched]
+      .filter((s) => s.assists > 0)
+      .sort((a, b) => {
+        if (b.assists !== a.assists) return b.assists - a.assists;
+        if (b.goals !== a.goals) return b.goals - a.goals;
+        return b.avgRating - a.avgRating;
+      })[0] ?? null;
+
+  const bestGoalkeeper =
+    [...enriched]
+      .filter((s) => s.position === 'GK')
+      .sort((a, b) => {
+        if (b.mvpScore !== a.mvpScore) return b.mvpScore - a.mvpScore;
+        return b.avgRating - a.avgRating;
+      })[0] ?? null;
+
+  const userRows = enriched.filter((s) => s.clubId === career.clubId);
+  const clubMvp =
+    [...userRows].sort((a, b) => {
+      if (b.mvpScore !== a.mvpScore) return b.mvpScore - a.mvpScore;
+      return b.avgRating - a.avgRating;
+    })[0] ?? null;
+
+  const clubTopScorer =
+    [...userRows]
+      .filter((s) => s.goals > 0)
+      .sort((a, b) => {
+        if (b.goals !== a.goals) return b.goals - a.goals;
+        if (b.assists !== a.assists) return b.assists - a.assists;
+        return b.avgRating - a.avgRating;
+      })[0] ?? null;
+
+  return {
+    topAssister,
+    bestGoalkeeper,
+    clubMvp,
+    clubTopScorer,
+  };
+}
+
+export function claimSeasonEndRewards(career: CareerSave): {
+  nextCareer: CareerSave;
+  alreadyClaimed: boolean;
+  bundle: SeasonEndRewardBundle;
+  creditedBudgetM: number;
+  creditedShards: number;
+  newTrophiesCount: number;
+  newlyAwarded: CompetitionAwardWinner[];
+} {
+  let hydrated = ensureCareerCompetitions(career);
+  const newlyAwarded: CompetitionAwardWinner[] = [];
+  let awardTrophiesAdded = 0;
+
+  for (const comp of ['league', 'champions-cup', 'national-cup', 'super-cup'] as const) {
+    const settled = finalizeFinishedCompetitionAwards(hydrated, comp);
+    hydrated = settled.nextCareer;
+    newlyAwarded.push(...settled.newlyAwarded);
+    awardTrophiesAdded += settled.newTrophiesCount;
+  }
+
+  const bundle = computeSeasonEndRewardBundle(hydrated);
+  if (hydrated.claimedSeasonRewardSeason === hydrated.season) {
+    return {
+      nextCareer: hydrated,
+      alreadyClaimed: true,
+      bundle,
+      creditedBudgetM: 0,
+      creditedShards: 0,
+      newTrophiesCount: awardTrophiesAdded,
+      newlyAwarded,
+    };
+  }
+
+  const existingCabinet = [...(hydrated.trophyCabinet ?? [])];
+  let newTrophiesCount = awardTrophiesAdded;
+
+  if (bundle.isLeagueChampion) {
+    const id = `trophy-league-${hydrated.season.replace('/', '-')}`;
+    if (!existingCabinet.some((t) => t.id === id)) {
+      existingCabinet.unshift({
+        id,
+        title: `Vô địch Super League ${hydrated.season}`,
+        competition: 'league',
+        season: hydrated.season,
+        clubId: hydrated.clubId,
+        awardedAt: new Date().toISOString(),
+        awardType: 'team',
+      });
+      newTrophiesCount++;
+    }
+  }
+
+  const prevInv = normalizeInventory(hydrated.inventory);
+  const nextInventory = normalizeInventory({
+    ...prevInv,
+    packs: {
+      ...prevInv.packs,
+      legend_pack: prevInv.packs.legend_pack + bundle.packs.legend_pack,
+      icon_pack: (prevInv.packs.icon_pack ?? 0) + bundle.packs.icon_pack,
+      elite_pack: prevInv.packs.elite_pack + bundle.packs.elite_pack,
+      trophy_gift_box: prevInv.packs.trophy_gift_box + bundle.packs.trophy_gift_box,
+    },
+    universalShards: prevInv.universalShards + bundle.totalShards,
+  });
+
+  const nextLedger =
+    bundle.totalPrizeM > 0
+      ? appendLedgerEntries(hydrated.financialLedger, [
+          createLedgerEntry({
+            season: hydrated.season,
+            matchweek: hydrated.matchweek,
+            type: 'income',
+            category: 'season_reward',
+            title: `Thưởng Tổng kết Mùa giải ${hydrated.season} (Hạng #${bundle.leagueRank})`,
+            detail: `Thứ hạng €${bundle.basePrizeM}M · Mục tiêu BLĐ €${bundle.objBonusM}M · ĐHTB €${bundle.totsBonusM}M`,
+            amountM: bundle.totalPrizeM,
+          }),
+        ])
+      : hydrated.financialLedger;
+
+  const nextCareer: CareerSave = {
+    ...hydrated,
+    transferBudget: Number((hydrated.transferBudget + bundle.totalPrizeM).toFixed(1)),
+    boardConfidence: Math.min(
+      100,
+      Math.max(45, hydrated.boardConfidence + (bundle.leagueRank <= 4 ? 6 : 1) + bundle.objConfidenceDelta)
+    ),
+    fanSupport: Math.min(100, Math.max(72, hydrated.fanSupport + (bundle.leagueRank <= 4 ? 6 : 2))),
+    trophyCabinet: existingCabinet.slice(0, 120),
+    boardObjectives: bundle.evaluatedObjectives,
+    claimedSeasonRewardSeason: hydrated.season,
+    ...(nextLedger ? { financialLedger: nextLedger } : {}),
+    inventory: nextInventory,
+  };
+
+  return {
+    nextCareer,
+    alreadyClaimed: false,
+    bundle,
+    creditedBudgetM: bundle.totalPrizeM,
+    creditedShards: bundle.totalShards,
+    newTrophiesCount,
+    newlyAwarded,
+  };
+}
+
+export function computeSeasonPayrollBreakdown(career: CareerSave): SeasonPayrollBreakdown {
+  const club = CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0];
+  const squadWeeklyWageK = career.squad.reduce((sum, p) => sum + (p.wageK || 0), 0);
+  // Quy đổi quyết toán lương cầu thủ cuối mùa (10 kỳ lương thi đấu chính thức)
+  const squadSeasonWageM = Number(((squadWeeklyWageK * 10) / 1000).toFixed(1));
+
+  const activeMgr = getActiveCareerManager(career);
+  const managerName = activeMgr ? activeMgr.name : 'HLV Tạm quyền';
+  const managerAvgRating = activeMgr
+    ? (activeMgr.tacticalRating + activeMgr.manManagement) / 2
+    : 70;
+  const managerAnnualSalaryM = activeMgr
+    ? Number(
+        Math.max(
+          1.2,
+          activeMgr.weeklyWageK
+            ? (activeMgr.weeklyWageK * 10) / 1000
+            : (managerAvgRating - 68) * 0.25
+        ).toFixed(1)
+      )
+    : 0.8;
+
+  const scale = Math.max(0, club.reputation - 70);
+  const medicalM = Number((0.9 + scale * 0.06).toFixed(1));
+  const scoutingAcademyM = Number((1.1 + scale * 0.07).toFixed(1));
+  const stadiumOpsM = Number((0.9 + scale * 0.06).toFixed(1));
+  const travelAdminM = Number((0.7 + scale * 0.04).toFixed(1));
+  const logisticsAndStaffM = Number(
+    (medicalM + scoutingAcademyM + stadiumOpsM + travelAdminM).toFixed(1)
+  );
+
+  const totalPayrollM = Number(
+    (squadSeasonWageM + managerAnnualSalaryM + logisticsAndStaffM).toFixed(1)
+  );
+
+  return {
+    season: career.season,
+    squadWeeklyWageK,
+    squadSeasonWageM,
+    squadCount: career.squad.length,
+    managerName,
+    managerAnnualSalaryM,
+    logisticsAndStaffM,
+    logisticsDetails: {
+      medicalM,
+      scoutingAcademyM,
+      stadiumOpsM,
+      travelAdminM,
+    },
+    totalPayrollM,
+  };
+}
+
+export function settleSeasonPayroll(career: CareerSave): {
+  nextCareer: CareerSave;
+  alreadySettled: boolean;
+  breakdown: SeasonPayrollBreakdown;
+  deductedBudgetM: number;
+  bailoutUsedM: number;
+} {
+  const hydrated = ensureCareerCompetitions(career);
+  const breakdown = computeSeasonPayrollBreakdown(hydrated);
+
+  if (hydrated.settledPayrollSeason === hydrated.season) {
+    return {
+      nextCareer: hydrated,
+      alreadySettled: true,
+      breakdown,
+      deductedBudgetM: 0,
+      bailoutUsedM: 0,
+    };
+  }
+
+  const deductedBudgetM = Number(
+    Math.min(hydrated.transferBudget, breakdown.totalPayrollM).toFixed(1)
+  );
+  const bailoutUsedM = Number(
+    Math.max(0, breakdown.totalPayrollM - hydrated.transferBudget).toFixed(1)
+  );
+  const nextBudget = Number(Math.max(0, hydrated.transferBudget - breakdown.totalPayrollM).toFixed(1));
+  const nowIso = new Date().toISOString();
+
+  const settledRecord: SeasonPayrollBreakdown = {
+    ...breakdown,
+    ...(bailoutUsedM > 0 ? { bailoutUsedM } : {}),
+    settledAt: nowIso,
+  };
+
+  const nextPayrollHistory = [
+    settledRecord,
+    ...(hydrated.payrollHistory ?? []).filter((r) => r.season !== hydrated.season),
+  ].slice(0, 50);
+
+  const nextLedger = appendLedgerEntries(hydrated.financialLedger, [
+    createLedgerEntry({
+      season: hydrated.season,
+      matchweek: hydrated.matchweek,
+      type: 'expense',
+      category: 'payroll_settlement',
+      title: `Quyết toán Quỹ lương Toàn CLB mùa ${hydrated.season}`,
+      detail: `Cầu thủ (${breakdown.squadCount} người) €${breakdown.squadSeasonWageM}M · HLV (${breakdown.managerName}) €${breakdown.managerAnnualSalaryM}M · Hậu cần €${breakdown.logisticsAndStaffM}M${
+        bailoutUsedM > 0 ? ` (BLĐ tạm ứng bù €${bailoutUsedM}M)` : ''
+      }`,
+      amountM: deductedBudgetM > 0 ? deductedBudgetM : breakdown.totalPayrollM,
+      date: nowIso,
+    }),
+  ]);
+
+  const nextCareer: CareerSave = {
+    ...hydrated,
+    transferBudget: nextBudget,
+    boardConfidence:
+      bailoutUsedM > 0
+        ? Math.max(35, hydrated.boardConfidence - 5)
+        : Math.min(100, hydrated.boardConfidence + 2),
+    settledPayrollSeason: hydrated.season,
+    payrollHistory: nextPayrollHistory,
+    financialLedger: nextLedger,
+  };
+
+  return {
+    nextCareer,
+    alreadySettled: false,
+    breakdown: settledRecord,
+    deductedBudgetM,
+    bailoutUsedM,
+  };
+}
+
 export function createNextSeasonCareer(career: CareerSave): {
   nextCareer: CareerSave;
   summary: SeasonRecord;
   prizeM: number;
+  totalSeasonPrizeM: number;
+  alreadyClaimed: boolean;
   newTrophiesCount: number;
   newlyAwarded: CompetitionAwardWinner[];
 } {
@@ -3491,28 +4029,21 @@ export function createNextSeasonCareer(career: CareerSave): {
   }
 
   const sortedPrev = sortStandings(hydrated.standings);
-  const leagueRank = Math.max(1, sortedPrev.findIndex((r) => r.clubId === hydrated.clubId) + 1);
   const myRow = sortedPrev.find((r) => r.clubId === hydrated.clubId);
-  const championClubId = sortedPrev[0]?.clubId ?? hydrated.clubId;
+  const bundle = computeSeasonEndRewardBundle(hydrated);
+  const alreadyClaimed = hydrated.claimedSeasonRewardSeason === hydrated.season;
+  const leagueRank = bundle.leagueRank;
+  const championClubId = bundle.championClubId;
   const leagueAwards = resolveCompetitionAwards(hydrated, 'league');
   const topLeagueScorer = leagueAwards.topScorer;
   const leagueMvp = leagueAwards.mvp;
   const topSquadScorer = [...hydrated.squad].sort((a, b) => b.goals - a.goals)[0];
-  const teamOfTheSeason = resolveLeagueTeamOfTheSeason(hydrated);
-  const userTotsPlayers = teamOfTheSeason.filter((t) => t.isUserPlayer);
-  const totsBonusM = userTotsPlayers.length * 2;
-  const totsShards = userTotsPlayers.length * 10;
+  const teamOfTheSeason = bundle.teamOfTheSeason;
+  const userTotsPlayers = bundle.userTotsPlayers;
+  const evaluatedObjectives = bundle.evaluatedObjectives;
 
-  const evaluatedObjectives = evaluateBoardObjectives(hydrated, true);
-  const completedObjs = evaluatedObjectives.filter((o) => o.status === 'completed');
-  const objBonusM = completedObjs.reduce((s, o) => s + o.rewardBudgetM, 0);
-  const objShards = completedObjs.reduce((s, o) => s + o.rewardShards, 0);
-  const objConfidenceDelta =
-    completedObjs.length >= 2 ? 8 : completedObjs.length === 1 ? 2 : -6;
-
-  const basePrizeM =
-    leagueRank === 1 ? 55 : leagueRank <= 4 ? 35 : leagueRank <= 10 ? 25 : 18;
-  const prizeM = basePrizeM + objBonusM + totsBonusM;
+  const totalSeasonPrizeM = bundle.totalPrizeM;
+  const prizeM = alreadyClaimed ? 0 : totalSeasonPrizeM;
 
   const existingCabinet = [...(hydrated.trophyCabinet ?? [])];
   const trophiesWonTitles: string[] = [];
@@ -3564,7 +4095,7 @@ export function createNextSeasonCareer(career: CareerSave): {
     topScorerGoals: topLeagueScorer?.goals ?? topSquadScorer?.goals ?? 0,
     trophiesWon: trophiesWonTitles,
     teamOfTheSeason,
-    completedObjectivesCount: completedObjs.length,
+    completedObjectivesCount: bundle.completedObjectivesCount,
     totalObjectivesCount: evaluatedObjectives.length,
   };
   if (topLeagueScorer?.clubId) summary.topScorerClubId = topLeagueScorer.clubId;
@@ -3650,28 +4181,49 @@ export function createNextSeasonCareer(career: CareerSave): {
   );
 
   const prevInv = normalizeInventory(hydrated.inventory);
-  const nextInventory = {
-    ...prevInv,
-    packs: {
-      ...prevInv.packs,
-      legend_pack: prevInv.packs.legend_pack + 1,
-      icon_pack: (prevInv.packs.icon_pack ?? 0) + (championClubId === hydrated.clubId ? 1 : 0),
-      elite_pack: prevInv.packs.elite_pack + 2,
-      trophy_gift_box: prevInv.packs.trophy_gift_box + 1,
-    },
-    universalShards: prevInv.universalShards + 30 + objShards + totsShards,
-  };
+  const nextInventory = alreadyClaimed
+    ? prevInv
+    : {
+        ...prevInv,
+        packs: {
+          ...prevInv.packs,
+          legend_pack: prevInv.packs.legend_pack + bundle.packs.legend_pack,
+          icon_pack: (prevInv.packs.icon_pack ?? 0) + bundle.packs.icon_pack,
+          elite_pack: prevInv.packs.elite_pack + bundle.packs.elite_pack,
+          trophy_gift_box: prevInv.packs.trophy_gift_box + bundle.packs.trophy_gift_box,
+        },
+        universalShards: prevInv.universalShards + bundle.totalShards,
+      };
+
+  const nextLedger =
+    !alreadyClaimed && prizeM > 0
+      ? appendLedgerEntries(hydrated.financialLedger, [
+          createLedgerEntry({
+            season: hydrated.season,
+            matchweek: hydrated.matchweek,
+            type: 'income',
+            category: 'season_reward',
+            title: `Thưởng Tổng kết Mùa giải ${hydrated.season} (Hạng #${bundle.leagueRank})`,
+            detail: `Thứ hạng €${bundle.basePrizeM}M · Mục tiêu BLĐ €${bundle.objBonusM}M · ĐHTB €${bundle.totsBonusM}M`,
+            amountM: prizeM,
+          }),
+        ])
+      : hydrated.financialLedger;
 
   const nextCareer: CareerSave = {
     ...hydrated,
     season: nextSeason,
     matchweek: 1,
     transferBudget: Number((hydrated.transferBudget + prizeM).toFixed(1)),
-    boardConfidence: Math.min(
-      100,
-      Math.max(45, hydrated.boardConfidence + (leagueRank <= 4 ? 6 : 1) + objConfidenceDelta)
-    ),
-    fanSupport: Math.min(100, Math.max(72, hydrated.fanSupport + (leagueRank <= 4 ? 6 : 2))),
+    boardConfidence: alreadyClaimed
+      ? hydrated.boardConfidence
+      : Math.min(
+          100,
+          Math.max(45, hydrated.boardConfidence + (leagueRank <= 4 ? 6 : 1) + bundle.objConfidenceDelta)
+        ),
+    fanSupport: alreadyClaimed
+      ? hydrated.fanSupport
+      : Math.min(100, Math.max(72, hydrated.fanSupport + (leagueRank <= 4 ? 6 : 2))),
     squad: nextSquad,
     standings,
     fixtures,
@@ -3680,10 +4232,21 @@ export function createNextSeasonCareer(career: CareerSave): {
     trophyCabinet: existingCabinet.slice(0, 120),
     seasonHistory: [summary, ...(hydrated.seasonHistory ?? [])].slice(0, 50),
     boardObjectives: generateSeasonObjectives(hydrated.clubId, nextSeason, nextSquad),
+    claimedSeasonRewardSeason: undefined,
+    settledPayrollSeason: undefined,
+    ...(nextLedger ? { financialLedger: nextLedger } : {}),
     inventory: nextInventory,
   };
 
-  return { nextCareer, summary, prizeM, newTrophiesCount, newlyAwarded };
+  return {
+    nextCareer,
+    summary,
+    prizeM,
+    totalSeasonPrizeM,
+    alreadyClaimed,
+    newTrophiesCount,
+    newlyAwarded,
+  };
 }
 
 export function getPlayerRecoveryCostM(fitness: number): number {

@@ -22,6 +22,8 @@ export interface PackCatalogItem {
 
 export type PlayerUpgradeTier = 'standard' | 'elite' | 'superstar' | 'legend';
 
+export const FITNESS_BOOSTER_RECOVERY = 25;
+
 export const PACK_CATALOG: PackCatalogItem[] = [
   {
     id: 'starter_pack',

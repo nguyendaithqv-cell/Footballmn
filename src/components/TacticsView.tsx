@@ -103,6 +103,26 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
     return list;
   }, [career.tactics.slots, playerMap]);
 
+  const avgXIFitness = useMemo(() => {
+    if (startingXIPlayers.length === 0) return 100;
+    const sum = startingXIPlayers.reduce((acc, p) => acc + p.fitness, 0);
+    return Math.round(sum / startingXIPlayers.length);
+  }, [startingXIPlayers]);
+
+  const getFitnessTextClass = (fitness: number) =>
+    fitness < 70
+      ? 'text-rose-400'
+      : fitness < 85
+        ? 'text-amber-400'
+        : 'text-emerald-400';
+
+  const getFitnessBarClass = (fitness: number) =>
+    fitness < 70
+      ? 'bg-rose-500'
+      : fitness < 85
+        ? 'bg-amber-400'
+        : 'bg-emerald-400';
+
   const sortedXIBySho = useMemo(
     () =>
       [...startingXIPlayers].sort((a, b) => {
@@ -360,15 +380,20 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
           </svg>
 
           {/* Tactical hint banner */}
-          <div className="absolute top-2.5 left-3 right-3 flex items-center justify-between text-[11px] text-slate-200/90 pointer-events-none">
-            <span>
+          <div className="absolute top-2.5 left-3 right-3 flex items-center justify-between gap-2 text-[11px] text-slate-200/90 pointer-events-none">
+            <span className="truncate">
               {selectedSlotIdx !== null
                 ? 'Chạm cầu thủ khác hoặc dự bị để hoán đổi'
                 : 'Chạm cầu thủ trên sân để đổi vị trí / vai trò'}
             </span>
-            <span className="font-mono-num font-bold text-emerald-300">
-              OVR {tacticalProfile.overall}
-            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`font-mono-num font-bold ${getFitnessTextClass(avgXIFitness)}`}>
+                TL {avgXIFitness}%
+              </span>
+              <span className="font-mono-num font-bold text-emerald-300">
+                OVR {tacticalProfile.overall}
+              </span>
+            </div>
           </div>
 
           {/* 11 Player Nodes */}
@@ -376,6 +401,8 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
             const p = playerMap.get(slot.playerId);
             const isSelected = selectedSlotIdx === idx;
             const isOutOfPos = p && p.position !== slot.label;
+            const fit = p?.fitness ?? 100;
+            const isLowFitness = p ? fit < 70 : false;
             return (
               <button
                 key={`${slot.slotIndex}-${slot.label}`}
@@ -394,9 +421,11 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                   className={`relative rounded-full p-0.5 ${
                     isSelected
                       ? 'ring-2 ring-amber-400 shadow-lg shadow-amber-400/30'
-                      : isOutOfPos
-                        ? 'ring-2 ring-amber-500/70'
-                        : 'ring-1 ring-white/30'
+                      : isLowFitness
+                        ? 'ring-2 ring-rose-500/80'
+                        : isOutOfPos
+                          ? 'ring-2 ring-amber-500/70'
+                          : 'ring-1 ring-white/30'
                   }`}
                 >
                   {p ? (
@@ -407,12 +436,24 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                   <span className="absolute -top-1 -right-1.5 bg-slate-950 text-emerald-400 font-mono-num text-[10px] font-bold px-1 rounded border border-white/15">
                     {p?.rating ?? '--'}
                   </span>
+                  {p && (
+                    <span
+                      className={`absolute -bottom-1 -left-1.5 bg-slate-950 font-mono-num text-[9px] font-bold px-1 rounded border border-white/15 ${getFitnessTextClass(
+                        fit
+                      )}`}
+                    >
+                      {fit}%
+                    </span>
+                  )}
                 </div>
                 <span className="mt-1 px-1.5 py-0.5 rounded bg-slate-950/90 text-[10px] font-semibold text-white max-w-[78px] truncate border border-white/10">
                   {p?.shortName ?? slot.label}
                 </span>
-                <span className="text-[9px] font-mono-num text-emerald-300/90 leading-none mt-0.5">
-                  {slot.label}
+                <span className="text-[9px] font-mono-num text-emerald-300/90 leading-none mt-0.5 flex items-center gap-1">
+                  <span>{slot.label}</span>
+                  {p && (
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${getFitnessBarClass(fit)}`} />
+                  )}
                 </span>
               </button>
             );
@@ -428,7 +469,10 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-white truncate">{selectedPlayer.name}</p>
                   <p className="text-xs text-slate-400">
-                    Vị trí sân: {selectedSlot.label} · Sở trường: {selectedPlayer.position}
+                    Vị trí sân: {selectedSlot.label} · Sở trường: {selectedPlayer.position} · Thể lực:{' '}
+                    <span className={`font-mono-num font-bold ${getFitnessTextClass(selectedPlayer.fitness)}`}>
+                      {selectedPlayer.fitness}%
+                    </span>
                   </p>
                 </div>
               </div>
@@ -475,7 +519,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                 key={bp.id}
                 type="button"
                 onClick={() => handleSwapWithBench(bp.id)}
-                className={`min-w-[116px] rounded-xl p-2.5 border text-left transition-colors shrink-0 ${
+                className={`min-w-[134px] rounded-xl p-2.5 border text-left transition-colors shrink-0 ${
                   selectedSlotIdx !== null
                     ? 'bg-emerald-500/10 border-emerald-500/40 hover:bg-emerald-500/20'
                     : 'bg-[#0B1117] border-white/10 hover:border-white/25'
@@ -487,6 +531,9 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                     <p className="text-xs font-semibold text-white truncate">{bp.shortName}</p>
                     <p className="text-[11px] font-mono-num text-emerald-400">
                       {bp.position} · {bp.rating}
+                    </p>
+                    <p className={`text-[10px] font-mono-num font-bold ${getFitnessTextClass(bp.fitness)}`}>
+                      TL {bp.fitness}%
                     </p>
                   </div>
                 </div>

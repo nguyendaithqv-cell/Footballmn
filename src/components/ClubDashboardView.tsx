@@ -1,14 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Award,
   Bell,
   Calendar,
   CheckCircle2,
   ChevronRight,
+  Coins,
   Crown,
   Dumbbell,
+  Gift,
   HeartPulse,
   History,
+  Lock,
   PackageOpen,
   RefreshCw,
   Search,
@@ -26,6 +29,7 @@ import {
 import { CLUBS, REAL_MANAGERS } from '../data/footballDatabase';
 import {
   calculateTacticalProfile,
+  computeSeasonEndRewardBundle,
   evaluateBoardObjectives,
   getActiveCareerManager,
   getManagerHireFeeM,
@@ -42,6 +46,7 @@ import { ClubBackupBundle } from '../lib/backupEngine';
 import { CareerSave, NewsArticle, Player, UserProfile } from '../types/game';
 import { BackupRestoreCard } from './BackupRestoreCard';
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
+import { ClubFinancePanel } from './ClubFinancePanel';
 
 interface ClubDashboardViewProps {
   profile: UserProfile;
@@ -63,7 +68,13 @@ interface ClubDashboardViewProps {
     managerId: string,
     applySuggestedTactics: boolean
   ) => Promise<{ ok: boolean; message: string }>;
+  onClaimSeasonRewards?: () => Promise<{ ok: boolean; message: string }>;
+  onSettleSeasonPayroll: () => Promise<{ ok: boolean; message: string }>;
   onStartNextSeason: () => Promise<void>;
+  subTabRequest?: {
+    tab: 'overview' | 'squad' | 'finance' | 'training' | 'managers';
+    nonce: number;
+  } | null;
   onExportBackup: (includeAdminData: boolean) => Promise<void>;
   onRestoreBackup: (
     bundle: ClubBackupBundle,
@@ -85,14 +96,28 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   onRecoverSquadFitness,
   onFireManager,
   onHireManager,
+  onClaimSeasonRewards,
+  onSettleSeasonPayroll,
   onStartNextSeason,
+  subTabRequest,
   onExportBackup,
   onRestoreBackup,
 }) => {
-  const [clubSubTab, setClubSubTab] = useState<'overview' | 'squad' | 'training' | 'managers'>(
-    'overview'
-  );
+  const [clubSubTab, setClubSubTab] = useState<
+    'overview' | 'squad' | 'finance' | 'training' | 'managers'
+  >('overview');
+
+  useEffect(() => {
+    if (subTabRequest?.tab) {
+      setClubSubTab(subTabRequest.tab);
+    }
+  }, [subTabRequest]);
   const [startingSeason, setStartingSeason] = useState(false);
+  const [claimingSeasonRewards, setClaimingSeasonRewards] = useState(false);
+  const [seasonClaimFeedback, setSeasonClaimFeedback] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
   const [recoveringTarget, setRecoveringTarget] = useState<string | null>(null);
   const [recoveryFeedback, setRecoveryFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -127,6 +152,7 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
 
   const boardObjectives = useMemo(() => evaluateBoardObjectives(career, false), [career]);
   const projectedTots = useMemo(() => resolveLeagueTeamOfTheSeason(career), [career]);
+  const seasonRewardBundle = useMemo(() => computeSeasonEndRewardBundle(career), [career]);
 
   const nextFixture = useMemo(
     () =>
@@ -155,10 +181,11 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   return (
     <div className="space-y-4">
       {/* Sub-navigation */}
-      <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
         {[
           { id: 'overview', label: 'Tổng quan' },
           { id: 'squad', label: 'Đội hình' },
+          { id: 'finance', label: 'Tài chính' },
           { id: 'training', label: 'Tập luyện' },
           { id: 'managers', label: 'HLV & BHL' },
         ].map((t) => (
@@ -166,7 +193,7 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
             key={t.id}
             type="button"
             onClick={() => setClubSubTab(t.id as typeof clubSubTab)}
-            className={`h-10 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`h-10 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap px-2 ${
               clubSubTab === t.id ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
             }`}
           >
@@ -235,12 +262,66 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                 ) : (
                   <div className="rounded-xl bg-[#0B1117]/90 backdrop-blur-md border border-amber-400/30 p-3 space-y-2.5">
                     <p className="text-xs text-amber-300 font-semibold">
-                      Mùa giải VĐQG {career.season} đã khép lại (Hạng #{myRank}). Sẵn sàng sang mùa mới hoặc chinh phục các giải Cúp!
+                      Mùa giải VĐQG {career.season} đã khép lại (Hạng #{myRank}). Sẵn sàng nhận thưởng, xem Bảng Vinh Danh hoặc sang mùa mới!
                     </p>
+                    {seasonClaimFeedback && (
+                      <p
+                        className={`text-[11px] font-semibold ${
+                          seasonClaimFeedback.ok ? 'text-emerald-300' : 'text-amber-300'
+                        }`}
+                      >
+                        {seasonClaimFeedback.message}
+                      </p>
+                    )}
                     <div className="flex flex-wrap items-center gap-2">
+                      {onClaimSeasonRewards && (
+                        <button
+                          type="button"
+                          disabled={seasonRewardBundle.alreadyClaimed || claimingSeasonRewards}
+                          onClick={async () => {
+                            setClaimingSeasonRewards(true);
+                            setSeasonClaimFeedback(null);
+                            try {
+                              const res = await onClaimSeasonRewards();
+                              setSeasonClaimFeedback(res);
+                            } finally {
+                              setClaimingSeasonRewards(false);
+                            }
+                          }}
+                          className={`h-10 px-3.5 rounded-xl font-bold text-xs flex items-center gap-1.5 ${
+                            seasonRewardBundle.alreadyClaimed
+                              ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-300'
+                              : 'bg-amber-400 hover:bg-amber-300 text-slate-950 disabled:opacity-60'
+                          }`}
+                        >
+                          {seasonRewardBundle.alreadyClaimed ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Đã nhận thưởng mùa
+                            </>
+                          ) : (
+                            <>
+                              <Gift className="w-3.5 h-3.5" />
+                              {claimingSeasonRewards
+                                ? 'Đang nhận...'
+                                : `Nhận thưởng (+€${seasonRewardBundle.totalPrizeM}M)`}
+                            </>
+                          )}
+                        </button>
+                      )}
+                      {career.settledPayrollSeason !== career.season && (
+                        <button
+                          type="button"
+                          onClick={() => setClubSubTab('finance')}
+                          className="h-10 px-3.5 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-200 font-bold text-xs flex items-center gap-1.5"
+                        >
+                          <Coins className="w-3.5 h-3.5" />
+                          Quyết toán Lương
+                        </button>
+                      )}
                       <button
                         type="button"
-                        disabled={startingSeason}
+                        disabled={startingSeason || career.settledPayrollSeason !== career.season}
                         onClick={async () => {
                           setStartingSeason(true);
                           try {
@@ -249,9 +330,17 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                             setStartingSeason(false);
                           }
                         }}
-                        className="h-10 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 disabled:opacity-60"
+                        className={`h-10 px-3.5 rounded-xl font-bold text-xs flex items-center gap-1.5 ${
+                          career.settledPayrollSeason === career.season
+                            ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 disabled:opacity-60'
+                            : 'bg-[#121B24] border border-white/15 text-slate-400 cursor-not-allowed'
+                        }`}
                       >
-                        <RefreshCw className={`w-3.5 h-3.5 ${startingSeason ? 'animate-spin' : ''}`} />
+                        {career.settledPayrollSeason === career.season ? (
+                          <RefreshCw className={`w-3.5 h-3.5 ${startingSeason ? 'animate-spin' : ''}`} />
+                        ) : (
+                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                        )}
                         Bước sang mùa {getNextSeasonString(career.season)} (20 CLB)
                       </button>
                       <button
@@ -259,7 +348,7 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                         onClick={() => onNavigateTab('match')}
                         className="h-10 px-3.5 rounded-xl bg-amber-500/15 border border-amber-400/35 text-amber-300 font-bold text-xs"
                       >
-                        Đá Cúp & Giao hữu
+                        Xem Giải Thưởng &amp; Đá Cúp
                       </button>
                     </div>
                   </div>
@@ -422,7 +511,16 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                   className="w-16 h-16 rounded-xl object-cover border border-white/10 shrink-0"
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs text-slate-400">Tài chính & Quỹ lương</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-slate-400">Tài chính &amp; Quỹ lương</p>
+                    <button
+                      type="button"
+                      onClick={() => setClubSubTab('finance')}
+                      className="text-[11px] font-bold text-emerald-400 hover:underline flex items-center gap-0.5 shrink-0"
+                    >
+                      Sổ Thu – Chi <ChevronRight className="w-3 h-3" />
+                    </button>
+                  </div>
                   <p className="text-sm font-bold text-white">
                     Đang chi €{totalWeeklyWages.toLocaleString()}K / €{career.wageBudget.toLocaleString()}K tuần
                   </p>
@@ -543,6 +641,15 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
             />
           </div>
         </div>
+      )}
+
+      {clubSubTab === 'finance' && (
+        <ClubFinancePanel
+          career={career}
+          onSettleSeasonPayroll={onSettleSeasonPayroll}
+          onClaimSeasonRewards={onClaimSeasonRewards}
+          onStartNextSeason={onStartNextSeason}
+        />
       )}
 
       {clubSubTab === 'squad' && (

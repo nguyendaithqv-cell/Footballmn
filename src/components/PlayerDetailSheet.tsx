@@ -15,7 +15,11 @@ import {
 } from 'lucide-react';
 import { getClubById, getIconShardCost } from '../data/footballDatabase';
 import { getPlayerRecoveryCostM } from '../lib/careerEngine';
-import { getStarUpgradePlan, normalizeInventory } from '../lib/inventoryEngine';
+import {
+  FITNESS_BOOSTER_RECOVERY,
+  getStarUpgradePlan,
+  normalizeInventory,
+} from '../lib/inventoryEngine';
 import {
   CompetitionAwardWinner,
   InventoryState,
@@ -452,26 +456,30 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
               </div>
             )}
 
-            {onUseFitnessBooster && normInventory.fitnessBoosters > 0 && player.fitness < 100 && (
-              <button
-                type="button"
-                disabled={recovering}
-                onClick={async () => {
-                  setRecovering(true);
-                  setFeedback(null);
-                  try {
-                    const res = await onUseFitnessBooster(player.id);
-                    setFeedback({ ok: res.ok, text: res.message });
-                  } finally {
-                    setRecovering(false);
-                  }
-                }}
-                className="w-full h-11 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/45 text-sky-300 text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                <HeartPulse className="w-4 h-4 text-sky-400" />
-                Dùng Bình Thể Lực trong túi (Miễn phí · Còn {normInventory.fitnessBoosters})
-              </button>
-            )}
+            {onUseFitnessBooster && normInventory.fitnessBoosters > 0 && player.fitness < 100 && (() => {
+              const targetFitness = Math.min(100, player.fitness + FITNESS_BOOSTER_RECOVERY);
+              const gain = targetFitness - player.fitness;
+              return (
+                <button
+                  type="button"
+                  disabled={recovering}
+                  onClick={async () => {
+                    setRecovering(true);
+                    setFeedback(null);
+                    try {
+                      const res = await onUseFitnessBooster(player.id);
+                      setFeedback({ ok: res.ok, text: res.message });
+                    } finally {
+                      setRecovering(false);
+                    }
+                  }}
+                  className="w-full h-11 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/45 text-sky-300 text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <HeartPulse className="w-4 h-4 text-sky-400" />
+                  Dùng Bình Thể Lực (+{gain}% → {targetFitness}% · Còn {normInventory.fitnessBoosters})
+                </button>
+              );
+            })()}
 
             {onRecoverFitness && (
               <button

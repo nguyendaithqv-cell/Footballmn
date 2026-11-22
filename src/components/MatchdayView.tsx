@@ -4,10 +4,10 @@ import {
   ChevronRight,
   FastForward,
   Flame,
+  Pause,
   Play,
   RefreshCw,
   Shield,
-  Sparkles,
   Trophy,
   Users,
 } from 'lucide-react';
@@ -17,7 +17,6 @@ import {
   buildMatchSummaryFromStored,
   ensureMatchResultRatings,
   getActiveCareerManager,
-  getNextSeasonString,
   isCompetitionFinished,
   resimulateMatchFromMinute,
   resolveCompetitionAwards,
@@ -40,6 +39,7 @@ import {
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 import { CompetitionStatsPanel } from './CompetitionStatsPanel';
 import { MatchDetailModal, MatchStatsBreakdown } from './MatchDetailModal';
+import { SeasonAwardsShowcase } from './SeasonAwardsShowcase';
 
 interface MatchdayViewProps {
   career: CareerSave;
@@ -51,7 +51,9 @@ interface MatchdayViewProps {
     roundEntries: { matchId: string; result: MatchResultSummary }[]
   ) => Promise<void>;
   onCompleteFriendly: (userMatch: MatchResultSummary) => Promise<void>;
+  onClaimSeasonRewards: () => Promise<{ ok: boolean; message: string }>;
   onStartNextSeason: () => Promise<void>;
+  onOpenFinancePayroll?: () => void;
   onQuickMentality: (mentality: Mentality) => void;
 }
 
@@ -100,7 +102,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   onCompleteMatchweek,
   onCompleteCupMatch,
   onCompleteFriendly,
+  onClaimSeasonRewards,
   onStartNextSeason,
+  onOpenFinancePayroll,
   onQuickMentality,
 }) => {
   const [compTab, setCompTab] = useState<CompetitionViewTab>('league');
@@ -136,22 +140,24 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   const [speed, setSpeed] = useState<1 | 2 | 4>(2);
   const [liveResult, setLiveResult] = useState<MatchResultSummary | null>(null);
   const [simContext, setSimContext] = useState<ActiveSimContext | null>(null);
-  const [ballPos, setBallPos] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
   const [savingMatch, setSavingMatch] = useState(false);
-  const [startingNextSeason, setStartingNextSeason] = useState(false);
 
-  // In-match live substitution & penalty shootout state
+  // In-match live substitution, pause & penalty shootout state
+  const [isPaused, setIsPaused] = useState(false);
   const [matchSlots, setMatchSlots] = useState<TacticSlot[]>([]);
   const [subsMade, setSubsMade] = useState(0);
   const [subbedOutIds, setSubbedOutIds] = useState<string[]>([]);
+  const [subbedInMinutes, setSubbedInMinutes] = useState<Record<string, number>>({});
   const [participatedIds, setParticipatedIds] = useState<string[]>([]);
   const [subPanelOpen, setSubPanelOpen] = useState(false);
   const [selectedSubOutIdx, setSelectedSubOutIdx] = useState<number | null>(null);
+  const [subNotice, setSubNotice] = useState<string | null>(null);
   const [shootoutStep, setShootoutStep] = useState<number>(-1);
 
   const timerRef = useRef<number | null>(null);
   const shootoutTimerRef = useRef<number | null>(null);
   const finalizedMatchIdRef = useRef<string | null>(null);
+  const matchEndTriggeredRef = useRef<string | null>(null);
 
   const userMatchFixture = useMemo(
     () =>
@@ -165,16 +171,6 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   );
 
   const sortedStandings = useMemo(() => sortStandings(career.standings), [career.standings]);
-  const myLeagueRank = Math.max(
-    1,
-    sortedStandings.findIndex((r) => r.clubId === career.clubId) + 1
-  );
-  const myStandingRow = sortedStandings.find((r) => r.clubId === career.clubId);
-  const leagueChampionClub =
-    CLUBS.find((c) => c.id === sortedStandings[0]?.clubId) ?? CLUBS[0];
-  const nextSeasonLabel = getNextSeasonString(career.season);
-  const endSeasonPrizeM =
-    myLeagueRank === 1 ? 55 : myLeagueRank <= 4 ? 35 : myLeagueRank <= 10 ? 25 : 18;
 
   const activeUserManager = useMemo(() => getActiveCareerManager(career), [career]);
   const effectiveAllPlayers = useMemo(
@@ -246,16 +242,21 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   const clearLivePitch = () => {
     if (timerRef.current) window.clearInterval(timerRef.current);
     if (shootoutTimerRef.current) window.clearInterval(shootoutTimerRef.current);
+    finalizedMatchIdRef.current = null;
+    matchEndTriggeredRef.current = null;
     setIsLive(false);
+    setIsPaused(false);
     setLiveResult(null);
     setSimContext(null);
     setMinute(0);
     setMatchSlots([]);
     setSubsMade(0);
     setSubbedOutIds([]);
+    setSubbedInMinutes({});
     setParticipatedIds([]);
     setSubPanelOpen(false);
     setSelectedSubOutIdx(null);
+    setSubNotice(null);
     setShootoutStep(-1);
   };
 
@@ -264,6 +265,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       if (!context) return;
       if (finalizedMatchIdRef.current === userRes.id) return;
       finalizedMatchIdRef.current = userRes.id;
+      matchEndTriggeredRef.current = userRes.id;
+      setIsLive(false);
       setSavingMatch(true);
       try {
         if (context.kind === 'league') {
@@ -376,6 +379,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     instant: boolean
   ) => {
     finalizedMatchIdRef.current = null;
+    matchEndTriggeredRef.current = null;
     const simulated = simulateMatchFull(
       homeId,
       awayId,
@@ -396,12 +400,15 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       setMinute(0);
       setInspectedMatch(simulated);
     } else {
+      setIsPaused(false);
       setMatchSlots(initialMatchSlots);
       setSubsMade(0);
       setSubbedOutIds([]);
+      setSubbedInMinutes({});
       setParticipatedIds(initialParticipated);
       setSubPanelOpen(false);
       setSelectedSubOutIdx(null);
+      setSubNotice(null);
       setShootoutStep(-1);
       setLiveResult(simulated);
       setMinute(1);
@@ -413,6 +420,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     if (timerRef.current) window.clearInterval(timerRef.current);
     if (shootoutTimerRef.current) window.clearInterval(shootoutTimerRef.current);
     if (liveResult && simContext) {
+      matchEndTriggeredRef.current = liveResult.id;
+      setIsPaused(false);
+      setSubPanelOpen(false);
       setShootoutStep(-1);
       setMinute(90);
       await finalizeSimulation(liveResult, simContext);
@@ -472,7 +482,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
 
   const handleLiveMentalityChange = (nextMentality: Mentality) => {
     onQuickMentality(nextMentality);
-    if (!isLive || !liveResult || minute <= 1 || minute >= 88 || shootoutStep >= 0) return;
+    if (!isLive || !liveResult || minute >= 90 || shootoutStep >= 0) return;
     const activeSlots = matchSlots.length > 0 ? matchSlots : career.tactics.slots;
     const nextTactics = buildInMatchUserTactics(activeSlots, nextMentality);
     const isKnockoutCtx =
@@ -520,8 +530,12 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     setMatchSlots(nextSlots);
     setSubsMade(nextSubsMade);
     setSubbedOutIds(nextSubbedOut);
+    setSubbedInMinutes((prev) => ({ ...prev, [inPlayerId]: minute }));
     setParticipatedIds(nextParticipated);
     setSelectedSubOutIdx(null);
+    setSubNotice(
+      `Phút ${minute}': ${inPlayer.shortName} đã vào thay ${outPlayer.shortName} (${nextSubsMade}/5).`
+    );
 
     const nextTactics = buildInMatchUserTactics(nextSlots, undefined, outPlayerId, inPlayerId);
     const isKnockoutCtx =
@@ -595,13 +609,48 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   };
 
   const hasLiveResult = Boolean(liveResult);
+  const liveMatchId = liveResult?.id ?? null;
   const penaltyEvents = useMemo(
     () => (liveResult ? liveResult.events.filter((e) => e.type === 'penalty') : []),
     [liveResult]
   );
 
+  const finalizeRef = useRef(finalizeSimulation);
+  finalizeRef.current = finalizeSimulation;
+  const simContextRef = useRef(simContext);
+  simContextRef.current = simContext;
+  const liveResultRef = useRef(liveResult);
+  liveResultRef.current = liveResult;
+
+  const ballPos = useMemo<{ x: number; y: number }>(() => {
+    if (!liveResult) return { x: 50, y: 50 };
+    if (shootoutStep >= 0) return { x: 88, y: 50 };
+    const eventNow = liveResult.events.find((e) => e.minute === minute && e.type !== 'penalty');
+    if (eventNow?.type === 'goal') {
+      return {
+        x: eventNow.teamId === liveResult.homeClubId ? 92 : 8,
+        y: 50,
+      };
+    }
+    if (eventNow?.type === 'save' || eventNow?.type === 'chance') {
+      return {
+        x: eventNow.teamId === liveResult.homeClubId ? 84 : 16,
+        y: 35 + Math.round((Math.sin(minute) + 1) * 15),
+      };
+    }
+    const possBias = (liveResult.possessionHome - 50) * 0.35;
+    const rawX = 50 + possBias + Math.sin(minute * 0.55) * 24;
+    const rawY = 50 + Math.cos(minute * 0.72) * 28;
+    return {
+      x: Math.max(12, Math.min(88, Math.round(rawX))),
+      y: Math.max(14, Math.min(86, Math.round(rawY))),
+    };
+  }, [liveResult, minute, shootoutStep]);
+
+  const isClockDone = minute >= 90;
+
   useEffect(() => {
-    if (!isLive || !hasLiveResult || shootoutStep >= 0) return;
+    if (!isLive || isPaused || !hasLiveResult || shootoutStep >= 0 || isClockDone) return;
     if (timerRef.current) window.clearInterval(timerRef.current);
 
     const intervalMs = speed === 4 ? 65 : speed === 2 ? 130 : 260;
@@ -612,54 +661,34 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
     };
-  }, [isLive, speed, hasLiveResult, shootoutStep]);
+  }, [isLive, isPaused, speed, hasLiveResult, shootoutStep, isClockDone]);
 
   useEffect(() => {
-    if (!isLive || !liveResult) return;
-    if (shootoutStep >= 0) return;
+    if (!isLive || !liveMatchId || minute < 90 || shootoutStep >= 0) return;
+    if (matchEndTriggeredRef.current === liveMatchId) return;
+    matchEndTriggeredRef.current = liveMatchId;
 
-    const eventNow = liveResult.events.find((e) => e.minute === minute && e.type !== 'penalty');
-    if (eventNow?.type === 'goal') {
-      setBallPos({
-        x: eventNow.teamId === liveResult.homeClubId ? 92 : 8,
-        y: 50,
-      });
-    } else if (eventNow?.type === 'save' || eventNow?.type === 'chance') {
-      setBallPos({
-        x: eventNow.teamId === liveResult.homeClubId ? 84 : 16,
-        y: 35 + Math.round((Math.sin(minute) + 1) * 15),
-      });
-    } else {
-      const possBias = (liveResult.possessionHome - 50) * 0.35;
-      const rawX = 50 + possBias + Math.sin(minute * 0.55) * 24;
-      const rawY = 50 + Math.cos(minute * 0.72) * 28;
-      setBallPos({
-        x: Math.max(12, Math.min(88, Math.round(rawX))),
-        y: Math.max(14, Math.min(86, Math.round(rawY))),
-      });
+    if (timerRef.current) window.clearInterval(timerRef.current);
+    if (penaltyEvents.length > 0) {
+      setIsPaused(false);
+      setSubPanelOpen(false);
+      setShootoutStep(1);
+    } else if (liveResultRef.current) {
+      void finalizeRef.current(liveResultRef.current, simContextRef.current);
     }
-
-    if (minute >= 90) {
-      if (timerRef.current) window.clearInterval(timerRef.current);
-      if (penaltyEvents.length > 0) {
-        setShootoutStep(1);
-        setSubPanelOpen(false);
-        setBallPos({ x: 88, y: 50 });
-      } else {
-        finalizeSimulation(liveResult, simContext);
-      }
-    }
-  }, [minute, isLive, liveResult, simContext, finalizeSimulation, penaltyEvents.length, shootoutStep]);
+  }, [isLive, liveMatchId, minute, shootoutStep, penaltyEvents.length]);
 
   // Step through knockout penalty shootout events live
   useEffect(() => {
-    if (!isLive || !liveResult || shootoutStep < 0) return;
+    if (!isLive || !liveMatchId || shootoutStep < 0) return;
     if (shootoutTimerRef.current) window.clearInterval(shootoutTimerRef.current);
 
     if (shootoutStep >= penaltyEvents.length) {
       const doneTimer = window.setTimeout(() => {
         setShootoutStep(-1);
-        finalizeSimulation(liveResult, simContext);
+        if (liveResultRef.current) {
+          void finalizeRef.current(liveResultRef.current, simContextRef.current);
+        }
       }, 650);
       return () => window.clearTimeout(doneTimer);
     }
@@ -675,7 +704,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     return () => {
       if (shootoutTimerRef.current) window.clearInterval(shootoutTimerRef.current);
     };
-  }, [isLive, liveResult, shootoutStep, penaltyEvents.length, speed, simContext, finalizeSimulation]);
+  }, [isLive, liveMatchId, shootoutStep, penaltyEvents.length, speed]);
 
   const visibleEvents = useMemo(() => {
     if (!liveResult) return [];
@@ -777,11 +806,21 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                 {liveResult.roundLabel || `Vòng ${liveResult.matchweek}`} ·{' '}
                 {liveResult.venue || hClub.stadium}
               </span>
-              <span className="font-mono-num font-bold text-emerald-400">
+              <span
+                className={`font-mono-num font-bold ${
+                  shootoutStep >= 0
+                    ? 'text-amber-400'
+                    : isLive && isPaused
+                      ? 'text-amber-300 animate-pulse'
+                      : 'text-emerald-400'
+                }`}
+              >
                 {shootoutStep >= 0
                   ? 'LUÂN LƯU 11M'
                   : isLive
-                    ? `${minute}'`
+                    ? isPaused
+                      ? `TẠM DỪNG · ${minute}'`
+                      : `${minute}'`
                     : 'HẾT GIỜ (FT)'}
               </span>
             </div>
@@ -897,6 +936,30 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           {isLive ? (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
+                {shootoutStep < 0 && minute < 90 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPaused((p) => !p)}
+                    className={`h-10 px-3.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                      isPaused
+                        ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 border-emerald-400'
+                        : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-400/40'
+                    }`}
+                  >
+                    {isPaused ? (
+                      <>
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        Tiếp tục ({minute}&apos;)
+                      </>
+                    ) : (
+                      <>
+                        <Pause className="w-3.5 h-3.5" />
+                        Tạm dừng
+                      </>
+                    )}
+                  </button>
+                )}
+
                 <div className="flex items-center gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
                   {([1, 2, 4] as const).map((sp) => (
                     <button
@@ -915,7 +978,16 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                   <button
                     type="button"
                     disabled={minute >= 90}
-                    onClick={() => setSubPanelOpen((v) => !v)}
+                    onClick={() => {
+                      const nextOpen = !subPanelOpen;
+                      setSubPanelOpen(nextOpen);
+                      if (nextOpen) {
+                        setIsPaused(true);
+                        setSubNotice(null);
+                      } else {
+                        setSelectedSubOutIdx(null);
+                      }
+                    }}
                     className={`h-10 px-3.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 disabled:opacity-50 ${
                       subPanelOpen
                         ? 'bg-sky-500 text-slate-950 border-sky-400'
@@ -965,31 +1037,58 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
 
               {/* Live In-Match Substitution Panel */}
               {subPanelOpen && shootoutStep < 0 && minute < 90 && (
-                <div className="rounded-2xl bg-[#121B24] border border-sky-400/35 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
+                <div className="rounded-2xl bg-[#121B24] border border-sky-400/45 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <h4 className="text-xs font-bold text-sky-300">
-                        Thay người trực tiếp ({subsMade}/5 lượt đã dùng)
+                      <h4 className="text-xs font-bold text-sky-300 flex items-center gap-2">
+                        <span>Thay người trực tiếp ({subsMade}/5 lượt đã dùng)</span>
+                        {isPaused && (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[10px] font-mono-num">
+                            Đã tạm dừng ở {minute}&apos;
+                          </span>
+                        )}
                       </h4>
-                      <p className="text-[11px] text-slate-400">
+                      <p className="text-[11px] text-slate-400 mt-0.5">
                         {subsMade >= 5
                           ? 'Đã sử dụng hết 5 quyền thay người.'
                           : selectedSubOutIdx === null
                             ? 'Bước 1: Chọn cầu thủ đang đá trên sân muốn rút ra.'
-                            : 'Bước 2: Chọn cầu thủ dự bị vào thay.'}
+                            : `Bước 2: Chọn cầu thủ dự bị vào thay ${
+                                playerMap.get(activeUserSlots[selectedSubOutIdx]?.playerId ?? '')?.shortName ?? ''
+                              }.`}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSubPanelOpen(false);
-                        setSelectedSubOutIdx(null);
-                      }}
-                      className="text-xs text-slate-400 hover:text-white px-2 py-1"
-                    >
-                      Đóng
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSubPanelOpen(false);
+                          setSelectedSubOutIdx(null);
+                          setIsPaused(false);
+                        }}
+                        className="h-8 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        Tiếp tục trận
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSubPanelOpen(false);
+                          setSelectedSubOutIdx(null);
+                        }}
+                        className="text-xs text-slate-400 hover:text-white px-2 py-1"
+                      >
+                        Đóng
+                      </button>
+                    </div>
                   </div>
+
+                  {subNotice && (
+                    <div className="rounded-xl bg-emerald-500/15 border border-emerald-500/35 px-3 py-2 text-xs font-semibold text-emerald-300">
+                      {subNotice}
+                    </div>
+                  )}
 
                   {subsMade < 5 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -997,11 +1096,15 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         <p className="text-[11px] font-semibold text-slate-300">
                           Đang thi đấu trên sân (11)
                         </p>
-                        <div className="space-y-1 max-h-[210px] overflow-y-auto pr-1">
+                        <div className="space-y-1 max-h-[220px] overflow-y-auto pr-1">
                           {activeUserSlots.map((slot, idx) => {
                             const p = playerMap.get(slot.playerId);
                             if (!p) return null;
                             const isSelected = selectedSubOutIdx === idx;
+                            const enteredAt = subbedInMinutes[p.id] ?? 0;
+                            const minsPlayed = Math.max(0, minute - enteredAt);
+                            const drainPerMin = (p.stars ?? 1) >= 3 ? 0.28 : 0.35;
+                            const liveStamina = Math.max(20, Math.round(p.fitness - minsPlayed * drainPerMin));
                             return (
                               <button
                                 key={`${slot.slotIndex}-${p.id}`}
@@ -1018,15 +1121,24 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                                     {slot.label}
                                   </span>
                                   <span className="truncate font-semibold">{p.shortName}</span>
+                                  {enteredAt > 0 && (
+                                    <span className="text-[9px] font-mono-num text-sky-400 shrink-0">
+                                      (Vào {enteredAt}&apos;)
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-2 font-mono-num text-[11px] shrink-0">
                                   <span className="text-emerald-400">{p.rating}</span>
                                   <span
                                     className={
-                                      p.fitness < 75 ? 'text-red-400' : 'text-slate-400'
+                                      liveStamina < 65
+                                        ? 'text-rose-400 font-bold'
+                                        : liveStamina < 80
+                                          ? 'text-amber-400'
+                                          : 'text-emerald-400'
                                     }
                                   >
-                                    {p.fitness}%
+                                    {liveStamina}%
                                   </span>
                                 </div>
                               </button>
@@ -1039,33 +1151,39 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                         <p className="text-[11px] font-semibold text-slate-300">
                           Ghế dự bị khả dụng ({availableBenchPlayers.length})
                         </p>
-                        <div className="space-y-1 max-h-[210px] overflow-y-auto pr-1">
-                          {availableBenchPlayers.map((bp) => (
-                            <button
-                              key={bp.id}
-                              type="button"
-                              disabled={selectedSubOutIdx === null}
-                              onClick={() => {
-                                if (selectedSubOutIdx !== null) {
-                                  handleLiveSubstitution(selectedSubOutIdx, bp.id);
-                                }
-                              }}
-                              className="w-full flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 border bg-[#0B1117] border-white/10 hover:border-sky-400/60 disabled:opacity-45 text-left text-xs"
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <PlayerAvatar player={bp} club={userClub} size={26} showNumber={false} isUserCard />
-                                <div className="min-w-0">
-                                  <p className="font-semibold text-white truncate">{bp.shortName}</p>
-                                  <p className="text-[10px] font-mono-num text-slate-400">
-                                    {bp.position} · Thể lực {bp.fitness}%
-                                  </p>
+                        <div className="space-y-1 max-h-[220px] overflow-y-auto pr-1">
+                          {availableBenchPlayers.length === 0 ? (
+                            <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3 text-[11px] text-slate-400 text-center">
+                              Không còn cầu thủ dự bị khả dụng.
+                            </div>
+                          ) : (
+                            availableBenchPlayers.map((bp) => (
+                              <button
+                                key={bp.id}
+                                type="button"
+                                disabled={selectedSubOutIdx === null}
+                                onClick={() => {
+                                  if (selectedSubOutIdx !== null) {
+                                    handleLiveSubstitution(selectedSubOutIdx, bp.id);
+                                  }
+                                }}
+                                className="w-full flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 border bg-[#0B1117] border-white/10 hover:border-sky-400/60 disabled:opacity-45 text-left text-xs"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <PlayerAvatar player={bp} club={userClub} size={26} showNumber={false} isUserCard />
+                                  <div className="min-w-0">
+                                    <p className="font-semibold text-white truncate">{bp.shortName}</p>
+                                    <p className="text-[10px] font-mono-num text-slate-400">
+                                      {bp.position} · Thể lực {bp.fitness}%
+                                    </p>
+                                  </div>
                                 </div>
-                              </div>
-                              <span className="font-mono-num text-xs font-bold text-sky-400 shrink-0">
-                                {bp.rating}
-                              </span>
-                            </button>
-                          ))}
+                                <span className="font-mono-num text-xs font-bold text-sky-400 shrink-0">
+                                  {bp.rating}
+                                </span>
+                              </button>
+                            ))
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1423,158 +1541,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           {subTab === 'match' && (
             <div>
               {!userMatchFixture ? (
-                <div className="rounded-2xl bg-[#121B24] border border-amber-400/30 p-5 sm:p-6 space-y-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">
-                        Hoàn tất mùa giải VĐQG
-                      </span>
-                      <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-white">
-                        Tổng kết Mùa giải {career.season}
-                      </h3>
-                      <p className="text-xs text-slate-400">
-                        Khởi tranh ngay mùa giải {nextSeasonLabel} với đầy đủ 20 CLB (38 vòng) hoặc chinh phục các giải Cúp & Giao hữu!
-                      </p>
-                    </div>
-                    <Trophy className="w-10 h-10 text-amber-400 shrink-0" />
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                    <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3">
-                      <p className="text-[11px] text-slate-400">Vị trí của bạn</p>
-                      <p className="font-mono-num text-xl font-extrabold text-emerald-400 mt-0.5">
-                        #{myLeagueRank}
-                      </p>
-                    </div>
-                    <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3">
-                      <p className="text-[11px] text-slate-400">Điểm số</p>
-                      <p className="font-mono-num text-xl font-extrabold text-white mt-0.5">
-                        {myStandingRow?.points ?? 0}đ
-                      </p>
-                    </div>
-                    <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3">
-                      <p className="text-[11px] text-slate-400">Nhà vô địch</p>
-                      <p className="text-sm font-bold text-amber-400 truncate mt-1">
-                        {leagueChampionClub.name}
-                      </p>
-                    </div>
-                    <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3">
-                      <p className="text-[11px] text-slate-400">Thưởng mùa giải</p>
-                      <p className="font-mono-num text-xl font-extrabold text-emerald-400 mt-0.5">
-                        +€{endSeasonPrizeM}M
-                      </p>
-                    </div>
-                  </div>
-
-                  {(leagueAwards.mvp || leagueAwards.topScorer) && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {leagueAwards.mvp && (
-                        <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 p-3 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-[11px] font-bold text-amber-400">
-                              Cầu thủ Xuất sắc nhất Mùa giải
-                            </p>
-                            <p className="text-sm font-bold text-white truncate">
-                              {leagueAwards.mvp.playerName}
-                            </p>
-                            <p className="text-[11px] text-slate-300 truncate">
-                              {(CLUBS.find((c) => c.id === leagueAwards.mvp?.clubId) ?? CLUBS[0]).name}
-                            </p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="font-mono-num text-base font-extrabold text-amber-400">
-                              {leagueAwards.mvp.avgRating.toFixed(2)}★
-                            </p>
-                            <p className="font-mono-num text-[11px] text-slate-400">
-                              {leagueAwards.mvp.motmCount} MOTM
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                      {leagueAwards.topScorer && (
-                        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/35 p-3 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-[11px] font-bold text-emerald-400">
-                              Vua phá lưới Super League
-                            </p>
-                            <p className="text-sm font-bold text-white truncate">
-                              {leagueAwards.topScorer.playerName}
-                            </p>
-                            <p className="text-[11px] text-slate-300 truncate">
-                              {(CLUBS.find((c) => c.id === leagueAwards.topScorer?.clubId) ?? CLUBS[0]).name}
-                            </p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="font-mono-num text-base font-extrabold text-emerald-400">
-                              {leagueAwards.topScorer.goals} bàn
-                            </p>
-                            <p className="font-mono-num text-[11px] text-slate-400">
-                              {leagueAwards.topScorer.assists} kiến tạo
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3.5 text-xs text-emerald-200 space-y-1">
-                    <p className="font-bold text-emerald-300 flex items-center gap-1.5">
-                      <Sparkles className="w-4 h-4" />
-                      Đặc quyền khi bước sang mùa {nextSeasonLabel}:
-                    </p>
-                    <p>
-                      • Giải VĐQG mở rộng lên 20 CLB (38 vòng) · Làm mới lịch đấu Champions Cup, Cúp Quốc Gia & Siêu Cúp.
-                    </p>
-                    <p>
-                      • Cầu thủ trẻ tăng chỉ số OVR theo giáo án tập luyện, tự động gia hạn hợp đồng sắp hết & nhận thưởng €{endSeasonPrizeM}M.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    <button
-                      type="button"
-                      disabled={startingNextSeason}
-                      onClick={async () => {
-                        setStartingNextSeason(true);
-                        try {
-                          await onStartNextSeason();
-                        } finally {
-                          setStartingNextSeason(false);
-                        }
-                      }}
-                      className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
-                    >
-                      <RefreshCw className={`w-4 h-4 ${startingNextSeason ? 'animate-spin' : ''}`} />
-                      {startingNextSeason
-                        ? `Đang khởi tạo mùa giải ${nextSeasonLabel}...`
-                        : `Khởi tranh Mùa giải Mới (${nextSeasonLabel}) · 20 CLB`}
-                    </button>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setCompTab('champions-cup')}
-                        className="h-11 rounded-xl bg-[#0B1117] border border-white/15 text-xs font-semibold text-white hover:border-emerald-400"
-                      >
-                        Đá Cúp C1
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCompTab('national-cup')}
-                        className="h-11 rounded-xl bg-[#0B1117] border border-white/15 text-xs font-semibold text-white hover:border-emerald-400"
-                      >
-                        Đá Cúp QG
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCompTab('special')}
-                        className="h-11 rounded-xl bg-[#0B1117] border border-white/15 text-xs font-semibold text-amber-300 hover:border-amber-400"
-                      >
-                        Giao hữu ngay
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                <SeasonAwardsShowcase
+                  career={career}
+                  effectiveAllPlayers={effectiveAllPlayers}
+                  onClaimSeasonRewards={onClaimSeasonRewards}
+                  onStartNextSeason={onStartNextSeason}
+                  onNavigateCompetition={(tab) => setCompTab(tab)}
+                  onOpenFinancePayroll={onOpenFinancePayroll}
+                />
               ) : (
                 renderPreMatchCard(
                   userMatchFixture.homeClubId,
