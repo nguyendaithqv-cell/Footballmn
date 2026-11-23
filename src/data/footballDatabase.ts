@@ -1551,7 +1551,7 @@ export const INITIAL_PLAYERS: Player[] = RAW_PLAYERS.map((p) => {
     cardTier,
     marketValueM: p[10],
     wageK: p[11],
-    contractUntil: isLegendTier ? 2099 : 2028 + (p[4] % 3),
+    contractUntil: 2028 + (p[4] % 3),
     fitness: 95,
     morale: isLegendTier ? 92 : 86,
     form: isIcon ? 8.0 : isUcl17 ? 7.9 : 7.4,

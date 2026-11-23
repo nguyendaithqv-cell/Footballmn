@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Award,
   Bell,
   Calendar,
@@ -17,6 +18,7 @@ import {
   Search,
   Shield,
   Star,
+  Stethoscope,
   Target,
   Trophy,
   UserCheck,
@@ -32,16 +34,24 @@ import {
   computeSeasonEndRewardBundle,
   evaluateBoardObjectives,
   getActiveCareerManager,
+  getActiveManagerAnnualSalaryM,
+  getActiveManagerContractUntil,
+  getInjurySeverityLabel,
+  getInjuryTreatmentCostM,
+  getManagerContractExtensionCostM,
   getManagerHireFeeM,
   getManagerImpactSummary,
+  getManagerSalaryBoundsM,
   getManagerSeveranceM,
   getNextSeasonString,
   getPlayerRecoveryCostM,
   getSquadRecoveryCostM,
+  isPlayerInjured,
   resolveLeagueTeamOfTheSeason,
   sortStandings,
 } from '../lib/careerEngine';
-import { getTotalUnopenedPacks } from '../lib/inventoryEngine';
+import { ensureClubFacilities, getMedicalCostMultiplier } from '../lib/economyEngine';
+import { getTotalUnopenedPacks, normalizeInventory } from '../lib/inventoryEngine';
 import { ClubBackupBundle } from '../lib/backupEngine';
 import { CareerSave, NewsArticle, Player, UserProfile } from '../types/game';
 import { BackupRestoreCard } from './BackupRestoreCard';
@@ -66,11 +76,17 @@ interface ClubDashboardViewProps {
   ) => void;
   onRecoverPlayerFitness: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onRecoverSquadFitness: () => Promise<{ ok: boolean; message: string }>;
+  onTreatPlayerInjury: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onTreatAllInjuries: () => Promise<{ ok: boolean; message: string }>;
+  onUseFitnessBooster: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onDismissFreeDepartures: () => Promise<void>;
   onFireManager: () => Promise<{ ok: boolean; message: string }>;
   onHireManager: (
     managerId: string,
     applySuggestedTactics: boolean
   ) => Promise<{ ok: boolean; message: string }>;
+  onAdjustManagerSalary: (nextSalaryM: number) => Promise<{ ok: boolean; message: string }>;
+  onExtendManagerContract: (years: 1 | 2 | 3) => Promise<{ ok: boolean; message: string }>;
   onClaimSeasonRewards?: () => Promise<{ ok: boolean; message: string }>;
   onSettleSeasonPayroll: () => Promise<{ ok: boolean; message: string }>;
   onStartNextSeason: () => Promise<void>;
@@ -105,8 +121,14 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   onUpdateTraining,
   onRecoverPlayerFitness,
   onRecoverSquadFitness,
+  onTreatPlayerInjury,
+  onTreatAllInjuries,
+  onUseFitnessBooster,
+  onDismissFreeDepartures,
   onFireManager,
   onHireManager,
+  onAdjustManagerSalary,
+  onExtendManagerContract,
   onClaimSeasonRewards,
   onSettleSeasonPayroll,
   onStartNextSeason,
@@ -148,6 +170,7 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   const [applyNewTactics, setApplyNewTactics] = useState(true);
   const [managerActionLoading, setManagerActionLoading] = useState(false);
   const [managerFeedback, setManagerFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [mgrExtendYears, setMgrExtendYears] = useState<1 | 2 | 3>(2);
 
   // Trophy Museum & Season Archive modal state
   const [showTrophyMuseum, setShowTrophyMuseum] = useState(false);
@@ -156,6 +179,18 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
 
   const club = CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0];
   const activeManager = useMemo(() => getActiveCareerManager(career), [career]);
+  const activeManagerSalaryM = useMemo(
+    () => getActiveManagerAnnualSalaryM(career, activeManager),
+    [career, activeManager]
+  );
+  const activeManagerContractUntil = useMemo(
+    () => getActiveManagerContractUntil(career, activeManager),
+    [career, activeManager]
+  );
+  const [draftManagerSalaryM, setDraftManagerSalaryM] = useState<number>(activeManagerSalaryM);
+  useEffect(() => {
+    setDraftManagerSalaryM(activeManagerSalaryM);
+  }, [activeManagerSalaryM, activeManager?.id]);
   const managerImpact = useMemo(
     () => getManagerImpactSummary(activeManager, career.tactics),
     [activeManager, career.tactics]
@@ -195,6 +230,24 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   const totalWeeklyWages = useMemo(
     () => career.squad.reduce((sum, p) => sum + p.wageK, 0),
     [career.squad]
+  );
+
+  const currentYear = Number(career.season.slice(0, 4)) || 2026;
+  const facilities = useMemo(() => ensureClubFacilities(career), [career]);
+  const normInventory = useMemo(() => normalizeInventory(career.inventory), [career.inventory]);
+  const injuredPlayers = useMemo(
+    () =>
+      career.squad
+        .filter((p) => isPlayerInjured(p))
+        .sort((a, b) => (b.injury?.matchesRemaining ?? 0) - (a.injury?.matchesRemaining ?? 0)),
+    [career.squad]
+  );
+  const expiringContracts = useMemo(
+    () =>
+      career.squad
+        .filter((p) => p.contractUntil <= currentYear + 1)
+        .sort((a, b) => a.contractUntil - b.contractUntil || b.rating - a.rating),
+    [career.squad, currentYear]
   );
 
   return (
@@ -286,6 +339,21 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                     <p className="text-xs text-amber-300 font-semibold">
                       Mùa giải VĐQG {career.season} đã khép lại (Hạng #{myRank}). Sẵn sàng nhận thưởng, xem Bảng Vinh Danh hoặc sang mùa mới!
                     </p>
+                    {expiringContracts.length > 0 && (
+                      <div className="rounded-lg bg-rose-500/15 border border-rose-500/40 px-3 py-2 text-[11px] text-rose-200 flex items-center justify-between gap-2">
+                        <span>
+                          <strong>Cảnh báo:</strong> {expiringContracts.length} cầu thủ hết hạn hợp đồng ({expiringContracts.slice(0, 3).map((p) => p.shortName).join(', ')}
+                          {expiringContracts.length > 3 ? '...' : ''}) sẽ <strong>ra đi tự do</strong> nếu không gia hạn trước khi sang mùa mới!
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setClubSubTab('economy')}
+                          className="px-2.5 py-1 rounded-lg bg-rose-500 text-white font-bold text-[10px] shrink-0"
+                        >
+                          Gia hạn
+                        </button>
+                      </div>
+                    )}
                     {seasonClaimFeedback && (
                       <p
                         className={`text-[11px] font-semibold ${
@@ -479,8 +547,120 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
             </div>
           </div>
 
-          {/* Right Column: Push Alerts Opt-In, News Preview, Quick Tactics */}
+          {/* Right Column: Medical, Contracts, Push Alerts Opt-In, News Preview */}
           <div className="lg:col-span-5 space-y-4">
+            {career.lastSeasonFreeDepartures && career.lastSeasonFreeDepartures.length > 0 && (
+              <div className="rounded-2xl bg-rose-500/12 border border-rose-500/40 p-4 space-y-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-rose-300 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      Báo cáo Ra đi Tự do ({career.lastSeasonFreeDepartures.length} cầu thủ)
+                    </p>
+                    <p className="text-[11px] text-slate-300 mt-0.5">
+                      Hết hạn hợp đồng cuối mùa {career.lastSeasonDepartureSeason ?? ''} mà chưa gia hạn:
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void onDismissFreeDepartures()}
+                    className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[10px] font-bold text-slate-200 shrink-0"
+                  >
+                    Đã rõ
+                  </button>
+                </div>
+                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                  {career.lastSeasonFreeDepartures.map((d) => (
+                    <div
+                      key={d.playerId}
+                      className="rounded-lg bg-[#0B1117]/80 border border-white/10 px-2.5 py-1.5 text-[11px] flex items-center justify-between gap-2"
+                    >
+                      <span className="text-white font-semibold truncate">
+                        {d.position} · {d.playerName} ({d.rating} OVR)
+                      </span>
+                      <span className="font-mono-num text-rose-300 shrink-0">
+                        HĐ {d.contractUntil} · €{d.marketValueM}M
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {(career.lastSeasonEmergencyPromoted ?? 0) > 0 && (
+                  <p className="text-[11px] text-amber-300">
+                    Học viện trẻ đã đôn khẩn cấp {career.lastSeasonEmergencyPromoted} cầu thủ để đảm bảo quân số tối thiểu 21 người.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {injuredPlayers.length > 0 && (
+              <div className="rounded-2xl bg-red-500/10 border border-red-500/35 p-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-red-300 flex items-center gap-1.5">
+                      <Stethoscope className="w-4 h-4 shrink-0" />
+                      Bệnh viện CLB: {injuredPlayers.length} ca chấn thương
+                    </p>
+                    <p className="text-xs text-slate-300 mt-0.5 truncate">
+                      {injuredPlayers.slice(0, 3).map((p) => `${p.shortName} (${p.injury?.matchesRemaining} trận)`).join(', ')}
+                      {injuredPlayers.length > 3 ? ` +${injuredPlayers.length - 3} khác` : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setClubSubTab('training')}
+                    className="h-10 px-3.5 rounded-xl bg-red-500 hover:bg-red-400 text-white font-bold text-xs shrink-0"
+                  >
+                    Vào Bệnh viện &amp; Y tế
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activeManager &&
+              activeManagerContractUntil !== null &&
+              activeManagerContractUntil <= currentYear + 1 && (
+                <div className="rounded-2xl bg-amber-500/10 border border-amber-400/35 p-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      Hợp đồng HLV {activeManager.name} sắp hết hạn ({activeManagerContractUntil})
+                    </p>
+                    <p className="text-xs text-slate-300 mt-0.5">
+                      HLV trưởng sẽ rời CLB cuối mùa {career.season} nếu không được gia hạn.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setClubSubTab('managers')}
+                    className="h-10 px-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shrink-0"
+                  >
+                    Gia hạn HLV
+                  </button>
+                </div>
+              )}
+
+            {expiringContracts.length > 0 && (
+              <div className="rounded-2xl bg-amber-500/10 border border-amber-400/35 p-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    {expiringContracts.length} Hợp đồng Sắp hết hạn
+                  </p>
+                  <p className="text-xs text-slate-300 mt-0.5 truncate">
+                    {expiringContracts.slice(0, 3).map((p) => `${p.shortName} (HĐ ${p.contractUntil})`).join(', ')}
+                    {expiringContracts.length > 3 ? `...` : ''} — Sẽ ra đi tự do nếu không gia hạn!
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setClubSubTab('economy')}
+                  className="h-10 px-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shrink-0"
+                >
+                  Gia hạn ngay
+                </button>
+              </div>
+            )}
+
             {getTotalUnopenedPacks(career.inventory) > 0 && (
               <div className="rounded-2xl bg-amber-500/10 border border-amber-400/35 p-4 flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -689,6 +869,7 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
           onSelectSponsor={onSelectSponsor}
           onUpgradeFacility={onUpgradeFacility}
           onExtendContract={onExtendContract}
+          onExtendManagerContract={onExtendManagerContract}
         />
       )}
 
@@ -709,51 +890,68 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
           {[...career.squad]
             .sort((a, b) => b.rating - a.rating)
-            .map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => onSelectPlayer(p)}
-                className="w-full text-left rounded-2xl bg-[#121B24] border border-white/10 hover:border-emerald-500/40 p-3 flex items-center justify-between gap-3 min-h-[70px]"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <PlayerAvatar player={p} club={club} size={46} isUserCard />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <p className="text-sm font-bold text-white truncate">{p.name}</p>
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-white/10 text-[10px] font-mono-num font-bold text-amber-400 shrink-0">
-                        <svg width="7" height="7" viewBox="0 0 8 8" aria-hidden="true">
-                          <circle cx="4" cy="4" r="3.5" fill={club.primaryColor} stroke={club.accentColor} strokeWidth="1" />
-                        </svg>
-                        {club.shortName} · {p.stars ?? 1}
-                        <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
-                      </span>
+            .map((p) => {
+              const injured = isPlayerInjured(p);
+              const expiringSoon = p.contractUntil <= currentYear + 1;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => onSelectPlayer(p)}
+                  className={`w-full text-left rounded-2xl bg-[#121B24] border p-3 flex items-center justify-between gap-3 min-h-[70px] ${
+                    injured
+                      ? 'border-red-500/45 hover:border-red-400'
+                      : 'border-white/10 hover:border-emerald-500/40'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <PlayerAvatar player={p} club={club} size={46} isUserCard />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                        <p className="text-sm font-bold text-white truncate">{p.name}</p>
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-white/10 text-[10px] font-mono-num font-bold text-amber-400 shrink-0">
+                          <svg width="7" height="7" viewBox="0 0 8 8" aria-hidden="true">
+                            <circle cx="4" cy="4" r="3.5" fill={club.primaryColor} stroke={club.accentColor} strokeWidth="1" />
+                          </svg>
+                          {club.shortName} · {p.stars ?? 1}
+                          <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
+                        </span>
+                        {injured && (
+                          <span className="px-1.5 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-[10px] font-bold text-red-300 shrink-0">
+                            🏥 Nghỉ {p.injury?.matchesRemaining} trận
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 truncate mt-0.5">
+                        {p.position} · {p.age}t · TL{' '}
+                        <span className="font-mono-num text-emerald-400">{p.fitness}%</span> ·{' '}
+                        <span className={expiringSoon ? 'text-amber-300 font-semibold' : ''}>
+                          HĐ {p.contractUntil}
+                        </span>{' '}
+                        · PĐ{' '}
+                        <span
+                          className={`font-mono-num font-semibold ${
+                            p.form >= 8
+                              ? 'text-emerald-400'
+                              : p.form >= 6.8
+                                ? 'text-sky-400'
+                                : 'text-amber-400'
+                          }`}
+                        >
+                          {p.form.toFixed(1)}
+                        </span>
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-400 truncate">
-                      {p.position} · {p.age}t · Thể lực{' '}
-                      <span className="font-mono-num text-emerald-400">{p.fitness}%</span> · Phong độ{' '}
-                      <span
-                        className={`font-mono-num font-semibold ${
-                          p.form >= 8
-                            ? 'text-emerald-400'
-                            : p.form >= 6.8
-                              ? 'text-sky-400'
-                              : 'text-amber-400'
-                        }`}
-                      >
-                        {p.form.toFixed(1)}
-                      </span>
-                    </p>
                   </div>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="font-mono-num text-sm font-extrabold text-emerald-400">
-                    {p.rating}
-                  </p>
-                  <p className="font-mono-num text-xs text-slate-400">€{p.marketValueM}M</p>
-                </div>
-              </button>
-            ))}
+                  <div className="text-right shrink-0">
+                    <p className="font-mono-num text-sm font-extrabold text-emerald-400">
+                      {p.rating}
+                    </p>
+                    <p className="font-mono-num text-xs text-slate-400">€{p.marketValueM}M</p>
+                  </div>
+                </button>
+              );
+            })}
         </div>
       )}
 
@@ -830,131 +1028,268 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
             const tiredList = [...career.squad]
               .filter((p) => p.fitness < 98)
               .sort((a, b) => a.fitness - b.fitness);
-            const squadCostM = getSquadRecoveryCostM(career.squad);
+            const squadCostM = getSquadRecoveryCostM(career.squad, facilities.medicalLevel);
             const allFull = career.squad.every((p) => p.fitness >= 100);
+            const discountPct = Math.round((1 - getMedicalCostMultiplier(facilities.medicalLevel)) * 100);
+            const totalInjuryCostM = Number(
+              injuredPlayers.reduce((sum, p) => sum + getInjuryTreatmentCostM(p, facilities.medicalLevel), 0).toFixed(1)
+            );
 
             return (
-              <div className="rounded-2xl bg-[#121B24] border border-emerald-500/25 p-5 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-start gap-2.5">
-                    <HeartPulse className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                    <div>
-                      <h3 className="text-base font-bold text-white">
-                        Phòng Y tế & Vật lý trị liệu (Trả phí)
-                      </h3>
-                      <p className="text-xs text-slate-400">
-                        Bơm thể lực tức thì về 100% và tăng tinh thần bằng ngân sách CLB (€{career.transferBudget.toFixed(1)}M).
+              <div className="space-y-4">
+                {/* Injury Hospital & Treatment */}
+                <div className="rounded-2xl bg-[#121B24] border border-red-500/30 p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <Stethoscope className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h3 className="text-base font-bold text-white">
+                          Bệnh viện &amp; Điều trị Chấn thương
+                        </h3>
+                        <p className="text-xs text-slate-400">
+                          Cầu thủ chấn thương tự hồi phục 1 trận mỗi vòng (Trung tâm Y tế Cấp {facilities.medicalLevel}
+                          {discountPct > 0 ? ` · Giảm ${discountPct}% viện phí` : ''}), hoặc chữa dứt điểm ngay.
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 ${
+                        injuredPlayers.length > 0
+                          ? 'bg-red-500/20 border border-red-500/40 text-red-300'
+                          : 'bg-emerald-500/15 border border-emerald-500/35 text-emerald-300'
+                      }`}
+                    >
+                      {injuredPlayers.length > 0 ? `${injuredPlayers.length} ca chấn thương` : 'Đội hình khỏe mạnh 100%'}
+                    </span>
+                  </div>
+
+                  {recoveryFeedback && (
+                    <div
+                      className={`rounded-xl p-3 text-xs border ${
+                        recoveryFeedback.ok
+                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
+                          : 'bg-red-500/15 border-red-500/30 text-red-200'
+                      }`}
+                    >
+                      {recoveryFeedback.text}
+                    </div>
+                  )}
+
+                  {injuredPlayers.length > 0 && (
+                    <>
+                      {injuredPlayers.length > 1 && (
+                        <button
+                          type="button"
+                          disabled={recoveringTarget !== null || career.transferBudget < totalInjuryCostM}
+                          onClick={async () => {
+                            setRecoveringTarget('all-injuries');
+                            setRecoveryFeedback(null);
+                            try {
+                              const res = await onTreatAllInjuries();
+                              setRecoveryFeedback({ ok: res.ok, text: res.message });
+                            } finally {
+                              setRecoveringTarget(null);
+                            }
+                          }}
+                          className="w-full h-11 rounded-xl bg-red-500 hover:bg-red-400 text-white font-bold text-xs flex items-center justify-center gap-2 disabled:opacity-50"
+                        >
+                          <Stethoscope className="w-4 h-4" />
+                          {career.transferBudget < totalInjuryCostM
+                            ? `Không đủ ngân sách chữa toàn bộ (€${totalInjuryCostM}M)`
+                            : recoveringTarget === 'all-injuries'
+                              ? 'Đang điều trị tất cả...'
+                              : `Điều trị dứt điểm tất cả (${injuredPlayers.length} ca · -€${totalInjuryCostM}M)`}
+                        </button>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        {injuredPlayers.map((p) => {
+                          const inj = p.injury!;
+                          const treatCost = getInjuryTreatmentCostM(p, facilities.medicalLevel);
+                          const sevLabel = getInjurySeverityLabel(inj.severity);
+                          return (
+                            <div
+                              key={`inj-${p.id}`}
+                              className="rounded-xl bg-[#0B1117] border border-red-500/35 p-3 space-y-2.5"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <PlayerAvatar player={p} club={club} size={40} isUserCard />
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-bold text-white truncate">{p.name}</p>
+                                    <p className="text-[11px] text-red-300 font-semibold truncate">
+                                      {inj.type} (Mức {sevLabel})
+                                    </p>
+                                    <p className="text-[10px] text-slate-400">
+                                      {p.position} · Nghỉ còn{' '}
+                                      <strong className="font-mono-num text-red-300">
+                                        {inj.matchesRemaining}/{inj.totalMatches} trận
+                                      </strong>
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  disabled={recoveringTarget !== null || career.transferBudget < treatCost}
+                                  onClick={async () => {
+                                    setRecoveringTarget(`treat-${p.id}`);
+                                    setRecoveryFeedback(null);
+                                    try {
+                                      const res = await onTreatPlayerInjury(p.id);
+                                      setRecoveryFeedback({ ok: res.ok, text: res.message });
+                                    } finally {
+                                      setRecoveringTarget(null);
+                                    }
+                                  }}
+                                  className="flex-1 h-9 px-2.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-400/45 text-red-200 text-[11px] font-bold disabled:opacity-50"
+                                >
+                                  {recoveringTarget === `treat-${p.id}`
+                                    ? 'Đang trị...'
+                                    : `Điều trị dứt điểm (-€${treatCost}M)`}
+                                </button>
+                                {normInventory.fitnessBoosters > 0 && (
+                                  <button
+                                    type="button"
+                                    disabled={recoveringTarget !== null}
+                                    onClick={async () => {
+                                      setRecoveringTarget(`boost-${p.id}`);
+                                      setRecoveryFeedback(null);
+                                      try {
+                                        const res = await onUseFitnessBooster(p.id);
+                                        setRecoveryFeedback({ ok: res.ok, text: res.message });
+                                      } finally {
+                                        setRecoveringTarget(null);
+                                      }
+                                    }}
+                                    className="h-9 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/45 text-sky-200 text-[11px] font-bold disabled:opacity-50"
+                                  >
+                                    Bình TL (-2 trận · {normInventory.fitnessBoosters})
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Stamina Recovery */}
+                <div className="rounded-2xl bg-[#121B24] border border-emerald-500/25 p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <HeartPulse className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h3 className="text-base font-bold text-white">
+                          Phòng Y tế &amp; Vật lý trị liệu (Trả phí)
+                        </h3>
+                        <p className="text-xs text-slate-400">
+                          Bơm thể lực tức thì về 100% và tăng tinh thần bằng ngân sách CLB (€{career.transferBudget.toFixed(1)}M
+                          {discountPct > 0 ? ` · Ưu đãi Y tế Cấp ${facilities.medicalLevel}: -${discountPct}%` : ''}).
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-left sm:text-right shrink-0">
+                      <p className="text-[11px] text-slate-400">Thể lực TB toàn đội</p>
+                      <p className="font-mono-num text-xl font-extrabold text-emerald-400">
+                        {avgFitness}%
                       </p>
                     </div>
                   </div>
-                  <div className="text-left sm:text-right shrink-0">
-                    <p className="text-[11px] text-slate-400">Thể lực TB toàn đội</p>
-                    <p className="font-mono-num text-xl font-extrabold text-emerald-400">
-                      {avgFitness}%
-                    </p>
-                  </div>
-                </div>
 
-                {recoveryFeedback && (
-                  <div
-                    className={`rounded-xl p-3 text-xs border ${
-                      recoveryFeedback.ok
-                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
-                        : 'bg-red-500/15 border-red-500/30 text-red-200'
-                    }`}
-                  >
-                    {recoveryFeedback.text}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  disabled={
-                    recoveringTarget !== null ||
-                    allFull ||
-                    career.transferBudget < squadCostM
-                  }
-                  onClick={async () => {
-                    setRecoveringTarget('squad');
-                    setRecoveryFeedback(null);
-                    try {
-                      const res = await onRecoverSquadFitness();
-                      setRecoveryFeedback({ ok: res.ok, text: res.message });
-                    } finally {
-                      setRecoveringTarget(null);
+                  <button
+                    type="button"
+                    disabled={
+                      recoveringTarget !== null ||
+                      allFull ||
+                      career.transferBudget < squadCostM
                     }
-                  }}
-                  className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <HeartPulse className="w-4 h-4" />
-                  {allFull
-                    ? 'Toàn đội đã đạt 100% thể lực'
-                    : career.transferBudget < squadCostM
-                      ? `Không đủ ngân sách (€${squadCostM}M)`
-                      : recoveringTarget === 'squad'
-                        ? 'Đang trị liệu toàn đội...'
-                        : `Hồi phục toàn đội về 100% (-€${squadCostM}M)`}
-                </button>
+                    onClick={async () => {
+                      setRecoveringTarget('squad');
+                      setRecoveryFeedback(null);
+                      try {
+                        const res = await onRecoverSquadFitness();
+                        setRecoveryFeedback({ ok: res.ok, text: res.message });
+                      } finally {
+                        setRecoveringTarget(null);
+                      }
+                    }}
+                    className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    <HeartPulse className="w-4 h-4" />
+                    {allFull
+                      ? 'Toàn đội đã đạt 100% thể lực'
+                      : career.transferBudget < squadCostM
+                        ? `Không đủ ngân sách (€${squadCostM}M)`
+                        : recoveringTarget === 'squad'
+                          ? 'Đang trị liệu toàn đội...'
+                          : `Hồi phục toàn đội về 100% (-€${squadCostM}M)`}
+                  </button>
 
-                {tiredList.length > 0 && (
-                  <div className="space-y-2 pt-1">
-                    <p className="text-xs font-semibold text-slate-300">
-                      Trị liệu riêng từng cầu thủ ({tiredList.length} cầu thủ dưới 98%)
-                    </p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {tiredList.slice(0, 8).map((p) => {
-                        const pCost = getPlayerRecoveryCostM(p.fitness);
-                        return (
-                          <div
-                            key={p.id}
-                            className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex items-center justify-between gap-2.5"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <PlayerAvatar player={p} club={club} size={38} isUserCard />
-                              <div className="min-w-0">
-                                <p className="text-xs font-bold text-white truncate">{p.name}</p>
-                                <p className="text-[11px] text-slate-400">
-                                  {p.position} · Thể lực{' '}
-                                  <span
-                                    className={`font-mono-num font-bold ${
-                                      p.fitness < 78
-                                        ? 'text-red-400'
-                                        : p.fitness < 88
-                                          ? 'text-amber-400'
-                                          : 'text-emerald-400'
-                                    }`}
-                                  >
-                                    {p.fitness}%
-                                  </span>
-                                </p>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              disabled={
-                                recoveringTarget !== null ||
-                                career.transferBudget < pCost
-                              }
-                              onClick={async () => {
-                                setRecoveringTarget(p.id);
-                                setRecoveryFeedback(null);
-                                try {
-                                  const res = await onRecoverPlayerFitness(p.id);
-                                  setRecoveryFeedback({ ok: res.ok, text: res.message });
-                                } finally {
-                                  setRecoveringTarget(null);
-                                }
-                              }}
-                              className="h-9 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 font-mono-num text-[11px] font-bold shrink-0 disabled:opacity-50"
+                  {tiredList.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <p className="text-xs font-semibold text-slate-300">
+                        Trị liệu riêng từng cầu thủ ({tiredList.length} cầu thủ dưới 98%)
+                      </p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {tiredList.slice(0, 8).map((p) => {
+                          const pCost = getPlayerRecoveryCostM(p.fitness, facilities.medicalLevel);
+                          return (
+                            <div
+                              key={p.id}
+                              className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex items-center justify-between gap-2.5"
                             >
-                              {recoveringTarget === p.id ? '...' : `+100% (€${pCost}M)`}
-                            </button>
-                          </div>
-                        );
-                      })}
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <PlayerAvatar player={p} club={club} size={38} isUserCard />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold text-white truncate">{p.name}</p>
+                                  <p className="text-[11px] text-slate-400">
+                                    {p.position} · Thể lực{' '}
+                                    <span
+                                      className={`font-mono-num font-bold ${
+                                        p.fitness < 78
+                                          ? 'text-red-400'
+                                          : p.fitness < 88
+                                            ? 'text-amber-400'
+                                            : 'text-emerald-400'
+                                      }`}
+                                    >
+                                      {p.fitness}%
+                                    </span>
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={
+                                  recoveringTarget !== null ||
+                                  career.transferBudget < pCost
+                                }
+                                onClick={async () => {
+                                  setRecoveringTarget(p.id);
+                                  setRecoveryFeedback(null);
+                                  try {
+                                    const res = await onRecoverPlayerFitness(p.id);
+                                    setRecoveryFeedback({ ok: res.ok, text: res.message });
+                                  } finally {
+                                    setRecoveringTarget(null);
+                                  }
+                                }}
+                                className="h-9 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 font-mono-num text-[11px] font-bold shrink-0 disabled:opacity-50"
+                              >
+                                {recoveringTarget === p.id ? '...' : `+100% (€${pCost}M)`}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             );
           })()}
@@ -983,7 +1318,20 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
           return b.tacticalRating - a.tacticalRating;
         });
 
-        const severanceFee = activeManager ? getManagerSeveranceM(activeManager) : 0;
+        const severanceFee = activeManager
+          ? getManagerSeveranceM(activeManager, activeManagerSalaryM)
+          : 0;
+        const salaryBounds = activeManager ? getManagerSalaryBoundsM(activeManager) : null;
+        const mgrContractExpiring = Boolean(
+          activeManager &&
+            activeManagerContractUntil !== null &&
+            activeManagerContractUntil <= currentYear + 1
+        );
+        const extendFeeM = getManagerContractExtensionCostM(activeManagerSalaryM, mgrExtendYears);
+        const nextExtendUntil =
+          Math.max(activeManagerContractUntil ?? currentYear, currentYear) + mgrExtendYears;
+        const overMaxExtend = nextExtendUntil > currentYear + 6;
+        const salaryDiffM = Number((draftManagerSalaryM - activeManagerSalaryM).toFixed(1));
 
         return (
           <div className="space-y-4">
@@ -1083,7 +1431,7 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/10 text-center">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-white/10 text-center">
                     <div className="rounded-xl bg-[#0B1117] p-2.5">
                       <p className="text-[10px] text-slate-400">Chiến thuật</p>
                       <p className="font-mono-num text-base font-extrabold text-emerald-400">
@@ -1102,7 +1450,210 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                         +{managerImpact.recoveryBonus}%
                       </p>
                     </div>
+                    <div className="rounded-xl bg-[#0B1117] p-2.5">
+                      <p className="text-[10px] text-slate-400">Lương năm hiện tại</p>
+                      <p className="font-mono-num text-base font-extrabold text-emerald-300">
+                        €{activeManagerSalaryM.toFixed(1)}M
+                      </p>
+                    </div>
+                    <div
+                      className={`rounded-xl p-2.5 col-span-2 sm:col-span-1 ${
+                        mgrContractExpiring
+                          ? 'bg-rose-500/15 border border-rose-500/35'
+                          : 'bg-[#0B1117]'
+                      }`}
+                    >
+                      <p className="text-[10px] text-slate-400">Hạn hợp đồng</p>
+                      <p
+                        className={`font-mono-num text-base font-extrabold ${
+                          mgrContractExpiring ? 'text-rose-300' : 'text-white'
+                        }`}
+                      >
+                        {activeManagerContractUntil ?? currentYear + 2}
+                      </p>
+                    </div>
                   </div>
+
+                  {/* Salary Increase/Decrease & Contract Extension Controls */}
+                  {salaryBounds && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 pt-2 border-t border-white/10">
+                      {/* Salary Adjuster */}
+                      <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3.5 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <Coins className="w-3.5 h-3.5 text-amber-400" />
+                              Điều chỉnh Lương HLV (Tăng / Giảm)
+                            </h4>
+                            <p className="text-[11px] text-slate-400">
+                              Chuẩn thị trường: <span className="font-mono-num text-slate-200">€{salaryBounds.baseM.toFixed(1)}M/năm</span> · Phạm vi €{salaryBounds.minM.toFixed(1)}M – €{salaryBounds.maxM.toFixed(1)}M
+                            </p>
+                          </div>
+                          <span
+                            className={`font-mono-num text-sm font-extrabold shrink-0 ${
+                              salaryDiffM > 0
+                                ? 'text-emerald-400'
+                                : salaryDiffM < 0
+                                  ? 'text-amber-300'
+                                  : 'text-white'
+                            }`}
+                          >
+                            €{draftManagerSalaryM.toFixed(1)}M
+                          </span>
+                        </div>
+
+                        <input
+                          type="range"
+                          min={salaryBounds.minM}
+                          max={salaryBounds.maxM}
+                          step={0.1}
+                          value={draftManagerSalaryM}
+                          onChange={(e) => setDraftManagerSalaryM(Number(e.target.value))}
+                          className="w-full accent-emerald-500"
+                        />
+
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            {
+                              label: '-20%',
+                              val: Number(Math.max(salaryBounds.minM, activeManagerSalaryM * 0.8).toFixed(1)),
+                            },
+                            {
+                              label: '-€0.5M',
+                              val: Number(Math.max(salaryBounds.minM, draftManagerSalaryM - 0.5).toFixed(1)),
+                            },
+                            {
+                              label: `Chuẩn (€${salaryBounds.baseM.toFixed(1)}M)`,
+                              val: salaryBounds.baseM,
+                            },
+                            {
+                              label: '+€0.5M',
+                              val: Number(Math.min(salaryBounds.maxM, draftManagerSalaryM + 0.5).toFixed(1)),
+                            },
+                            {
+                              label: '+20%',
+                              val: Number(Math.min(salaryBounds.maxM, activeManagerSalaryM * 1.2).toFixed(1)),
+                            },
+                          ].map((preset) => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => setDraftManagerSalaryM(preset.val)}
+                              className="h-7 px-2.5 rounded-lg bg-[#121B24] hover:bg-slate-800 border border-white/10 text-[11px] font-mono-num font-semibold text-slate-200"
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <span className="text-[11px] text-slate-400">
+                            {salaryDiffM === 0
+                              ? 'Chọn mức lương mới để áp dụng vào quỹ lương'
+                              : salaryDiffM > 0
+                                ? `Tăng +€${salaryDiffM.toFixed(1)}M/năm (tăng uy tín & tinh thần)`
+                                : draftManagerSalaryM < Number((salaryBounds.baseM * 0.8).toFixed(1))
+                                  ? `Giảm €${Math.abs(salaryDiffM).toFixed(1)}M/năm (lưu ý: thấp hơn 80% chuẩn)`
+                                  : `Tiết kiệm €${Math.abs(salaryDiffM).toFixed(1)}M/năm quỹ lương cuối mùa`}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={managerActionLoading || Math.abs(salaryDiffM) < 0.05}
+                            onClick={async () => {
+                              setManagerActionLoading(true);
+                              setManagerFeedback(null);
+                              try {
+                                const res = await onAdjustManagerSalary(draftManagerSalaryM);
+                                setManagerFeedback({ ok: res.ok, text: res.message });
+                              } finally {
+                                setManagerActionLoading(false);
+                              }
+                            }}
+                            className="h-9 px-3.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold shrink-0 disabled:opacity-45"
+                          >
+                            {managerActionLoading ? 'Đang lưu...' : 'Lưu lương mới'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Contract Extension */}
+                      <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3.5 space-y-3 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between gap-2">
+                            <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                              Gia hạn Hợp đồng HLV
+                            </h4>
+                            <span
+                              className={`text-[11px] font-mono-num font-bold ${
+                                mgrContractExpiring ? 'text-rose-300' : 'text-emerald-300'
+                              }`}
+                            >
+                              Hiện tại: đến {activeManagerContractUntil}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            {mgrContractExpiring
+                              ? `Hợp đồng HLV sắp hết hạn cuối mùa ${career.season}. Gia hạn ngay để không mất HLV khi sang mùa mới!`
+                              : `Gia hạn thêm hợp đồng giữ chân HLV dài hạn (tối đa đến năm ${currentYear + 6}).`}
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {([1, 2, 3] as const).map((yrs) => {
+                            const feeOpt = getManagerContractExtensionCostM(activeManagerSalaryM, yrs);
+                            return (
+                              <button
+                                key={yrs}
+                                type="button"
+                                onClick={() => setMgrExtendYears(yrs)}
+                                className={`h-10 rounded-lg border text-xs font-bold transition-colors ${
+                                  mgrExtendYears === yrs
+                                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                                    : 'bg-[#121B24] border-white/10 text-slate-300'
+                                }`}
+                              >
+                                +{yrs} năm · €{feeOpt}M
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-slate-300">
+                            {overMaxExtend
+                              ? `Vượt quá giới hạn tối đa (${currentYear + 6})`
+                              : `Hạn mới: ${nextExtendUntil} · Phí lót tay -€${extendFeeM}M`}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={
+                              managerActionLoading ||
+                              overMaxExtend ||
+                              career.transferBudget < extendFeeM
+                            }
+                            onClick={async () => {
+                              setManagerActionLoading(true);
+                              setManagerFeedback(null);
+                              try {
+                                const res = await onExtendManagerContract(mgrExtendYears);
+                                setManagerFeedback({ ok: res.ok, text: res.message });
+                              } finally {
+                                setManagerActionLoading(false);
+                              }
+                            }}
+                            className="h-9 px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold shrink-0 disabled:opacity-45"
+                          >
+                            {career.transferBudget < extendFeeM
+                              ? `Thiếu €${extendFeeM}M`
+                              : managerActionLoading
+                                ? 'Đang ký...'
+                                : `Gia hạn +${mgrExtendYears} năm`}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1312,23 +1863,29 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                       <span className="text-slate-200 truncate">
                         <strong
                           className={
-                            h.action === 'hired'
+                            h.action === 'hired' || h.action === 'extended'
                               ? 'text-emerald-400'
                               : h.action === 'fired'
                                 ? 'text-red-400'
-                                : 'text-amber-400'
+                                : h.action === 'salary_adjusted'
+                                  ? 'text-sky-400'
+                                  : 'text-amber-400'
                           }
                         >
                           {h.action === 'hired'
                             ? 'Bổ nhiệm'
                             : h.action === 'fired'
                               ? 'Sa thải'
-                              : 'Chấm dứt HĐ'}
+                              : h.action === 'extended'
+                                ? 'Gia hạn HĐ'
+                                : h.action === 'salary_adjusted'
+                                  ? 'Điều chỉnh lương'
+                                  : 'Hết hạn / Thay thế'}
                         </strong>{' '}
                         {h.managerName} · Mùa {h.season} (Vòng {h.matchweek})
                       </span>
                       <span className="font-mono-num text-[11px] text-slate-400 shrink-0">
-                        -€{h.feeM}M
+                        {h.action === 'salary_adjusted' ? `€${h.feeM}M/năm` : `-€${h.feeM}M`}
                       </span>
                     </div>
                   ))}

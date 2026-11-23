@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Brain, Check, RefreshCw, Sparkles, Target } from 'lucide-react';
+import { AlertTriangle, Brain, Check, HeartPulse, RefreshCw, Sparkles, Target } from 'lucide-react';
 import {
   CLUBS,
   FORMATION_TEMPLATES,
@@ -11,6 +11,8 @@ import {
   calculateTacticalProfile,
   getActiveCareerManager,
   getManagerImpactSummary,
+  isPlayerInjured,
+  repairTacticsAfterSquadChange,
 } from '../lib/careerEngine';
 import {
   CareerSave,
@@ -48,6 +50,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
   );
   const [scoutReport, setScoutReport] = useState<string | null>(null);
   const [scouting, setScouting] = useState(false);
+  const [tacticNotice, setTacticNotice] = useState<string | null>(null);
 
   const club = CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0];
   const playerMap = useMemo(() => new Map(career.squad.map((p) => [p.id, p])), [career.squad]);
@@ -102,6 +105,11 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
     }
     return list;
   }, [career.tactics.slots, playerMap]);
+
+  const injuredStarters = useMemo(
+    () => startingXIPlayers.filter((p) => isPlayerInjured(p)),
+    [startingXIPlayers]
+  );
 
   const avgXIFitness = useMemo(() => {
     if (startingXIPlayers.length === 0) return 100;
@@ -267,11 +275,18 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
   };
 
   const handleSwapWithBench = (benchPlayerId: string) => {
+    const bp = playerMap.get(benchPlayerId);
     if (selectedSlotIdx === null) {
-      const p = playerMap.get(benchPlayerId);
-      if (p) onSelectPlayer(p);
+      if (bp) onSelectPlayer(bp);
       return;
     }
+    if (bp && isPlayerInjured(bp)) {
+      setTacticNotice(
+        `${bp.shortName} đang chấn thương (còn ${bp.injury?.matchesRemaining ?? 1} trận) — không thể đưa vào đội hình ra sân.`
+      );
+      return;
+    }
+    setTacticNotice(null);
     const outgoingId = career.tactics.slots[selectedSlotIdx]?.playerId;
     const nextSlots = career.tactics.slots.map((s, idx) =>
       idx === selectedSlotIdx ? { ...s, playerId: benchPlayerId } : s
@@ -353,6 +368,38 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
           </button>
         </div>
 
+        {injuredStarters.length > 0 && (
+          <div className="rounded-2xl bg-red-500/15 border border-red-500/40 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="text-red-200 flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              Có {injuredStarters.length} cầu thủ đá chính đang chấn thương ({injuredStarters.map((p) => p.shortName).join(', ')}).
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                onUpdateTactics(repairTacticsAfterSquadChange(career.tactics, career.squad));
+                setTacticNotice(null);
+              }}
+              className="h-8 px-3 rounded-lg bg-red-500 hover:bg-red-400 text-slate-950 font-bold text-[11px] shrink-0"
+            >
+              Tự động thay cầu thủ khỏe mạnh
+            </button>
+          </div>
+        )}
+
+        {tacticNotice && (
+          <div className="rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs font-semibold text-amber-200 flex items-center justify-between gap-2">
+            <span>{tacticNotice}</span>
+            <button
+              type="button"
+              onClick={() => setTacticNotice(null)}
+              className="text-[11px] text-amber-300 hover:text-white shrink-0"
+            >
+              Đóng
+            </button>
+          </div>
+        )}
+
         {/* Vertical 2D Pitch */}
         <div className="relative w-full aspect-[3/4] max-h-[540px] rounded-2xl overflow-hidden border border-white/15 bg-[#0F291E] select-none">
           <img
@@ -402,6 +449,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
             const isSelected = selectedSlotIdx === idx;
             const isOutOfPos = p && p.position !== slot.label;
             const fit = p?.fitness ?? 100;
+            const isInjured = p ? isPlayerInjured(p) : false;
             const isLowFitness = p ? fit < 70 : false;
             return (
               <button
@@ -421,11 +469,13 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                   className={`relative rounded-full p-0.5 ${
                     isSelected
                       ? 'ring-2 ring-amber-400 shadow-lg shadow-amber-400/30'
-                      : isLowFitness
-                        ? 'ring-2 ring-rose-500/80'
-                        : isOutOfPos
-                          ? 'ring-2 ring-amber-500/70'
-                          : 'ring-1 ring-white/30'
+                      : isInjured
+                        ? 'ring-2 ring-red-500 shadow-lg shadow-red-500/30'
+                        : isLowFitness
+                          ? 'ring-2 ring-rose-500/80'
+                          : isOutOfPos
+                            ? 'ring-2 ring-amber-500/70'
+                            : 'ring-1 ring-white/30'
                   }`}
                 >
                   {p ? (
@@ -436,7 +486,11 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                   <span className="absolute -top-1 -right-1.5 bg-slate-950 text-emerald-400 font-mono-num text-[10px] font-bold px-1 rounded border border-white/15">
                     {p?.rating ?? '--'}
                   </span>
-                  {p && (
+                  {p && isInjured ? (
+                    <span className="absolute -bottom-1 -left-1.5 bg-red-600 text-white font-mono-num text-[9px] font-bold px-1 rounded border border-red-300/40">
+                      🏥{p.injury?.matchesRemaining}tr
+                    </span>
+                  ) : p ? (
                     <span
                       className={`absolute -bottom-1 -left-1.5 bg-slate-950 font-mono-num text-[9px] font-bold px-1 rounded border border-white/15 ${getFitnessTextClass(
                         fit
@@ -444,7 +498,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                     >
                       {fit}%
                     </span>
-                  )}
+                  ) : null}
                 </div>
                 <span className="mt-1 px-1.5 py-0.5 rounded bg-slate-950/90 text-[10px] font-semibold text-white max-w-[78px] truncate border border-white/10">
                   {p?.shortName ?? slot.label}
@@ -452,7 +506,7 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
                 <span className="text-[9px] font-mono-num text-emerald-300/90 leading-none mt-0.5 flex items-center gap-1">
                   <span>{slot.label}</span>
                   {p && (
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${getFitnessBarClass(fit)}`} />
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${isInjured ? 'bg-red-500' : getFitnessBarClass(fit)}`} />
                   )}
                 </span>
               </button>
@@ -514,31 +568,43 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
             </span>
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {benchPlayers.map((bp) => (
-              <button
-                key={bp.id}
-                type="button"
-                onClick={() => handleSwapWithBench(bp.id)}
-                className={`min-w-[134px] rounded-xl p-2.5 border text-left transition-colors shrink-0 ${
-                  selectedSlotIdx !== null
-                    ? 'bg-emerald-500/10 border-emerald-500/40 hover:bg-emerald-500/20'
-                    : 'bg-[#0B1117] border-white/10 hover:border-white/25'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <PlayerAvatar player={bp} club={club} size={32} isUserCard />
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-white truncate">{bp.shortName}</p>
-                    <p className="text-[11px] font-mono-num text-emerald-400">
-                      {bp.position} · {bp.rating}
-                    </p>
-                    <p className={`text-[10px] font-mono-num font-bold ${getFitnessTextClass(bp.fitness)}`}>
-                      TL {bp.fitness}%
-                    </p>
+            {benchPlayers.map((bp) => {
+              const injured = isPlayerInjured(bp);
+              return (
+                <button
+                  key={bp.id}
+                  type="button"
+                  onClick={() => handleSwapWithBench(bp.id)}
+                  className={`min-w-[146px] rounded-xl p-2.5 border text-left transition-colors shrink-0 ${
+                    injured
+                      ? 'bg-red-950/25 border-red-500/35 opacity-80'
+                      : selectedSlotIdx !== null
+                        ? 'bg-emerald-500/10 border-emerald-500/40 hover:bg-emerald-500/20'
+                        : 'bg-[#0B1117] border-white/10 hover:border-white/25'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <PlayerAvatar player={bp} club={club} size={32} isUserCard />
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-white truncate">{bp.shortName}</p>
+                      <p className="text-[11px] font-mono-num text-emerald-400">
+                        {bp.position} · {bp.rating}
+                      </p>
+                      {injured ? (
+                        <p className="text-[10px] font-bold text-red-400 flex items-center gap-1">
+                          <HeartPulse className="w-3 h-3 shrink-0" />
+                          Nghỉ {bp.injury?.matchesRemaining ?? 1} trận
+                        </p>
+                      ) : (
+                        <p className={`text-[10px] font-mono-num font-bold ${getFitnessTextClass(bp.fitness)}`}>
+                          TL {bp.fitness}%
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

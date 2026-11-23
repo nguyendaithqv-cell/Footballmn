@@ -13,20 +13,28 @@ import {
 } from 'lucide-react';
 import { CLUBS } from '../data/footballDatabase';
 import {
+  getActiveCareerManager,
+  getActiveManagerAnnualSalaryM,
+  getActiveManagerContractUntil,
+  getManagerContractExtensionCostM,
+} from '../lib/careerEngine';
+import {
   ensureClubFacilities,
+  getContractRenewalCostK,
   getMedicalUpgradeCostM,
   getStadiumUpgradeCostM,
   SPONSOR_OFFERS,
   SponsorOffer,
 } from '../lib/economyEngine';
 import { CareerSave, Player } from '../types/game';
-import { PlayerAvatar } from './ClubBadgeAndAvatar';
+import { ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 
 interface ClubEconomyManagementPanelProps {
   career: CareerSave;
   onSelectSponsor: (sponsorId: string) => Promise<{ ok: boolean; message: string }>;
   onUpgradeFacility: (facilityType: 'stadium' | 'medical') => Promise<{ ok: boolean; message: string }>;
   onExtendContract: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onExtendManagerContract?: (years: 1 | 2 | 3) => Promise<{ ok: boolean; message: string }>;
 }
 
 export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProps> = ({
@@ -34,6 +42,7 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
   onSelectSponsor,
   onUpgradeFacility,
   onExtendContract,
+  onExtendManagerContract,
 }) => {
   const [subTab, setSubTab] = useState<'sponsors' | 'facilities' | 'contracts'>('sponsors');
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -247,7 +256,7 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
               <Stethoscope className="w-5 h-5 text-sky-400" />
               <div>
                 <h3 className="text-base font-bold text-white">Trung tâm Y tế &amp; Phục hồi CLB</h3>
-                <p className="text-xs text-slate-400">Giảm chi phí bơm thể lực cầu thủ</p>
+                <p className="text-xs text-slate-400">Giảm chi phí y tế, rủi ro chấn thương và rút ngắn thời gian hồi phục</p>
               </div>
             </div>
 
@@ -257,9 +266,15 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                 <span className="font-bold text-amber-400">Cấp {facilities.medicalLevel} / 3</span>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">Giảm chi phí y tế</span>
+                <span className="text-slate-400">Giảm viện phí &amp; bơm thể lực</span>
                 <span className="font-mono-num font-bold text-emerald-400">
-                  {facilities.medicalLevel === 3 ? 'Giảm 60% chi phí y tế' : facilities.medicalLevel === 2 ? 'Giảm 30% chi phí y tế' : 'Tiêu chuẩn'}
+                  {facilities.medicalLevel === 3 ? 'Giảm 60%' : facilities.medicalLevel === 2 ? 'Giảm 30%' : 'Tiêu chuẩn'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">Giảm rủi ro chấn thương trận đấu</span>
+                <span className="font-mono-num font-bold text-sky-400">
+                  {facilities.medicalLevel === 3 ? '-50% rủi ro (+25% hồi phục nhanh)' : facilities.medicalLevel === 2 ? '-25% rủi ro' : 'Tiêu chuẩn'}
                 </span>
               </div>
             </div>
@@ -286,19 +301,78 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
       {/* 3. Contracts Sub-Tab */}
       {subTab === 'contracts' && (
         <div className="space-y-4">
+          {(() => {
+            const activeMgr = getActiveCareerManager(career);
+            const mgrSalaryM = getActiveManagerAnnualSalaryM(career, activeMgr);
+            const mgrUntil = getActiveManagerContractUntil(career, activeMgr);
+            if (!activeMgr || mgrUntil === null) return null;
+            const mgrExpiring = mgrUntil <= currentYear + 1;
+            return (
+              <div
+                className={`rounded-2xl border p-4 space-y-3 ${
+                  mgrExpiring
+                    ? 'bg-amber-500/10 border-amber-400/40'
+                    : 'bg-[#121B24] border-emerald-500/25'
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <ManagerAvatar manager={activeMgr} size={46} />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                        Hợp đồng HLV Trưởng
+                      </p>
+                      <p className="text-sm font-bold text-white truncate">
+                        {activeMgr.name} ·{' '}
+                        <span className="font-mono-num text-amber-300">€{mgrSalaryM.toFixed(1)}M/năm</span>
+                      </p>
+                      <p className="text-[11px] text-slate-300">
+                        Hạn hợp đồng đến{' '}
+                        <strong className={mgrExpiring ? 'text-rose-300' : 'text-emerald-300'}>
+                          {mgrUntil}
+                        </strong>
+                        {mgrExpiring ? ' (Hết hạn cuối mùa — cần gia hạn để giữ HLV)' : ''}
+                      </p>
+                    </div>
+                  </div>
+                  {onExtendManagerContract && (
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      {([1, 2, 3] as const).map((yrs) => {
+                        const feeM = getManagerContractExtensionCostM(mgrSalaryM, yrs);
+                        const overCap = Math.max(mgrUntil, currentYear) + yrs > currentYear + 6;
+                        return (
+                          <button
+                            key={yrs}
+                            type="button"
+                            disabled={busyKey !== null || overCap || career.transferBudget < feeM}
+                            onClick={() =>
+                              runAction(`mgr-ext-${yrs}`, () => onExtendManagerContract(yrs))
+                            }
+                            className="h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs disabled:opacity-45"
+                          >
+                            {overCap ? `+${yrs}n (Tối đa)` : `+${yrs} năm (-€${feeM}M)`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <h4 className="text-sm font-bold text-white flex items-center gap-2">
                   <FileText className="w-4 h-4 text-emerald-400" />
-                  Danh sách Cầu thủ sắp hết hạn hợp đồng (hoặc toàn đội)
+                  Quản lý Hợp đồng &amp; Gia hạn Cầu thủ
                 </h4>
                 <p className="text-xs text-slate-400">
-                  Gia hạn hợp đồng sớm giúp giữ chân trụ cột, tăng tinh thần và ngăn cầu thủ ra đi tự do.
+                  Các cầu thủ có hạn hợp đồng ≤ {currentYear + 1} sẽ <strong className="text-amber-300">chính thức ra đi tự do (phí €0M)</strong> khi bước sang mùa giải {currentYear + 1}/{String(currentYear + 2).slice(-2)} nếu chưa được gia hạn!
                 </p>
               </div>
-              <span className="font-mono-num text-xs font-bold text-amber-400">
-                {expiringPlayers.length} cầu thủ sắp hết hạn
+              <span className="font-mono-num text-xs font-bold text-amber-400 shrink-0">
+                {expiringPlayers.length} hết hạn cuối mùa
               </span>
             </div>
 
@@ -312,22 +386,27 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                   .sort((a, b) => a.contractUntil - b.contractUntil || b.rating - a.rating)
                   .map((p) => {
                     const isExpiringSoon = p.contractUntil <= currentYear + 1;
+                    const renewalInfo = getContractRenewalCostK(p);
+                    const nextExpiry = Math.max(p.contractUntil, currentYear) + renewalInfo.targetYears;
                     return (
                       <div
                         key={p.id}
                         className={`rounded-xl border p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                           isExpiringSoon
-                            ? 'bg-amber-500/10 border-amber-400/30'
+                            ? 'bg-amber-500/10 border-amber-400/35'
                             : 'bg-[#0B1117] border-white/10'
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <PlayerAvatar player={p} club={club} size={42} isUserCard />
                           <div className="min-w-0">
-                            <p className="text-xs font-bold text-white truncate">{p.name}</p>
+                            <p className="text-xs font-bold text-white truncate">
+                              {p.name}{' '}
+                              <span className="font-mono-num text-emerald-400">({p.rating})</span>
+                            </p>
                             <p className="text-[11px] text-slate-400 truncate">
-                              {p.position} · {p.age}t · Lương hiện tại{' '}
-                              <span className="font-mono-num text-amber-400">€{p.wageK}K/tuần</span>
+                              {p.position} · {p.age}t · Lương{' '}
+                              <span className="font-mono-num text-amber-400">€{p.wageK}K/tuần</span> · Gia hạn đến {nextExpiry} (+€{renewalInfo.wageIncreaseK}K/tuần)
                             </p>
                           </div>
                         </div>
@@ -337,21 +416,27 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                             <span
                               className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
                                 isExpiringSoon
-                                  ? 'bg-amber-500/20 text-amber-300'
+                                  ? 'bg-rose-500/20 border border-rose-500/40 text-rose-200'
                                   : 'bg-emerald-500/20 text-emerald-300'
                               }`}
                             >
-                              Hợp đồng đến {p.contractUntil}
+                              {isExpiringSoon
+                                ? `Hết hạn cuối mùa (${p.contractUntil})`
+                                : `HĐ đến ${p.contractUntil}`}
                             </span>
                           </div>
 
                           <button
                             type="button"
-                            disabled={busyKey !== null}
+                            disabled={busyKey !== null || career.transferBudget < renewalInfo.bonusM}
                             onClick={() => runAction(`contract-${p.id}`, () => onExtendContract(p.id))}
                             className="h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-50"
                           >
-                            {busyKey === `contract-${p.id}` ? 'Đang đàm phán...' : 'Gia hạn (+3 năm)'}
+                            {busyKey === `contract-${p.id}`
+                              ? 'Đang ký...'
+                              : career.transferBudget < renewalInfo.bonusM
+                                ? `Thiếu €${renewalInfo.bonusM}M`
+                                : `Gia hạn +${renewalInfo.targetYears} năm (-€${renewalInfo.bonusM}M)`}
                           </button>
                         </div>
                       </div>

@@ -18,6 +18,7 @@ import {
   ensureMatchResultRatings,
   getActiveCareerManager,
   isCompetitionFinished,
+  isPlayerInjured,
   resimulateMatchFromMinute,
   resolveCompetitionAwards,
   simulateMatchFull,
@@ -793,7 +794,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     const activeStarterIds = new Set(activeUserSlots.map((s) => s.playerId));
     const subOutSet = new Set(subbedOutIds);
     const availableBenchPlayers = career.squad
-      .filter((p) => !activeStarterIds.has(p.id) && !subOutSet.has(p.id))
+      .filter((p) => !activeStarterIds.has(p.id) && !subOutSet.has(p.id) && !isPlayerInjured(p))
       .sort((a, b) => b.rating - a.rating);
     const playerMap = new Map(career.squad.map((p) => [p.id, p]));
 
@@ -1223,9 +1224,11 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                   className={`rounded-xl p-2.5 text-xs border ${
                     ev.type === 'goal' || ev.type === 'penalty'
                       ? 'bg-emerald-500/15 border-emerald-500/35 text-white'
-                      : ev.type === 'sub'
-                        ? 'bg-sky-500/10 border-sky-400/30 text-sky-200'
-                        : 'bg-[#0B1117] border-white/5 text-slate-300'
+                      : ev.type === 'injury'
+                        ? 'bg-red-500/15 border-red-500/35 text-red-200'
+                        : ev.type === 'sub'
+                          ? 'bg-sky-500/10 border-sky-400/30 text-sky-200'
+                          : 'bg-[#0B1117] border-white/5 text-slate-300'
                   }`}
                 >
                   <span className="font-mono-num font-bold text-emerald-400 mr-2">
@@ -1312,6 +1315,16 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
             </div>
           </div>
         </div>
+
+        {career.squad.some(isPlayerInjured) && (
+          <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-[11px] text-red-200">
+            <span className="font-bold text-red-300">🏥 Đang chấn thương (tự động vắng mặt): </span>
+            {career.squad
+              .filter(isPlayerInjured)
+              .map((p) => `${p.shortName} (${p.injury?.matchesRemaining ?? 1} trận)`)
+              .join(', ')}
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <button
@@ -2393,7 +2406,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                     Tour Giao hữu Quốc tế
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Thử nghiệm chiến thuật mới với bất kỳ đối thủ nào trong 20 CLB thực tế và nhận thưởng +€2–3M khi thắng/hòa (thua không có thưởng).
+                    Thử nghiệm chiến thuật mới với bất kỳ đối thủ nào trong 20 CLB thực tế (trận giao hữu không tính tiền thưởng hay mảnh).
                   </p>
                 </div>
 

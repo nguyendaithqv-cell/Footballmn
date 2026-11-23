@@ -241,7 +241,7 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
               <div className="rounded-xl bg-indigo-500/15 border border-indigo-400/40 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
                 <span className="text-indigo-100 flex items-center gap-1.5">
                   <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
-                  Đội hình <strong className="text-amber-300">La Duodécima Real Madrid C1 2017</strong> — Chiêu mộ trực tiếp bằng Ngân sách, không cần Mảnh & không suy giảm tuổi tác!
+                  Đội hình <strong className="text-amber-300">La Duodécima Real Madrid C1 2017</strong> — Chiêu mộ trực tiếp bằng Ngân sách, Hợp đồng thông thường &amp; không suy giảm tuổi tác!
                 </span>
               </div>
             )}

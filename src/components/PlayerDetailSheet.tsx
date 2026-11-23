@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+  AlertTriangle,
   ArrowLeftRight,
   ArrowUpCircle,
   Award,
@@ -10,11 +11,17 @@ import {
   Shield,
   Sparkles,
   Star,
+  Stethoscope,
   Trophy,
   X,
 } from 'lucide-react';
 import { getClubById, getIconShardCost } from '../data/footballDatabase';
-import { getPlayerRecoveryCostM } from '../lib/careerEngine';
+import {
+  getInjurySeverityLabel,
+  getInjuryTreatmentCostM,
+  getPlayerRecoveryCostM,
+  isPlayerInjured,
+} from '../lib/careerEngine';
 import {
   FITNESS_BOOSTER_RECOVERY,
   getStarUpgradePlan,
@@ -33,6 +40,8 @@ interface PlayerDetailSheetProps {
   player: Player;
   isOwnPlayer: boolean;
   transferBudgetM: number;
+  currentYear?: number;
+  medicalLevel?: 1 | 2 | 3;
   squadLength?: number;
   inventory?: InventoryState;
   trophyCabinet?: TrophyItem[];
@@ -43,6 +52,7 @@ interface PlayerDetailSheetProps {
   onSellPlayer?: (playerId: string) => void;
   onRenewContract?: (playerId: string) => void;
   onRecoverFitness?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onTreatInjury?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onUseFitnessBooster?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onUpgradeStar?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onMakeOffer?: (player: Player, bidM: number, wageK: number) => Promise<{ ok: boolean; message: string }>;
@@ -52,6 +62,8 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   player,
   isOwnPlayer,
   transferBudgetM,
+  currentYear = 2026,
+  medicalLevel = 1,
   squadLength,
   inventory,
   trophyCabinet,
@@ -62,6 +74,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   onSellPlayer,
   onRenewContract,
   onRecoverFitness,
+  onTreatInjury,
   onUseFitnessBooster,
   onUpgradeStar,
   onMakeOffer,
@@ -90,7 +103,10 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   const [recovering, setRecovering] = useState(false);
   const [upgrading, setUpgrading] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
-  const recoveryCostM = getPlayerRecoveryCostM(player.fitness);
+  const recoveryCostM = getPlayerRecoveryCostM(player.fitness, medicalLevel);
+  const injuryCostM = getInjuryTreatmentCostM(player, medicalLevel);
+  const playerInjured = isPlayerInjured(player);
+  const isExpiringContract = isOwnPlayer && player.contractUntil <= currentYear + 1;
   const normInventory = normalizeInventory(inventory);
   const upgradePlan = getStarUpgradePlan(player, normInventory, transferBudgetM);
   const hasEnoughIconShards = normInventory.universalShards >= iconShardCost;
@@ -209,13 +225,83 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
               €{player.wageK}K
             </p>
           </div>
-          <div className="rounded-xl bg-[#0B1117] border border-white/5 p-2.5">
+          <div
+            className={`rounded-xl border p-2.5 ${
+              isExpiringContract
+                ? 'bg-amber-500/15 border-amber-400/45'
+                : 'bg-[#0B1117] border-white/5'
+            }`}
+          >
             <p className="text-[11px] text-slate-400">Hợp đồng</p>
-            <p className="font-mono-num text-base font-bold text-slate-200 mt-0.5">
+            <p
+              className={`font-mono-num text-base font-bold mt-0.5 ${
+                isExpiringContract ? 'text-amber-300' : 'text-slate-200'
+              }`}
+            >
               {player.contractUntil}
             </p>
+            {isExpiringContract && (
+              <p className="text-[9px] font-bold text-rose-300 leading-tight mt-0.5">
+                Hết hạn cuối mùa!
+              </p>
+            )}
           </div>
         </div>
+
+        {playerInjured && player.injury && (
+          <div className="rounded-xl bg-red-500/12 border border-red-500/40 p-3.5 space-y-2.5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <Stethoscope className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-red-300">
+                    Báo cáo Chấn thương: {player.injury.type} (Mức {getInjurySeverityLabel(player.injury.severity)})
+                  </p>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Không thể ra sân · Dự kiến nghỉ còn{' '}
+                    <strong className="font-mono-num text-red-200">
+                      {player.injury.matchesRemaining}/{player.injury.totalMatches} trận
+                    </strong>
+                    {player.injury.occurredIn ? ` (${player.injury.occurredIn})` : ''}.
+                  </p>
+                </div>
+              </div>
+            </div>
+            {isOwnPlayer && onTreatInjury && (
+              <button
+                type="button"
+                disabled={recovering || transferBudgetM < injuryCostM}
+                onClick={async () => {
+                  setRecovering(true);
+                  setFeedback(null);
+                  try {
+                    const res = await onTreatInjury(player.id);
+                    setFeedback({ ok: res.ok, text: res.message });
+                  } finally {
+                    setRecovering(false);
+                  }
+                }}
+                className="w-full h-10 rounded-xl bg-red-500 hover:bg-red-400 text-white font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                <Stethoscope className="w-4 h-4" />
+                {transferBudgetM < injuryCostM
+                  ? `Không đủ ngân sách điều trị (€${injuryCostM}M)`
+                  : recovering
+                    ? 'Đang điều trị...'
+                    : `Điều trị dứt điểm (-€${injuryCostM}M)`}
+              </button>
+            )}
+          </div>
+        )}
+
+        {isExpiringContract && (
+          <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 px-3 py-2 text-[11px] text-amber-200 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              Hợp đồng đến <strong>{player.contractUntil}</strong> sẽ đáo hạn cuối mùa này. Nếu không gia hạn, {player.shortName} sẽ <strong>ra đi tự do</strong>!
+            </span>
+          </div>
+        )}
 
         {/* Attributes */}
         <div className="space-y-2.5">
@@ -465,7 +551,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
               </div>
             )}
 
-            {onUseFitnessBooster && normInventory.fitnessBoosters > 0 && player.fitness < 100 && (() => {
+            {onUseFitnessBooster && normInventory.fitnessBoosters > 0 && (player.fitness < 100 || playerInjured) && (() => {
               const targetFitness = Math.min(100, player.fitness + FITNESS_BOOSTER_RECOVERY);
               const gain = targetFitness - player.fitness;
               return (
@@ -485,7 +571,9 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                   className="w-full h-11 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/45 text-sky-300 text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   <HeartPulse className="w-4 h-4 text-sky-400" />
-                  Dùng Bình Thể Lực (+{gain}% → {targetFitness}% · Còn {normInventory.fitnessBoosters})
+                  {playerInjured
+                    ? `Dùng Bình Thể Lực (Rút ngắn 2 trận nghỉ + tăng TL · Còn ${normInventory.fitnessBoosters})`
+                    : `Dùng Bình Thể Lực (+${gain}% → ${targetFitness}% · Còn ${normInventory.fitnessBoosters})`}
                 </button>
               );
             })()}
@@ -521,8 +609,9 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    const nextContract = Math.max(player.contractUntil, currentYear) + 2;
                     onRenewContract(player.id);
-                    setFeedback({ ok: true, text: `Đã gia hạn hợp đồng với ${player.shortName} đến ${player.contractUntil + 2}.` });
+                    setFeedback({ ok: true, text: `Đã gia hạn hợp đồng với ${player.shortName} đến ${nextContract}.` });
                   }}
                   className="h-11 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
                 >

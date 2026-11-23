@@ -33,14 +33,24 @@ import {
   ensureCareerCompetitions,
   finalizeFinishedCompetitionAwards,
   getActiveCareerManager,
+  getActiveManagerAnnualSalaryM,
+  getActiveManagerContractUntil,
+  getBaseManagerAnnualSalaryM,
+  getInjurySeverityLabel,
+  getInjuryTreatmentCostM,
+  getManagerContractExtensionCostM,
   getManagerHireFeeM,
   getManagerImpactSummary,
+  getManagerSalaryBoundsM,
   getManagerSeveranceM,
   getMatchStaminaDrain,
   getPlayerRecoveryCostM,
   getSquadRecoveryCostM,
   isCompetitionFinished,
+  isPlayerInjured,
   mergeMatchResultsIntoLeaderboard,
+  repairTacticsAfterSquadChange,
+  rollMatchInjuriesAndTickRecovery,
   settleSeasonPayroll,
   sortStandings,
   toCompactMatchReport,
@@ -584,7 +594,7 @@ export default function App() {
       );
 
       const leagueDrain = getMatchStaminaDrain(hydratedCareer.tactics, false);
-      const nextSquad = hydratedCareer.squad.map((p) => {
+      const rawNextSquad = hydratedCareer.squad.map((p) => {
         const played = starterSet.has(p.id);
         const scored = goalEvents.filter((e) =>
           e.playerId ? e.playerId === p.id : e.playerName === p.name
@@ -611,6 +621,23 @@ export default function App() {
           morale: Math.max(40, Math.min(100, p.morale + (won ? 4 : drawn ? 1 : -3))),
         };
       });
+
+      const facilities = ensureClubFacilities(hydratedCareer);
+      const injuryOutcome = rollMatchInjuriesAndTickRecovery({
+        squad: rawNextSquad,
+        participatedIds: starterSet,
+        tactics: hydratedCareer.tactics,
+        trainingIntensity: hydratedCareer.trainingIntensity,
+        medicalLevel: facilities.medicalLevel,
+        matchweek: hydratedCareer.matchweek,
+        competitionLabel: `Super League Vòng ${hydratedCareer.matchweek}`,
+        allowNewInjuries: true,
+      });
+      const nextSquad = injuryOutcome.nextSquad;
+      const nextTactics =
+        injuryOutcome.newlyInjured.length > 0
+          ? repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad)
+          : hydratedCareer.tactics;
 
       const leagueFinishedNow = nextFixtures.every((f) => f.played);
       const sortedEnd = sortStandings(nextStandings);
@@ -672,13 +699,12 @@ export default function App() {
 
       const hMatchShort = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
       const aMatchShort = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
-      const facilities = ensureClubFacilities(hydratedCareer);
       const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
       const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
       const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
       const matchPrizeM =
         won || drawn
-          ? Number(((won ? 3.5 : 1.8) * stadiumMult + sponsorBonus).toFixed(1))
+          ? Number(((won ? 1.75 : 0.9) * stadiumMult + sponsorBonus).toFixed(1))
           : 0;
 
       const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
@@ -711,6 +737,7 @@ export default function App() {
           25,
           Math.min(100, hydratedCareer.boardConfidence + (won ? 3 : drawn ? 0 : -4))
         ),
+        tactics: nextTactics,
         squad: nextSquad,
         standings: nextStandings,
         fixtures: nextFixtures,
@@ -783,6 +810,41 @@ export default function App() {
               : `${aw.playerName} (${CLUBS.find((c) => c.id === aw.clubId)?.shortName ?? aw.clubId}) giành danh hiệu ${aw.awardTitle} mùa ${aw.season}.`
           );
         }
+        for (const injP of injuryOutcome.newlyInjured) {
+          await pushClubNotification(
+            'medical',
+            `Chấn thương mới: ${injP.name}`,
+            `${injP.name} (${injP.position}) gặp chấn thương "${injP.injury?.type}" (mức độ ${getInjurySeverityLabel(injP.injury!.severity)}), dự kiến nghỉ ${injP.injury?.matchesRemaining} trận. Đã tự động thay ra khỏi đội hình xuất phát.`
+          );
+        }
+        for (const recP of injuryOutcome.recoveredPlayers) {
+          await pushClubNotification(
+            'medical',
+            `Bình phục hoàn toàn: ${recP.name}`,
+            `${recP.name} đã hồi phục chấn thương và sẵn sàng trở lại tập luyện/thi đấu.`
+          );
+        }
+
+        if (leagueFinishedNow || hydratedCareer.matchweek === 30) {
+          const curYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+          const expCount = nextSquad.filter((p) => p.contractUntil <= curYear + 1).length;
+          if (expCount > 0) {
+            await pushClubNotification(
+              'contract',
+              `Nhắc nhở Gia hạn Hợp đồng (${expCount} cầu thủ)`,
+              `Có ${expCount} cầu thủ sẽ hết hạn hợp đồng vào cuối mùa ${hydratedCareer.season}. Nếu không gia hạn trước khi sang mùa mới, họ sẽ ra đi tự do!`
+            );
+          }
+          const activeMgrNow = getActiveCareerManager(hydratedCareer);
+          const mgrContractUntil = getActiveManagerContractUntil(hydratedCareer, activeMgrNow);
+          if (activeMgrNow && mgrContractUntil !== null && mgrContractUntil <= curYear + 1) {
+            await pushClubNotification(
+              'contract',
+              `Hợp đồng HLV ${activeMgrNow.name} sắp hết hạn`,
+              `Hợp đồng của HLV trưởng ${activeMgrNow.name} sẽ hết hạn cuối mùa ${hydratedCareer.season} (${mgrContractUntil}). Hãy gia hạn tại CLB → HLV trưởng để tiếp tục giữ ghế.`
+            );
+          }
+        }
       } catch (err) {
         console.error('Lỗi cập nhật thống kê vòng đấu:', err);
       }
@@ -804,6 +866,9 @@ export default function App() {
       const nextComps = applyCupMatchResults(prevComps, competition, resultsMap);
 
       let nextSquad = hydratedCareer.squad;
+      let nextTactics = hydratedCareer.tactics;
+      let cupNewlyInjured: Player[] = [];
+      let cupRecoveredPlayers: Player[] = [];
       let nextClubRecords = ensureClubRecords(hydratedCareer);
       let budgetBonus = 0;
       let matchCash = 0;
@@ -818,12 +883,12 @@ export default function App() {
           ? userMatch.winnerId === hydratedCareer.clubId
           : myGoals > oppGoals;
         drawnMatch = !userMatch.winnerId && myGoals === oppGoals;
+        const facilities = ensureClubFacilities(hydratedCareer);
         if (wonMatch || drawnMatch) {
-          const facilities = ensureClubFacilities(hydratedCareer);
           const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
           const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
           const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
-          const baseCupCash = wonMatch ? 2.5 : 1.2;
+          const baseCupCash = wonMatch ? 1.25 : 0.6;
           matchCash = Number((baseCupCash * stadiumMult + sponsorBonus).toFixed(1));
           budgetBonus += matchCash;
         }
@@ -854,7 +919,7 @@ export default function App() {
             .filter((r) => r.clubId === hydratedCareer.clubId)
             .map((r) => [r.playerId, r.rating])
         );
-        nextSquad = hydratedCareer.squad.map((p) => {
+        const rawCupSquad = hydratedCareer.squad.map((p) => {
           const played = starterSet.has(p.id);
           const scored = goalEvents.filter((e) =>
             e.playerId ? e.playerId === p.id : e.playerName === p.name
@@ -881,12 +946,6 @@ export default function App() {
           };
         });
 
-        const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
-        const motmPlayerId =
-          userMatch.manOfTheMatch?.clubId === hydratedCareer.clubId
-            ? userMatch.manOfTheMatch.playerId
-            : userMatch.playerRatings?.find((r) => r.clubId === hydratedCareer.clubId && r.isMotm)
-                ?.playerId;
         const recordCompLabel =
           userMatch.roundLabel ||
           (competition === 'champions-cup'
@@ -894,6 +953,30 @@ export default function App() {
             : competition === 'national-cup'
               ? 'Cúp Quốc Gia'
               : 'Siêu Cúp');
+
+        const cupInjuryOutcome = rollMatchInjuriesAndTickRecovery({
+          squad: rawCupSquad,
+          participatedIds: starterSet,
+          tactics: hydratedCareer.tactics,
+          trainingIntensity: hydratedCareer.trainingIntensity,
+          medicalLevel: facilities.medicalLevel,
+          matchweek: hydratedCareer.matchweek,
+          competitionLabel: recordCompLabel,
+          allowNewInjuries: true,
+        });
+        nextSquad = cupInjuryOutcome.nextSquad;
+        cupNewlyInjured = cupInjuryOutcome.newlyInjured;
+        cupRecoveredPlayers = cupInjuryOutcome.recoveredPlayers;
+        if (cupNewlyInjured.length > 0) {
+          nextTactics = repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad);
+        }
+
+        const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
+        const motmPlayerId =
+          userMatch.manOfTheMatch?.clubId === hydratedCareer.clubId
+            ? userMatch.manOfTheMatch.playerId
+            : userMatch.playerRatings?.find((r) => r.clubId === hydratedCareer.clubId && r.isMotm)
+                ?.playerId;
         nextClubRecords = recordOfficialMatchInClubRecords(hydratedCareer, {
           matchId: userMatch.id,
           opponentClubId,
@@ -1065,6 +1148,7 @@ export default function App() {
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + budgetBonus).toFixed(1)),
         boardConfidence: Math.min(100, hydratedCareer.boardConfidence + (trophiesAdded > 0 ? 6 : 0)),
+        tactics: nextTactics,
         squad: nextSquad,
         competitions: nextCompsWithStats,
         trophyCabinet: nextCabinet,
@@ -1152,6 +1236,20 @@ export default function App() {
               : `${aw.playerName} (${CLUBS.find((c) => c.id === aw.clubId)?.shortName ?? aw.clubId}) giành danh hiệu ${aw.awardTitle}.`
           );
         }
+        for (const injP of cupNewlyInjured) {
+          await pushClubNotification(
+            'medical',
+            `Chấn thương mới: ${injP.name}`,
+            `${injP.name} (${injP.position}) dính chấn thương "${injP.injury?.type}" (mức độ ${getInjurySeverityLabel(injP.injury!.severity)}), nghỉ ${injP.injury?.matchesRemaining} trận. Đã tự động xếp cầu thủ khỏe mạnh thay thế.`
+          );
+        }
+        for (const recP of cupRecoveredPlayers) {
+          await pushClubNotification(
+            'medical',
+            `Bình phục hoàn toàn: ${recP.name}`,
+            `${recP.name} đã hồi phục chấn thương và sẵn sàng ra sân.`
+          );
+        }
       } catch (err) {
         console.error('Lỗi cập nhật thống kê cúp:', err);
       }
@@ -1179,7 +1277,7 @@ export default function App() {
           .filter((r) => r.clubId === hydratedCareer.clubId)
           .map((r) => [r.playerId, r.rating])
       );
-      const nextSquad = hydratedCareer.squad.map((p) => {
+      const rawFriendlySquad = hydratedCareer.squad.map((p) => {
         const matchRating = ratingByPlayerId.get(p.id);
         const nextForm =
           matchRating !== undefined
@@ -1192,6 +1290,19 @@ export default function App() {
           morale: Math.min(100, p.morale + (won ? 4 : 2)),
         };
       });
+
+      const facilities = ensureClubFacilities(hydratedCareer);
+      const friendlyInjuryTick = rollMatchInjuriesAndTickRecovery({
+        squad: rawFriendlySquad,
+        participatedIds: starterSet,
+        tactics: hydratedCareer.tactics,
+        trainingIntensity: hydratedCareer.trainingIntensity,
+        medicalLevel: facilities.medicalLevel,
+        matchweek: hydratedCareer.matchweek,
+        competitionLabel: 'Giao hữu Quốc tế',
+        allowNewInjuries: false,
+      });
+      const nextSquad = friendlyInjuryTick.nextSquad;
 
       const prevComps = hydratedCareer.competitions;
       const nextComps = prevComps
@@ -1209,36 +1320,10 @@ export default function App() {
           }
         : undefined;
 
-      const inv = normalizeInventory(hydratedCareer.inventory);
-      const friendlyShards = won ? 3 : drawn ? 1 : 0;
-      const nextInv = normalizeInventory({
-        ...inv,
-        universalShards: inv.universalShards + friendlyShards,
-      });
-
-      const hFr = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
-      const aFr = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
-      const friendlyPrizeM = won ? 3.0 : drawn ? 2.0 : 0;
-
       const nextCareer: CareerSave = {
         ...hydratedCareer,
-        transferBudget: Number((hydratedCareer.transferBudget + friendlyPrizeM).toFixed(1)),
         squad: nextSquad,
         competitions: nextComps,
-        financialLedger:
-          friendlyPrizeM > 0
-            ? appendLedgerEntries(hydratedCareer.financialLedger, [
-                createLedgerEntry({
-                  season: hydratedCareer.season,
-                  matchweek: hydratedCareer.matchweek,
-                  type: 'income',
-                  category: 'match_prize',
-                  title: `Thưởng Giao hữu: ${hFr} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aFr}`,
-                  amountM: friendlyPrizeM,
-                }),
-              ])
-            : hydratedCareer.financialLedger,
-        inventory: nextInv,
         recentResults: [
           userMatch,
           ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
@@ -1265,10 +1350,15 @@ export default function App() {
         await pushClubNotification(
           'match',
           `Giao hữu: ${hName} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aName}`,
-          friendlyPrizeM > 0
-            ? `Hoàn tất trận giao hữu quốc tế · Doanh thu +€${friendlyPrizeM.toFixed(1)}M, +${friendlyShards} Mảnh Ngôi Sao.`
-            : 'Thất bại trong trận giao hữu — Không nhận được phần thưởng.'
+          'Hoàn tất trận giao hữu quốc tế — Trận giao hữu thử nghiệm đội hình không tính tiền thưởng hay mảnh.'
         );
+        for (const recP of friendlyInjuryTick.recoveredPlayers) {
+          await pushClubNotification(
+            'medical',
+            `Bình phục hoàn toàn: ${recP.name}`,
+            `${recP.name} đã hồi phục chấn thương và sẵn sàng thi đấu.`
+          );
+        }
       } catch (err) {
         console.error('Lỗi cập nhật giao hữu:', err);
       }
@@ -1705,8 +1795,16 @@ export default function App() {
       );
       return;
     }
-    const { nextCareer, summary, prizeM, alreadyClaimed, newTrophiesCount } =
-      createNextSeasonCareer(hydratedCareer);
+    const {
+      nextCareer,
+      summary,
+      prizeM,
+      alreadyClaimed,
+      newTrophiesCount,
+      departedFreeAgents,
+      emergencyPromotedCount,
+      expiredManagerName,
+    } = createNextSeasonCareer(hydratedCareer);
     await saveCareerCloud(nextCareer);
 
     try {
@@ -1738,6 +1836,32 @@ export default function App() {
           ? `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Đạt ${objDone}/${objTotal} mục tiêu BLĐ${totsMine > 0 ? `, có ${totsMine} cầu thủ lọt ĐHTB` : ''}. Phần thưởng mùa đã được nhận trước đó · Bước sang mùa 20 CLB.`
           : `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Đạt ${objDone}/${objTotal} mục tiêu BLĐ${totsMine > 0 ? `, có ${totsMine} cầu thủ lọt ĐHTB` : ''}. Nhận tổng thưởng +€${prizeM}M và sang mùa 20 CLB.`
       );
+
+      if (departedFreeAgents.length > 0) {
+        const previewNames = departedFreeAgents
+          .slice(0, 6)
+          .map((p) => `${p.shortName} (${p.rating})`)
+          .join(', ');
+        const extraNames =
+          departedFreeAgents.length > 6 ? ` và ${departedFreeAgents.length - 6} cầu thủ khác` : '';
+        const emergencyNote =
+          emergencyPromotedCount > 0
+            ? ` Học viện đã đôn ${emergencyPromotedCount} cầu thủ trẻ để đủ tối thiểu 21 người.`
+            : '';
+        await pushClubNotification(
+          'contract',
+          `${departedFreeAgents.length} cầu thủ ra đi tự do (Hết hạn HĐ)`,
+          `Do hết hạn hợp đồng mùa ${summary.season} mà chưa được gia hạn: ${previewNames}${extraNames} đã rời CLB theo dạng chuyển nhượng tự do.${emergencyNote}`
+        );
+      }
+
+      if (expiredManagerName) {
+        await pushClubNotification(
+          'contract',
+          `HLV ${expiredManagerName} chia tay CLB (Hết hạn HĐ)`,
+          `Hợp đồng của HLV trưởng ${expiredManagerName} đã hết hạn cuối mùa ${summary.season} và chưa được gia hạn. Đội tạm do HLV Tạm quyền chỉ đạo — hãy bổ nhiệm HLV mới!`
+        );
+      }
     } catch (err) {
       console.error('Lỗi chuyển mùa giải mới:', err);
     }
@@ -1783,11 +1907,15 @@ export default function App() {
         };
       }
 
+      const currentYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+      const signedContractUntil = currentYear + 2 + (player.number % 3);
+      const { injury: _ignoreInj, ...basePlayer } = player;
       const signedPlayer: Player = {
-        ...player,
+        ...basePlayer,
         clubId: hydratedCareer.clubId,
         baseRating: player.baseRating ?? player.rating,
         wageK,
+        contractUntil: signedContractUntil,
         stars: 1,
         fitness: 95,
         appearances: 0,
@@ -1857,7 +1985,7 @@ export default function App() {
         await pushClubNotification(
           'transfer',
           `Tân binh gia nhập: ${player.name}`,
-          `Chiêu mộ thành công ${player.name} (${player.position}, ${player.rating} OVR) với phí €${bidM}M, lương €${wageK}K/tuần.`
+          `Chiêu mộ thành công ${player.name} (${player.position}, ${player.rating} OVR) với phí €${bidM}M, lương €${wageK}K/tuần, hợp đồng đến năm ${signedPlayer.contractUntil}.`
         );
       } catch (err) {
         console.error('Lỗi ghi nhật ký chuyển nhượng:', err);
@@ -1911,12 +2039,13 @@ export default function App() {
   const handleRenewContract = useCallback(
     (playerId: string) => {
       if (!hydratedCareer) return;
+      const currentYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
       const target = hydratedCareer.squad.find((p) => p.id === playerId);
       const nextSquad = hydratedCareer.squad.map((p) =>
         p.id === playerId
           ? {
               ...p,
-              contractUntil: p.contractUntil + 2,
+              contractUntil: Math.max(p.contractUntil, currentYear) + 2,
               wageK: Math.round(p.wageK * 1.1),
               morale: Math.min(100, p.morale + 8),
             }
@@ -1924,10 +2053,21 @@ export default function App() {
       );
       saveCareerCloud({ ...hydratedCareer, squad: nextSquad });
       if (target) {
+        const nextUntil = Math.max(target.contractUntil, currentYear) + 2;
+        setSelectedPlayer((prev) =>
+          prev && prev.id === playerId
+            ? {
+                ...prev,
+                contractUntil: nextUntil,
+                wageK: Math.round(target.wageK * 1.1),
+                morale: Math.min(100, target.morale + 8),
+              }
+            : prev
+        );
         pushClubNotification(
           'contract',
           `Gia hạn hợp đồng: ${target.name}`,
-          `Gia hạn thêm 2 năm đến ${target.contractUntil + 2} (Lương mới €${Math.round(target.wageK * 1.1)}K/tuần).`
+          `Gia hạn thêm 2 năm đến ${nextUntil} (Lương mới €${Math.round(target.wageK * 1.1)}K/tuần).`
         );
       }
     },
@@ -2066,7 +2206,8 @@ export default function App() {
       if (target.fitness >= 100) {
         return { ok: false, message: `${target.name} đã đạt 100% thể lực.` };
       }
-      const costM = getPlayerRecoveryCostM(target.fitness);
+      const facilities = ensureClubFacilities(hydratedCareer);
+      const costM = getPlayerRecoveryCostM(target.fitness, facilities.medicalLevel);
       if (hydratedCareer.transferBudget < costM) {
         return {
           ok: false,
@@ -2090,7 +2231,7 @@ export default function App() {
             type: 'expense',
             category: 'medical_recovery',
             title: `Trị liệu hồi phục: ${target.name}`,
-            detail: `${target.fitness}% → 100% thể lực`,
+            detail: `${target.fitness}% → 100% thể lực (Y tế Cấp ${facilities.medicalLevel})`,
             amountM: costM,
           }),
         ]),
@@ -2123,7 +2264,8 @@ export default function App() {
     if (!hydratedCareer) {
       return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
     }
-    const costM = getSquadRecoveryCostM(hydratedCareer.squad);
+    const facilities = ensureClubFacilities(hydratedCareer);
+    const costM = getSquadRecoveryCostM(hydratedCareer.squad, facilities.medicalLevel);
     if (costM === 0) {
       return { ok: false, message: 'Toàn đội đã đạt 100% thể lực.' };
     }
@@ -2151,7 +2293,7 @@ export default function App() {
           type: 'expense',
           category: 'medical_recovery',
           title: 'Trị liệu y tế toàn đội',
-          detail: `${nextSquad.length} cầu thủ hồi phục 100%`,
+          detail: `${nextSquad.length} cầu thủ hồi phục 100% (Y tế Cấp ${facilities.medicalLevel})`,
           amountM: costM,
         }),
       ]),
@@ -2175,6 +2317,150 @@ export default function App() {
     };
   }, [hydratedCareer, saveCareerCloud, pushClubNotification]);
 
+  const handleTreatPlayerInjury = useCallback(
+    async (playerId: string): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+      }
+      const target = hydratedCareer.squad.find((p) => p.id === playerId);
+      if (!target) {
+        return { ok: false, message: 'Không tìm thấy cầu thủ trong đội hình.' };
+      }
+      if (!isPlayerInjured(target)) {
+        return { ok: false, message: `${target.name} hiện hoàn toàn khỏe mạnh.` };
+      }
+      const facilities = ensureClubFacilities(hydratedCareer);
+      const costM = getInjuryTreatmentCostM(target, facilities.medicalLevel);
+      if (hydratedCareer.transferBudget < costM) {
+        return {
+          ok: false,
+          message: `Ngân sách không đủ điều trị chấn thương (cần €${costM}M, hiện có €${hydratedCareer.transferBudget.toFixed(1)}M).`,
+        };
+      }
+
+      const prevInjuryName = target.injury?.type ?? 'Chấn thương';
+      const healedTarget: Player = (() => {
+        const { injury: _removed, ...rest } = target;
+        return {
+          ...rest,
+          fitness: Math.max(92, target.fitness),
+          morale: Math.min(100, target.morale + 5),
+        };
+      })();
+      const nextSquad = hydratedCareer.squad.map((p) => (p.id === playerId ? healedTarget : p));
+
+      await saveCareerCloud({
+        ...hydratedCareer,
+        transferBudget: Number((hydratedCareer.transferBudget - costM).toFixed(1)),
+        squad: nextSquad,
+        financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+          createLedgerEntry({
+            season: hydratedCareer.season,
+            matchweek: hydratedCareer.matchweek,
+            type: 'expense',
+            category: 'medical_recovery',
+            title: `Điều trị chấn thương: ${target.name}`,
+            detail: `${prevInjuryName} (Y tế Cấp ${facilities.medicalLevel})`,
+            amountM: costM,
+          }),
+        ]),
+      });
+
+      setSelectedPlayer((prev) => (prev && prev.id === playerId ? healedTarget : prev));
+
+      await pushClubNotification(
+        'medical',
+        `Phẫu thuật & Điều trị xong: ${target.name}`,
+        `${target.name} đã bình phục hoàn toàn sau "${prevInjuryName}" (-€${costM}M) và sẵn sàng thi đấu ngay!`
+      );
+
+      return {
+        ok: true,
+        message: `Đã điều trị dứt điểm cho ${target.name} (-€${costM}M)! Cầu thủ sẵn sàng thi đấu.`,
+      };
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleTreatAllInjuries = useCallback(async (): Promise<{
+    ok: boolean;
+    message: string;
+  }> => {
+    if (!hydratedCareer) {
+      return { ok: false, message: 'Chưa sẵn sàng dữ liệu đám mây.' };
+    }
+    const injuredPlayers = hydratedCareer.squad.filter((p) => isPlayerInjured(p));
+    if (injuredPlayers.length === 0) {
+      return { ok: false, message: 'Hiện không có cầu thủ nào bị chấn thương.' };
+    }
+    const facilities = ensureClubFacilities(hydratedCareer);
+    const totalCostM = Number(
+      injuredPlayers
+        .reduce((sum, p) => sum + getInjuryTreatmentCostM(p, facilities.medicalLevel), 0)
+        .toFixed(1)
+    );
+    if (hydratedCareer.transferBudget < totalCostM) {
+      return {
+        ok: false,
+        message: `Ngân sách không đủ điều trị tất cả ca chấn thương (cần €${totalCostM}M).`,
+      };
+    }
+
+    const nextSquad = hydratedCareer.squad.map((p) => {
+      if (!isPlayerInjured(p)) return p;
+      const { injury: _removed, ...rest } = p;
+      return {
+        ...rest,
+        fitness: Math.max(92, p.fitness),
+        morale: Math.min(100, p.morale + 5),
+      };
+    });
+
+    await saveCareerCloud({
+      ...hydratedCareer,
+      transferBudget: Number((hydratedCareer.transferBudget - totalCostM).toFixed(1)),
+      squad: nextSquad,
+      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+        createLedgerEntry({
+          season: hydratedCareer.season,
+          matchweek: hydratedCareer.matchweek,
+          type: 'expense',
+          category: 'medical_recovery',
+          title: `Điều trị toàn bộ ${injuredPlayers.length} ca chấn thương`,
+          detail: `Trung tâm Y tế Cấp ${facilities.medicalLevel}`,
+          amountM: totalCostM,
+        }),
+      ]),
+    });
+
+    setSelectedPlayer((prev) => {
+      if (!prev) return prev;
+      const updated = nextSquad.find((p) => p.id === prev.id);
+      return updated ?? prev;
+    });
+
+    await pushClubNotification(
+      'medical',
+      `Bệnh viện CLB: Toàn đội bình phục`,
+      `Đã điều trị dứt điểm cho ${injuredPlayers.length} cầu thủ chấn thương (-€${totalCostM}M).`
+    );
+
+    return {
+      ok: true,
+      message: `Đã điều trị khỏi hoàn toàn ${injuredPlayers.length} ca chấn thương (-€${totalCostM}M)!`,
+    };
+  }, [hydratedCareer, saveCareerCloud, pushClubNotification]);
+
+  const handleDismissFreeDepartures = useCallback(async () => {
+    if (!hydratedCareer) return;
+    await saveCareerCloud({
+      ...hydratedCareer,
+      lastSeasonFreeDepartures: undefined,
+      lastSeasonDepartureSeason: undefined,
+      lastSeasonEmergencyPromoted: undefined,
+    });
+  }, [hydratedCareer, saveCareerCloud]);
+
   const handleFireManager = useCallback(async (): Promise<{
     ok: boolean;
     message: string;
@@ -2186,7 +2472,8 @@ export default function App() {
     if (!activeMgr) {
       return { ok: false, message: 'CLB hiện đang trống ghế HLV trưởng.' };
     }
-    const severanceM = getManagerSeveranceM(activeMgr);
+    const currentSalaryM = getActiveManagerAnnualSalaryM(hydratedCareer, activeMgr);
+    const severanceM = getManagerSeveranceM(activeMgr, currentSalaryM);
     if (hydratedCareer.transferBudget < severanceM) {
       return {
         ok: false,
@@ -2208,6 +2495,9 @@ export default function App() {
     const nextCareer: CareerSave = {
       ...hydratedCareer,
       activeManagerId: null,
+      activeManagerSalaryM: undefined,
+      activeManagerContractUntil: undefined,
+      managerLastPerkSeason: undefined,
       transferBudget: Number((hydratedCareer.transferBudget - severanceM).toFixed(1)),
       boardConfidence: Math.max(30, hydratedCareer.boardConfidence - 3),
       managerHistory: [historyEntry, ...(hydratedCareer.managerHistory ?? [])].slice(0, 100),
@@ -2315,9 +2605,14 @@ export default function App() {
         morale: Math.min(100, p.morale + moraleLift),
       }));
 
+      const currentYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+      const baseSalaryM = getBaseManagerAnnualSalaryM(newMgr);
       const nextCareer: CareerSave = {
         ...hydratedCareer,
         activeManagerId: newMgr.id,
+        activeManagerSalaryM: baseSalaryM,
+        activeManagerContractUntil: currentYear + 3,
+        managerLastPerkSeason: undefined,
         transferBudget: Number((hydratedCareer.transferBudget - hireFeeM).toFixed(1)),
         boardConfidence: Math.min(100, hydratedCareer.boardConfidence + 4),
         tactics: nextTactics,
@@ -2343,12 +2638,168 @@ export default function App() {
       await pushClubNotification(
         'tactics',
         `Bổ nhiệm HLV trưởng: ${newMgr.name}`,
-        `CLB chính thức ký hợp đồng với ${newMgr.name} (-€${hireFeeM}M · Sơ đồ ${newMgr.preferredFormation}${applySuggestedTactics ? ' · Đã áp dụng triết lý mới' : ''}).`
+        `CLB chính thức ký hợp đồng 3 năm (đến ${currentYear + 3}, lương €${baseSalaryM}M/năm) với ${newMgr.name} (-€${hireFeeM}M · Sơ đồ ${newMgr.preferredFormation}${applySuggestedTactics ? ' · Đã áp dụng triết lý mới' : ''}).`
       );
 
       return {
         ok: true,
-        message: `Chào mừng ${newMgr.name} gia nhập ban huấn luyện (-€${hireFeeM}M)!`,
+        message: `Chào mừng ${newMgr.name} gia nhập ban huấn luyện (HĐ đến ${currentYear + 3}, lương €${baseSalaryM}M/năm, phí -€${hireFeeM}M)!`,
+      };
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleAdjustManagerSalary = useCallback(
+    async (nextSalaryM: number): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu câu lạc bộ.' };
+      }
+      const activeMgr = getActiveCareerManager(hydratedCareer);
+      if (!activeMgr) {
+        return { ok: false, message: 'CLB hiện chưa có HLV trưởng chính thức.' };
+      }
+      const { baseM, minM, maxM } = getManagerSalaryBoundsM(activeMgr);
+      const currentSalaryM = getActiveManagerAnnualSalaryM(hydratedCareer, activeMgr);
+      const clampedSalaryM = Number(Math.max(minM, Math.min(maxM, nextSalaryM)).toFixed(1));
+
+      if (Math.abs(clampedSalaryM - currentSalaryM) < 0.05) {
+        return { ok: false, message: `Mức lương của ${activeMgr.name} đang là €${currentSalaryM.toFixed(1)}M/năm.` };
+      }
+
+      const isRaise = clampedSalaryM > currentSalaryM;
+      const isSharpCut = clampedSalaryM < Number((baseM * 0.8).toFixed(1));
+      const canApplyPerk = hydratedCareer.managerLastPerkSeason !== hydratedCareer.season;
+
+      let nextBoardConfidence = hydratedCareer.boardConfidence;
+      let nextSquad = hydratedCareer.squad;
+      let nextPerkSeason = hydratedCareer.managerLastPerkSeason;
+
+      if (canApplyPerk && isRaise && clampedSalaryM >= baseM) {
+        nextBoardConfidence = Math.min(100, nextBoardConfidence + 2);
+        nextSquad = hydratedCareer.squad.map((p) => ({
+          ...p,
+          morale: Math.min(100, p.morale + 2),
+        }));
+        nextPerkSeason = hydratedCareer.season;
+      } else if (isSharpCut && currentSalaryM >= Number((baseM * 0.8).toFixed(1))) {
+        nextBoardConfidence = Math.max(30, nextBoardConfidence - 2);
+        nextSquad = hydratedCareer.squad.map((p) => ({
+          ...p,
+          morale: Math.max(40, p.morale - 2),
+        }));
+      }
+
+      const historyEntry = {
+        id: `mh-sal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+        managerId: activeMgr.id,
+        managerName: activeMgr.name,
+        action: 'salary_adjusted' as const,
+        season: hydratedCareer.season,
+        matchweek: hydratedCareer.matchweek,
+        feeM: clampedSalaryM,
+        date: new Date().toISOString(),
+      };
+
+      const nextCareer: CareerSave = {
+        ...hydratedCareer,
+        activeManagerSalaryM: clampedSalaryM,
+        boardConfidence: nextBoardConfidence,
+        squad: nextSquad,
+        ...(nextPerkSeason ? { managerLastPerkSeason: nextPerkSeason } : {}),
+        managerHistory: [historyEntry, ...(hydratedCareer.managerHistory ?? [])].slice(0, 100),
+      };
+
+      await saveCareerCloud(nextCareer);
+      const diffM = Number((clampedSalaryM - currentSalaryM).toFixed(1));
+      const diffLabel = `${diffM >= 0 ? '+' : ''}€${diffM.toFixed(1)}M/năm`;
+      await pushClubNotification(
+        'tactics',
+        `${isRaise ? 'Tăng lương' : 'Giảm lương'} HLV ${activeMgr.name}`,
+        `Lương năm của HLV ${activeMgr.name} điều chỉnh từ €${currentSalaryM.toFixed(1)}M → €${clampedSalaryM.toFixed(1)}M (${diffLabel}). Quỹ lương quyết toán cuối mùa sẽ cập nhật tương ứng.${
+          isSharpCut ? ' Lưu ý: Mức lương thấp hơn chuẩn thị trường có thể làm giảm tinh thần toàn đội.' : ''
+        }`
+      );
+
+      return {
+        ok: true,
+        message: `Đã ${isRaise ? 'tăng' : 'giảm'} lương HLV ${activeMgr.name} thành €${clampedSalaryM.toFixed(1)}M/năm (${diffLabel}).`,
+      };
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleExtendManagerContract = useCallback(
+    async (years: 1 | 2 | 3): Promise<{ ok: boolean; message: string }> => {
+      if (!hydratedCareer) {
+        return { ok: false, message: 'Chưa sẵn sàng dữ liệu câu lạc bộ.' };
+      }
+      const activeMgr = getActiveCareerManager(hydratedCareer);
+      if (!activeMgr) {
+        return { ok: false, message: 'CLB hiện chưa có HLV trưởng chính thức để gia hạn.' };
+      }
+      const curYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+      const curUntil = getActiveManagerContractUntil(hydratedCareer, activeMgr) ?? curYear + 2;
+      const nextUntil = Math.max(curUntil, curYear) + years;
+      if (nextUntil > curYear + 6) {
+        return {
+          ok: false,
+          message: `Hợp đồng HLV tối đa không quá 6 năm tính từ mùa hiện tại (tối đa đến ${curYear + 6}).`,
+        };
+      }
+
+      const annualSalaryM = getActiveManagerAnnualSalaryM(hydratedCareer, activeMgr);
+      const feeM = getManagerContractExtensionCostM(annualSalaryM, years);
+      if (hydratedCareer.transferBudget < feeM) {
+        return {
+          ok: false,
+          message: `Không đủ ngân sách để thưởng ký gia hạn cho ${activeMgr.name} (cần €${feeM}M, hiện có €${hydratedCareer.transferBudget.toFixed(1)}M).`,
+        };
+      }
+
+      const historyEntry = {
+        id: `mh-ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+        managerId: activeMgr.id,
+        managerName: activeMgr.name,
+        action: 'extended' as const,
+        season: hydratedCareer.season,
+        matchweek: hydratedCareer.matchweek,
+        feeM,
+        date: new Date().toISOString(),
+      };
+
+      const nextCareer: CareerSave = {
+        ...hydratedCareer,
+        activeManagerContractUntil: nextUntil,
+        transferBudget: Number((hydratedCareer.transferBudget - feeM).toFixed(1)),
+        boardConfidence: Math.min(100, hydratedCareer.boardConfidence + years * 2),
+        squad: hydratedCareer.squad.map((p) => ({
+          ...p,
+          morale: Math.min(100, p.morale + 2),
+        })),
+        managerHistory: [historyEntry, ...(hydratedCareer.managerHistory ?? [])].slice(0, 100),
+        financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+          createLedgerEntry({
+            season: hydratedCareer.season,
+            matchweek: hydratedCareer.matchweek,
+            type: 'expense',
+            category: 'contract_compensation',
+            title: `Gia hạn HĐ HLV ${activeMgr.name} (+${years} năm → ${nextUntil})`,
+            detail: `Lương năm €${annualSalaryM.toFixed(1)}M/năm`,
+            amountM: feeM,
+          }),
+        ]),
+      };
+
+      await saveCareerCloud(nextCareer);
+      await pushClubNotification(
+        'contract',
+        `Gia hạn thành công HLV ${activeMgr.name} đến ${nextUntil}`,
+        `CLB đã gia hạn hợp đồng thêm ${years} năm với HLV trưởng ${activeMgr.name} (đến năm ${nextUntil}, phí lót tay -€${feeM}M).`
+      );
+
+      return {
+        ok: true,
+        message: `Đã gia hạn hợp đồng HLV ${activeMgr.name} thêm ${years} năm đến năm ${nextUntil} (-€${feeM}M)!`,
       };
     },
     [hydratedCareer, saveCareerCloud, pushClubNotification]
@@ -2592,10 +3043,13 @@ export default function App() {
         delete nextCards[playerId];
       }
 
+      const currentYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+      const { injury: _ignoreCardInj, ...cleanSource } = sourcePlayer;
       const recruitedPlayer: Player = {
-        ...sourcePlayer,
+        ...cleanSource,
         clubId: hydratedCareer.clubId,
         baseRating: sourcePlayer.baseRating ?? sourcePlayer.rating,
+        contractUntil: currentYear + 2 + (sourcePlayer.number % 3),
         stars: 1,
         transferStatus: 'available',
         morale: 92,
@@ -2742,18 +3196,44 @@ export default function App() {
       if (!target) {
         return { ok: false, message: 'Không tìm thấy cầu thủ trong đội hình.' };
       }
-      if (target.fitness >= 100) {
-        return { ok: false, message: `${target.name} đã đạt 100% thể lực.` };
+      const injured = isPlayerInjured(target);
+      if (!injured && target.fitness >= 100) {
+        return { ok: false, message: `${target.name} đã đạt 100% thể lực và không chấn thương.` };
       }
 
       const nextFitness = Math.min(100, target.fitness + FITNESS_BOOSTER_RECOVERY);
       const gainedFitness = nextFitness - target.fitness;
 
-      const nextSquad = hydratedCareer.squad.map((p) =>
-        p.id === playerId
-          ? { ...p, fitness: nextFitness, morale: Math.min(100, p.morale + 2) }
-          : p
-      );
+      let updatedPlayer: Player;
+      let injuryMsg = '';
+      if (injured && target.injury) {
+        const nextMatches = target.injury.matchesRemaining - 2;
+        if (nextMatches <= 0) {
+          const { injury: _removed, ...rest } = target;
+          updatedPlayer = {
+            ...rest,
+            fitness: Math.max(92, nextFitness),
+            morale: Math.min(100, target.morale + 5),
+          };
+          injuryMsg = ' và bình phục hoàn toàn chấn thương';
+        } else {
+          updatedPlayer = {
+            ...target,
+            injury: { ...target.injury, matchesRemaining: nextMatches },
+            fitness: nextFitness,
+            morale: Math.min(100, target.morale + 3),
+          };
+          injuryMsg = ` và rút ngắn thời gian nghỉ còn ${nextMatches} trận`;
+        }
+      } else {
+        updatedPlayer = {
+          ...target,
+          fitness: nextFitness,
+          morale: Math.min(100, target.morale + 2),
+        };
+      }
+
+      const nextSquad = hydratedCareer.squad.map((p) => (p.id === playerId ? updatedPlayer : p));
       const nextInv = normalizeInventory({
         ...inv,
         fitnessBoosters: inv.fitnessBoosters - 1,
@@ -2765,21 +3245,17 @@ export default function App() {
         inventory: nextInv,
       });
 
-      setSelectedPlayer((prev) =>
-        prev && prev.id === playerId
-          ? { ...prev, fitness: nextFitness, morale: Math.min(100, prev.morale + 2) }
-          : prev
-      );
+      setSelectedPlayer((prev) => (prev && prev.id === playerId ? updatedPlayer : prev));
 
       await pushClubNotification(
         'medical',
         `Dùng Bình Thể Lực: ${target.name}`,
-        `Hồi phục miễn phí ${target.name} +${gainedFitness}% (${target.fitness}% → ${nextFitness}%) bằng 1 Bình Thể Lực.`
+        `Dùng 1 Bình Thể Lực cho ${target.name}: +${gainedFitness}% thể lực (${target.fitness}% → ${updatedPlayer.fitness}%)${injuryMsg}.`
       );
 
       return {
         ok: true,
-        message: `Đã dùng 1 Bình Thể Lực cho ${target.name}: +${gainedFitness}% (${target.fitness}% → ${nextFitness}%)!`,
+        message: `Đã dùng 1 Bình Thể Lực cho ${target.name}: +${gainedFitness}% thể lực${injuryMsg}!`,
       };
     },
     [hydratedCareer, saveCareerCloud, pushClubNotification]
@@ -3165,7 +3641,7 @@ export default function App() {
     const inv = normalizeInventory(hydratedCareer.inventory);
     const nextPacks = { ...inv.packs };
     let shardsBonus = userWon ? 4 : 0;
-    let budgetBonusM = userWon ? 0.8 : 0;
+    let budgetBonusM = userWon ? 0.4 : 0;
 
     const milestone = rankedResult.milestoneReward;
     if (milestone) {
@@ -3286,7 +3762,8 @@ export default function App() {
       );
 
       const inv = normalizeInventory(hydratedCareer.inventory);
-      const shardsGain = won ? 3 : drawn ? 2 : 0;
+      const isFriendlyMode = mode === 'friendly';
+      const shardsGain = isFriendlyMode ? 0 : won ? 3 : drawn ? 2 : 0;
       if (shardsGain > 0) {
         await saveCareerCloud({
           ...hydratedCareer,
@@ -3297,19 +3774,22 @@ export default function App() {
         });
       }
 
-      const modeLabel = mode === 'friendly' ? 'Giao hữu' : 'Tỷ thí';
+      const modeLabel = isFriendlyMode ? 'Giao hữu' : 'Tỷ thí';
       await pushClubNotification(
         'online',
         `${modeLabel}: ${userArena.managerName} ${summary.homeGoals}-${summary.awayGoals} ${opponent.managerName}`,
-        shardsGain > 0
-          ? `Nhận +${shardsGain} Mảnh Ngôi Sao từ trận ${modeLabel.toLowerCase()} Online.`
-          : `Thất bại — Không nhận được phần thưởng.`
+        isFriendlyMode
+          ? 'Hoàn tất trận giao hữu bạn bè — Không tính phần thưởng.'
+          : shardsGain > 0
+            ? `Nhận +${shardsGain} Mảnh Ngôi Sao từ trận ${modeLabel.toLowerCase()} Online.`
+            : `Thất bại — Không nhận được phần thưởng.`
       );
 
       return {
         ok: true,
-        message:
-          shardsGain > 0
+        message: isFriendlyMode
+          ? `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (Trận giao hữu không tính thưởng).`
+          : shardsGain > 0
             ? `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (+${shardsGain} Mảnh Ngôi Sao).`
             : `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (Thua trận — Không nhận được thưởng).`,
         summary,
@@ -3540,7 +4020,7 @@ export default function App() {
 
     const inv = normalizeInventory(hydratedCareer.inventory);
     const nextPacks = { ...inv.packs };
-    let budgetBonusM = userWon ? 2.5 : 0;
+    let budgetBonusM = userWon ? 1.25 : 0;
     let shardsBonus = userWon ? 8 : 0;
     let nextCabinet = [...(hydratedCareer.trophyCabinet ?? [])];
 
@@ -3898,8 +4378,14 @@ export default function App() {
               onUpdateTraining={handleUpdateTraining}
               onRecoverPlayerFitness={handleRecoverPlayerFitness}
               onRecoverSquadFitness={handleRecoverSquadFitness}
+              onTreatPlayerInjury={handleTreatPlayerInjury}
+              onTreatAllInjuries={handleTreatAllInjuries}
+              onUseFitnessBooster={handleUseFitnessBooster}
+              onDismissFreeDepartures={handleDismissFreeDepartures}
               onFireManager={handleFireManager}
               onHireManager={handleHireManager}
+              onAdjustManagerSalary={handleAdjustManagerSalary}
+              onExtendManagerContract={handleExtendManagerContract}
               onClaimSeasonRewards={handleClaimSeasonRewards}
               onSettleSeasonPayroll={handleSettleSeasonPayroll}
               onStartNextSeason={handleStartNextSeason}
@@ -4118,6 +4604,8 @@ export default function App() {
           player={selectedPlayer}
           isOwnPlayer={hydratedCareer.squad.some((p) => p.id === selectedPlayer.id)}
           transferBudgetM={hydratedCareer.transferBudget}
+          currentYear={Number(hydratedCareer.season.slice(0, 4)) || 2026}
+          medicalLevel={ensureClubFacilities(hydratedCareer).medicalLevel}
           squadLength={hydratedCareer.squad.length}
           inventory={hydratedCareer.inventory}
           trophyCabinet={hydratedCareer.trophyCabinet}
@@ -4128,6 +4616,7 @@ export default function App() {
           onRenewContract={handleRenewContract}
           onSellPlayer={handleSellPlayer}
           onRecoverFitness={handleRecoverPlayerFitness}
+          onTreatInjury={handleTreatPlayerInjury}
           onUseFitnessBooster={handleUseFitnessBooster}
           onUpgradeStar={handleUpgradePlayerStar}
           onMakeOffer={handleMakeOffer}

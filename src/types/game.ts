@@ -31,6 +31,17 @@ export interface PlayerAttributes {
 
 export type CardTier = 'standard' | 'global' | 'icon' | 'ucl17';
 
+export type InjurySeverity = 'minor' | 'moderate' | 'severe';
+
+export interface PlayerInjury {
+  type: string;
+  severity: InjurySeverity;
+  matchesRemaining: number;
+  totalMatches: number;
+  injuredAtMatchweek?: number;
+  occurredIn?: string;
+}
+
 export interface Player {
   id: string;
   name: string;
@@ -45,7 +56,7 @@ export interface Player {
   rating: number;
   baseRating?: number;
   potential: number;
-  stars?: number; // 1-5 star upgrade tier
+  stars?: number; // 1-7 star upgrade tier
   cardTier?: CardTier;
   marketValueM: number; // € Millions
   wageK: number; // € Thousands/week
@@ -56,6 +67,7 @@ export interface Player {
   goals: number;
   assists: number;
   appearances: number;
+  injury?: PlayerInjury;
   transferStatus: 'available' | 'listed' | 'untouchable' | 'loan';
   role?: PlayerRole;
   isYouthGraduate?: boolean;
@@ -95,7 +107,7 @@ export interface ManagerHistoryRecord {
   id: string;
   managerId: string;
   managerName: string;
-  action: 'hired' | 'fired' | 'replaced';
+  action: 'hired' | 'fired' | 'replaced' | 'extended' | 'salary_adjusted';
   season: string;
   matchweek: number;
   feeM: number;
@@ -175,7 +187,7 @@ export type CompetitionId = 'league' | 'champions-cup' | 'national-cup' | 'super
 
 export interface MatchEvent {
   minute: number;
-  type: 'goal' | 'yellow' | 'chance' | 'save' | 'sub' | 'kickoff' | 'fulltime' | 'penalty';
+  type: 'goal' | 'yellow' | 'chance' | 'save' | 'sub' | 'kickoff' | 'fulltime' | 'penalty' | 'injury';
   teamId: string;
   playerId?: string;
   playerName: string;
@@ -421,7 +433,7 @@ export interface TransferRecord {
   toClubId: string;
   feeM: number;
   wageK: number;
-  type: 'buy' | 'sell' | 'loan';
+  type: 'buy' | 'sell' | 'loan' | 'free_out';
   matchweek: number;
   date: string;
 }
@@ -727,10 +739,22 @@ export interface ClubFacilities {
   medicalLevel: 1 | 2 | 3;
 }
 
+export interface FreeDepartureSummary {
+  playerId: string;
+  playerName: string;
+  position: Position;
+  rating: number;
+  marketValueM: number;
+  contractUntil: number;
+}
+
 export interface CareerSave {
   uid: string;
   clubId: string;
   activeManagerId?: string | null;
+  activeManagerSalaryM?: number;
+  activeManagerContractUntil?: number;
+  managerLastPerkSeason?: string;
   managerHistory?: ManagerHistoryRecord[];
   season: string;
   matchweek: number;
@@ -762,6 +786,9 @@ export interface CareerSave {
   clubFacilities?: ClubFacilities;
   inventory?: InventoryState;
   onlineTournament?: OnlineTournamentState;
+  lastSeasonFreeDepartures?: FreeDepartureSummary[];
+  lastSeasonDepartureSeason?: string;
+  lastSeasonEmergencyPromoted?: number;
   updatedAt?: unknown;
 }
 

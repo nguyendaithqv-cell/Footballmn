@@ -15,6 +15,8 @@ import {
   FinancialLedgerEntry,
   Fixture,
   FormationId,
+  FreeDepartureSummary,
+  InjurySeverity,
   LeagueStanding,
   ManOfTheMatch,
   MarketOverride,
@@ -23,6 +25,7 @@ import {
   MatchResultSummary,
   NationalCupState,
   Player,
+  PlayerInjury,
   PlayerRole,
   Position,
   RealManager,
@@ -32,8 +35,10 @@ import {
   TacticSettings,
   TacticSlot,
   TeamOfTheSeasonPlayer,
+  TransferRecord,
   TrophyItem,
 } from '../types/game';
+import { getMedicalCostMultiplier } from './economyEngine';
 import { createStarterInventory, normalizeInventory } from './inventoryEngine';
 import {
   advanceAcademyOnNewSeason,
@@ -141,20 +146,18 @@ export function backfillLegacyFinancialLedger(career: CareerSave): FinancialLedg
     const comp = r.competition ?? 'league';
     const prize =
       comp === 'friendly'
-        ? won
-          ? 3.0
-          : 2.0
+        ? 0
         : comp === 'league'
           ? won
-            ? 3.5
+            ? 1.8
             : drawn
-              ? 1.8
-              : 1.0
+              ? 0.9
+              : 0
           : won
-            ? 2.5
+            ? 1.3
             : drawn
-              ? 1.2
-              : 0.6;
+              ? 0.6
+              : 0;
     const hName = CLUBS.find((c) => c.id === r.homeClubId)?.shortName ?? r.homeClubId;
     const aName = CLUBS.find((c) => c.id === r.awayClubId)?.shortName ?? r.awayClubId;
     entries.push(
@@ -186,6 +189,69 @@ export function getActiveCareerManager(career: CareerSave): RealManager | null {
   return REAL_MANAGERS.find((m) => m.id === club.managerId) ?? null;
 }
 
+export function getBaseManagerAnnualSalaryM(manager: RealManager): number {
+  const managerAvgRating = (manager.tacticalRating + manager.manManagement) / 2;
+  return Number(
+    Math.max(
+      1.2,
+      manager.weeklyWageK
+        ? (manager.weeklyWageK * 10) / 1000
+        : (managerAvgRating - 68) * 0.25
+    ).toFixed(1)
+  );
+}
+
+export function getManagerSalaryBoundsM(manager: RealManager): {
+  baseM: number;
+  minM: number;
+  maxM: number;
+} {
+  const baseM = getBaseManagerAnnualSalaryM(manager);
+  const minM = Number(Math.max(0.6, baseM * 0.5).toFixed(1));
+  const maxM = Number((baseM * 2.0).toFixed(1));
+  return { baseM, minM, maxM };
+}
+
+export function getActiveManagerAnnualSalaryM(
+  career: CareerSave,
+  manager?: RealManager | null
+): number {
+  const activeMgr = manager === undefined ? getActiveCareerManager(career) : manager;
+  if (!activeMgr) return 0.8;
+  if (
+    typeof career.activeManagerSalaryM === 'number' &&
+    Number.isFinite(career.activeManagerSalaryM) &&
+    career.activeManagerSalaryM > 0
+  ) {
+    return Number(career.activeManagerSalaryM.toFixed(1));
+  }
+  return getBaseManagerAnnualSalaryM(activeMgr);
+}
+
+export function getActiveManagerContractUntil(
+  career: CareerSave,
+  manager?: RealManager | null
+): number | null {
+  const activeMgr = manager === undefined ? getActiveCareerManager(career) : manager;
+  if (!activeMgr) return null;
+  if (
+    typeof career.activeManagerContractUntil === 'number' &&
+    Number.isFinite(career.activeManagerContractUntil) &&
+    career.activeManagerContractUntil >= 2026
+  ) {
+    return career.activeManagerContractUntil;
+  }
+  const currentYear = Number(career.season.slice(0, 4)) || 2026;
+  return currentYear + 2;
+}
+
+export function getManagerContractExtensionCostM(
+  annualSalaryM: number,
+  years: 1 | 2 | 3
+): number {
+  return Number(Math.max(0.5, annualSalaryM * 0.25 * years).toFixed(1));
+}
+
 export function getManagerHireFeeM(manager: RealManager, currentClubId?: string): number {
   if (typeof manager.hireFeeM === 'number' && Number.isFinite(manager.hireFeeM)) {
     return manager.hireFeeM;
@@ -196,8 +262,13 @@ export function getManagerHireFeeM(manager: RealManager, currentClubId?: string)
   return isEmployedElsewhere ? baseFee + 4 : baseFee;
 }
 
-export function getManagerSeveranceM(manager: RealManager): number {
-  return Math.max(2, Number((getManagerHireFeeM(manager, manager.clubId) * 0.25).toFixed(1)));
+export function getManagerSeveranceM(manager: RealManager, customAnnualSalaryM?: number): number {
+  const baseSeverance = getManagerHireFeeM(manager, manager.clubId) * 0.25;
+  const salaryFactor =
+    typeof customAnnualSalaryM === 'number' && customAnnualSalaryM > 0
+      ? Math.max(1.5, customAnnualSalaryM * 0.45)
+      : baseSeverance;
+  return Math.max(1.5, Number(Math.max(baseSeverance, salaryFactor).toFixed(1)));
 }
 
 export function getManagerImpactSummary(
@@ -310,18 +381,38 @@ export function buildEffectiveDatabasePlayers(
   return applyMarketOverrides(basePlayers, marketOverrides ?? {});
 }
 
+export function isPlayerInjured(player?: Player | null): boolean {
+  return Boolean(player?.injury && player.injury.matchesRemaining > 0);
+}
+
 export function buildAutoLineupSlots(formation: FormationId, clubSquad: Player[]): TacticSlot[] {
   const template = FORMATION_TEMPLATES[formation];
   const usedIds = new Set<string>();
-  const sorted = [...clubSquad].sort((a, b) => b.rating - a.rating);
+  const sorted = [...clubSquad].sort((a, b) => {
+    const aInj = isPlayerInjured(a) ? 1 : 0;
+    const bInj = isPlayerInjured(b) ? 1 : 0;
+    if (aInj !== bInj) return aInj - bInj;
+    return b.rating - a.rating;
+  });
 
   return template.map((tpl, idx) => {
     const compatOrder = POSITION_COMPATIBILITY[tpl.label];
     let picked: Player | undefined;
 
     for (const pos of compatOrder) {
-      picked = sorted.find((pl) => !usedIds.has(pl.id) && pl.position === pos);
+      picked = sorted.find((pl) => !usedIds.has(pl.id) && !isPlayerInjured(pl) && pl.position === pos);
       if (picked) break;
+    }
+
+    if (!picked) {
+      picked = sorted.find((pl) => !usedIds.has(pl.id) && !isPlayerInjured(pl));
+    }
+
+    if (!picked) {
+      for (const pos of compatOrder) {
+        picked = sorted.find((pl) => !usedIds.has(pl.id) && pl.position === pos);
+        if (picked) break;
+      }
     }
 
     if (!picked) {
@@ -341,6 +432,104 @@ export function buildAutoLineupSlots(formation: FormationId, clubSquad: Player[]
       role: tpl.defaultRole,
     };
   });
+}
+
+export function repairTacticsAfterSquadChange(
+  tactics: TacticSettings,
+  squad: Player[]
+): TacticSettings {
+  const byId = new Map(squad.map((p) => [p.id, p]));
+  const healthyPool = [...squad]
+    .filter((p) => !isPlayerInjured(p))
+    .sort((a, b) => b.rating - a.rating);
+  const fallbackPool = [...squad].sort((a, b) => b.rating - a.rating);
+
+  const validSlotIds = new Set<string>();
+  for (const s of tactics.slots) {
+    const p = byId.get(s.playerId);
+    if (p && !isPlayerInjured(p) && !validSlotIds.has(p.id)) {
+      validSlotIds.add(p.id);
+    }
+  }
+
+  let changed = false;
+  const seenAfter = new Set<string>();
+  const nextSlots = tactics.slots.map((s) => {
+    const current = byId.get(s.playerId);
+    if (current && !isPlayerInjured(current) && !seenAfter.has(current.id)) {
+      seenAfter.add(current.id);
+      return s;
+    }
+    changed = true;
+    const compatOrder = POSITION_COMPATIBILITY[s.label];
+    let replacement: Player | undefined;
+    for (const pos of compatOrder) {
+      replacement = healthyPool.find(
+        (p) => !validSlotIds.has(p.id) && !seenAfter.has(p.id) && p.position === pos
+      );
+      if (replacement) break;
+    }
+    if (!replacement) {
+      replacement = healthyPool.find((p) => !validSlotIds.has(p.id) && !seenAfter.has(p.id));
+    }
+    if (!replacement) {
+      replacement = fallbackPool.find((p) => !validSlotIds.has(p.id) && !seenAfter.has(p.id)) ?? fallbackPool[0];
+    }
+    if (replacement) {
+      validSlotIds.add(replacement.id);
+      seenAfter.add(replacement.id);
+    }
+    return {
+      ...s,
+      playerId: replacement?.id ?? '',
+    };
+  });
+
+  const xiIds = new Set(nextSlots.map((s) => s.playerId).filter(Boolean));
+  const xiSorted = nextSlots
+    .map((s) => byId.get(s.playerId))
+    .filter((p): p is Player => Boolean(p))
+    .sort((a, b) => {
+      if (a.position === 'GK' && b.position !== 'GK') return 1;
+      if (b.position === 'GK' && a.position !== 'GK') return -1;
+      return b.attributes.sho - a.attributes.sho;
+    });
+
+  const nextDesignatedPen =
+    tactics.designatedPenaltyTakerId && xiIds.has(tactics.designatedPenaltyTakerId)
+      ? tactics.designatedPenaltyTakerId
+      : xiSorted[0]?.id;
+
+  const cleanedPenList: string[] = [];
+  const seenPen = new Set<string>();
+  for (const id of tactics.penaltyTakerIds ?? []) {
+    if (id && xiIds.has(id) && !seenPen.has(id)) {
+      cleanedPenList.push(id);
+      seenPen.add(id);
+    }
+  }
+  for (const p of xiSorted) {
+    if (cleanedPenList.length >= 10) break;
+    if (!seenPen.has(p.id)) {
+      cleanedPenList.push(p.id);
+      seenPen.add(p.id);
+    }
+  }
+
+  if (
+    !changed &&
+    nextDesignatedPen === tactics.designatedPenaltyTakerId &&
+    cleanedPenList.length === (tactics.penaltyTakerIds?.length ?? 0)
+  ) {
+    return tactics;
+  }
+
+  return {
+    ...tactics,
+    slots: nextSlots,
+    designatedPenaltyTakerId: nextDesignatedPen,
+    penaltyTakerIds: cleanedPenList,
+  };
 }
 
 export function generateRoundRobinFixtures(clubIds: string[]): Fixture[] {
@@ -1282,9 +1471,21 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
       typeof career.inventory.universalShards === 'number'
   );
   const hasAllStars = career.squad.every((p) => typeof p.stars === 'number');
+  const hasLegacy2099Contracts = career.squad.some((p) => p.contractUntil >= 2090);
   const clubDefaultMgr = CLUBS.find((c) => c.id === career.clubId)?.managerId ?? REAL_MANAGERS[0].id;
+  const resolvedActiveMgrId =
+    career.activeManagerId === undefined ? clubDefaultMgr : career.activeManagerId;
+  const resolvedMgrObj =
+    resolvedActiveMgrId !== null
+      ? REAL_MANAGERS.find((m) => m.id === resolvedActiveMgrId) ?? null
+      : null;
   const hasManagerFields =
     career.activeManagerId !== undefined &&
+    (resolvedMgrObj === null ||
+      (typeof career.activeManagerSalaryM === 'number' &&
+        career.activeManagerSalaryM > 0 &&
+        typeof career.activeManagerContractUntil === 'number' &&
+        career.activeManagerContractUntil >= 2026)) &&
     Array.isArray(career.managerHistory) &&
     Array.isArray(career.seasonAwards);
   const needsSquadPadding = career.squad.length < 21;
@@ -1304,6 +1505,7 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     career.seasonHistory &&
     hasInventory &&
     hasAllStars &&
+    !hasLegacy2099Contracts &&
     hasManagerFields &&
     !needsSquadPadding &&
     hasBoardObjectives &&
@@ -1315,9 +1517,13 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     return career;
   }
 
-  let paddedSquad: Player[] = hasAllStars
-    ? [...career.squad]
-    : career.squad.map((p) => ({ ...p, stars: p.stars ?? 1 }));
+  const currentYear = Number(career.season.slice(0, 4)) || 2026;
+  let paddedSquad: Player[] = career.squad.map((p) => ({
+    ...p,
+    stars: p.stars ?? 1,
+    contractUntil:
+      p.contractUntil >= 2090 ? currentYear + 2 + (p.number % 3) : p.contractUntil,
+  }));
 
   if (paddedSquad.length < 21) {
     const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
@@ -1342,12 +1548,28 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
 
   return {
     ...career,
-    activeManagerId:
-      career.activeManagerId === undefined ? clubDefaultMgr : career.activeManagerId,
+    activeManagerId: resolvedActiveMgrId,
+    ...(resolvedMgrObj
+      ? {
+          activeManagerSalaryM:
+            typeof career.activeManagerSalaryM === 'number' &&
+            Number.isFinite(career.activeManagerSalaryM) &&
+            career.activeManagerSalaryM > 0
+              ? Number(career.activeManagerSalaryM.toFixed(1))
+              : getBaseManagerAnnualSalaryM(resolvedMgrObj),
+          activeManagerContractUntil:
+            typeof career.activeManagerContractUntil === 'number' &&
+            Number.isFinite(career.activeManagerContractUntil) &&
+            career.activeManagerContractUntil >= 2026
+              ? career.activeManagerContractUntil
+              : currentYear + 2,
+        }
+      : {}),
     managerHistory: career.managerHistory ?? [],
     seasonAwards: career.seasonAwards ?? [],
     boardObjectives: nextObjectives,
     squad: paddedSquad,
+    tactics: repairTacticsAfterSquadChange(career.tactics, paddedSquad),
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
     seasonHistory: career.seasonHistory ?? [],
@@ -1428,6 +1650,8 @@ export function createInitialCareer(
     uid,
     clubId: club.id,
     activeManagerId: manager.id,
+    activeManagerSalaryM: getBaseManagerAnnualSalaryM(manager),
+    activeManagerContractUntil: 2028,
     managerHistory: [],
     season: '2026/27',
     matchweek: 1,
@@ -1789,7 +2013,7 @@ function resolveMatchStarters(
   if (userTactics) {
     for (const slot of userTactics.slots) {
       const p = byId.get(slot.playerId);
-      if (p && !used.has(p.id)) {
+      if (p && !isPlayerInjured(p) && !used.has(p.id)) {
         used.add(p.id);
         starters.push({ player: p, slotLabel: slot.label });
       }
@@ -1801,9 +2025,19 @@ function resolveMatchStarters(
     for (const slot of autoSlots) {
       if (starters.length >= 11) break;
       const p = byId.get(slot.playerId);
-      if (p && !used.has(p.id)) {
+      if (p && !isPlayerInjured(p) && !used.has(p.id)) {
         used.add(p.id);
         starters.push({ player: p, slotLabel: slot.label });
+      }
+    }
+  }
+
+  if (starters.length < 11) {
+    for (const p of [...roster].sort((a, b) => b.rating - a.rating)) {
+      if (starters.length >= 11) break;
+      if (!used.has(p.id) && p.clubId === clubId && !isPlayerInjured(p)) {
+        used.add(p.id);
+        starters.push({ player: p, slotLabel: p.position });
       }
     }
   }
@@ -3914,19 +4148,7 @@ export function computeSeasonPayrollBreakdown(career: CareerSave): SeasonPayroll
 
   const activeMgr = getActiveCareerManager(career);
   const managerName = activeMgr ? activeMgr.name : 'HLV Tạm quyền';
-  const managerAvgRating = activeMgr
-    ? (activeMgr.tacticalRating + activeMgr.manManagement) / 2
-    : 70;
-  const managerAnnualSalaryM = activeMgr
-    ? Number(
-        Math.max(
-          1.2,
-          activeMgr.weeklyWageK
-            ? (activeMgr.weeklyWageK * 10) / 1000
-            : (managerAvgRating - 68) * 0.25
-        ).toFixed(1)
-      )
-    : 0.8;
+  const managerAnnualSalaryM = getActiveManagerAnnualSalaryM(career, activeMgr);
 
   const scale = Math.max(0, club.reputation - 70);
   const medicalM = Number((0.9 + scale * 0.06).toFixed(1));
@@ -4043,6 +4265,9 @@ export function createNextSeasonCareer(career: CareerSave): {
   alreadyClaimed: boolean;
   newTrophiesCount: number;
   newlyAwarded: CompetitionAwardWinner[];
+  departedFreeAgents: Player[];
+  emergencyPromotedCount: number;
+  expiredManagerName?: string;
 } {
   let hydrated = ensureCareerCompetitions(career);
   const newlyAwarded: CompetitionAwardWinner[] = [];
@@ -4137,20 +4362,24 @@ export function createNextSeasonCareer(career: CareerSave): {
   const nextSeason = getNextSeasonString(hydrated.season);
   const seasonStartYear = Number(nextSeason.slice(0, 4)) || 2027;
 
-  // Player progression & aging (+1 year, training & manager manManagement boost; Icons never age-decline)
+  // Expired contracts (contractUntil <= seasonStartYear) depart as Free Agents!
+  const departedFreeAgents = hydrated.squad.filter((p) => p.contractUntil <= seasonStartYear);
+  const retainedSquad = hydrated.squad.filter((p) => p.contractUntil > seasonStartYear);
+
+  // Player progression & aging (+1 year, training & manager manManagement boost; Icons/UCL17 keep age/OVR immunity, normal contracts)
   const activeMgr = getActiveCareerManager(hydrated);
   const mgrDevBonus = activeMgr && activeMgr.manManagement >= 93 ? 1 : 0;
   const intensityBonus = hydrated.trainingIntensity === 'intense' ? 1 : 0;
   const totsUserIds = new Set(userTotsPlayers.map((t) => t.playerId));
 
-  const nextSquad = hydrated.squad.map((p) => {
+  let nextSquad: Player[] = retainedSquad.map((p) => {
     const totsMoraleBonus = totsUserIds.has(p.id) ? 5 : 0;
     const isImmortalLegend =
       p.cardTier === 'icon' || p.clubId === 'icons-fc' || p.cardTier === 'ucl17';
     if (isImmortalLegend) {
+      const { injury: _clearedInjury, ...cleanPlayer } = p;
       return {
-        ...p,
-        contractUntil: Math.max(2099, p.contractUntil),
+        ...cleanPlayer,
         fitness: 98,
         morale: Math.min(100, Math.max(85, p.morale + 5 + mgrDevBonus * 2 + totsMoraleBonus)),
         goals: 0,
@@ -4174,13 +4403,12 @@ export function createNextSeasonCareer(career: CareerSave): {
       Math.max(0.1, p.marketValueM * (delta > 0 ? 1.12 : delta < 0 ? 0.85 : 1) * (totsUserIds.has(p.id) ? 1.05 : 1)).toFixed(2)
     );
 
+    const { injury: _clearedInjury, ...cleanPlayer } = p;
     return {
-      ...p,
+      ...cleanPlayer,
       age: nextAge,
       rating: nextRating,
       marketValueM: nextVal,
-      contractUntil:
-        p.contractUntil <= seasonStartYear ? seasonStartYear + 2 : p.contractUntil,
       fitness: 98,
       morale: Math.min(100, Math.max(75, p.morale + 5 + mgrDevBonus * 2 + totsMoraleBonus)),
       goals: 0,
@@ -4196,6 +4424,57 @@ export function createNextSeasonCareer(career: CareerSave): {
       },
     };
   });
+
+  // Safety minimum 21 players: call up emergency Academy Reserves if free departures reduced squad below 21
+  let emergencyPromotedCount = 0;
+  if (nextSquad.length < 21) {
+    const positions: Position[] = ['GK', 'CB', 'CB', 'LB', 'RB', 'CM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
+    const existingIds = new Set(nextSquad.map((p) => p.id));
+    let acadIdx = nextSquad.length + departedFreeAgents.length + Math.floor(Math.random() * 50);
+    let posCursor = 0;
+    while (nextSquad.length < 21) {
+      const pos = positions[posCursor % positions.length];
+      posCursor++;
+      let candidate = createAcademyFillPlayer(hydrated.clubId, pos, acadIdx++);
+      while (existingIds.has(candidate.id)) {
+        candidate = createAcademyFillPlayer(hydrated.clubId, pos, acadIdx++);
+      }
+      candidate = {
+        ...candidate,
+        id: `acad-emg-${seasonStartYear}-${acadIdx}-${Math.random().toString(36).slice(2, 5)}`,
+        contractUntil: seasonStartYear + 3,
+        isYouthGraduate: true,
+        graduatedSeason: nextSeason,
+      };
+      existingIds.add(candidate.id);
+      nextSquad = [...nextSquad, candidate];
+      emergencyPromotedCount++;
+    }
+  }
+
+  const repairedTactics = repairTacticsAfterSquadChange(hydrated.tactics, nextSquad);
+
+  const freeTransferRecords: TransferRecord[] = departedFreeAgents.map((p, idx) => ({
+    id: `tr-free-${Date.now()}-${idx}`,
+    playerId: p.id,
+    playerName: p.name,
+    fromClubId: hydrated.clubId,
+    toClubId: 'free-agent',
+    feeM: 0,
+    wageK: p.wageK,
+    type: 'free_out',
+    matchweek: hydrated.matchweek,
+    date: new Date().toISOString(),
+  }));
+
+  const freeDepartureSummaries: FreeDepartureSummary[] = departedFreeAgents.map((p) => ({
+    playerId: p.id,
+    playerName: p.name,
+    position: p.position,
+    rating: p.rating,
+    marketValueM: p.marketValueM,
+    contractUntil: p.contractUntil,
+  }));
 
   // Upgrade league to all 20 clubs (38 rounds)
   const standings = CLUBS.map((c) => makeEmptyStanding(c.id));
@@ -4237,8 +4516,35 @@ export function createNextSeasonCareer(career: CareerSave): {
         ])
       : hydrated.financialLedger;
 
+  const mgrContractUntil = getActiveManagerContractUntil(hydrated, activeMgr);
+  const isManagerExpired = Boolean(
+    activeMgr && mgrContractUntil !== null && mgrContractUntil <= seasonStartYear
+  );
+  const expiredManagerName = isManagerExpired && activeMgr ? activeMgr.name : undefined;
+  const nextManagerHistory =
+    isManagerExpired && activeMgr
+      ? [
+          {
+            id: `mh-exp-${Date.now().toString(36)}`,
+            managerId: activeMgr.id,
+            managerName: activeMgr.name,
+            action: 'replaced' as const,
+            season: hydrated.season,
+            matchweek: hydrated.matchweek,
+            feeM: 0,
+            date: new Date().toISOString(),
+          },
+          ...(hydrated.managerHistory ?? []),
+        ].slice(0, 100)
+      : hydrated.managerHistory;
+
   const nextCareer: CareerSave = {
     ...hydrated,
+    activeManagerId: isManagerExpired ? null : hydrated.activeManagerId,
+    activeManagerSalaryM: isManagerExpired ? undefined : hydrated.activeManagerSalaryM,
+    activeManagerContractUntil: isManagerExpired ? undefined : hydrated.activeManagerContractUntil,
+    managerLastPerkSeason: undefined,
+    ...(nextManagerHistory ? { managerHistory: nextManagerHistory } : {}),
     season: nextSeason,
     matchweek: 1,
     transferBudget: Number((hydrated.transferBudget + prizeM).toFixed(1)),
@@ -4251,10 +4557,12 @@ export function createNextSeasonCareer(career: CareerSave): {
     fanSupport: alreadyClaimed
       ? hydrated.fanSupport
       : Math.min(100, Math.max(72, hydrated.fanSupport + (leagueRank <= 4 ? 6 : 2))),
+    tactics: repairedTactics,
     squad: nextSquad,
     standings,
     fixtures,
     recentResults: [],
+    transferHistory: [...freeTransferRecords, ...(hydrated.transferHistory ?? [])].slice(0, 60),
     competitions,
     trophyCabinet: existingCabinet.slice(0, 120),
     seasonHistory: [summary, ...(hydrated.seasonHistory ?? [])].slice(0, 50),
@@ -4265,6 +4573,9 @@ export function createNextSeasonCareer(career: CareerSave): {
     clubRecords: ensureClubRecords(hydrated),
     ...(nextLedger ? { financialLedger: nextLedger } : {}),
     inventory: nextInventory,
+    lastSeasonFreeDepartures: freeDepartureSummaries.length > 0 ? freeDepartureSummaries : undefined,
+    lastSeasonDepartureSeason: freeDepartureSummaries.length > 0 ? hydrated.season : undefined,
+    lastSeasonEmergencyPromoted: freeDepartureSummaries.length > 0 ? emergencyPromotedCount : undefined,
   };
 
   return {
@@ -4275,19 +4586,198 @@ export function createNextSeasonCareer(career: CareerSave): {
     alreadyClaimed,
     newTrophiesCount,
     newlyAwarded,
+    departedFreeAgents,
+    emergencyPromotedCount,
+    ...(expiredManagerName ? { expiredManagerName } : {}),
   };
 }
 
-export function getPlayerRecoveryCostM(fitness: number): number {
+export function getPlayerRecoveryCostM(fitness: number, medicalLevel: 1 | 2 | 3 = 1): number {
   const missing = Math.max(0, 100 - fitness);
   if (missing === 0) return 0;
-  return Number(Math.max(0.4, Math.min(2.5, missing * 0.05)).toFixed(1));
+  const raw = Math.max(0.4, Math.min(2.5, missing * 0.05));
+  return Number(Math.max(0.2, raw * getMedicalCostMultiplier(medicalLevel)).toFixed(1));
 }
 
-export function getSquadRecoveryCostM(squad: Player[]): number {
+export function getSquadRecoveryCostM(squad: Player[], medicalLevel: 1 | 2 | 3 = 1): number {
   const tiredPlayers = squad.filter((p) => p.fitness < 100);
   if (tiredPlayers.length === 0) return 0;
   const totalMissing = tiredPlayers.reduce((sum, p) => sum + Math.max(0, 100 - p.fitness), 0);
-  return Number(Math.max(1.5, Math.min(8.0, totalMissing * 0.025)).toFixed(1));
+  const raw = Math.max(1.5, Math.min(8.0, totalMissing * 0.025));
+  return Number(Math.max(0.6, raw * getMedicalCostMultiplier(medicalLevel)).toFixed(1));
+}
+
+export function getInjurySeverityLabel(severity: InjurySeverity): string {
+  if (severity === 'severe') return 'Nặng';
+  if (severity === 'moderate') return 'Trung bình';
+  return 'Nhẹ';
+}
+
+export function getInjuryTreatmentCostM(
+  player: Player,
+  medicalLevel: 1 | 2 | 3 = 1
+): number {
+  if (!player.injury || player.injury.matchesRemaining <= 0) return 0;
+  const sevMult =
+    player.injury.severity === 'severe'
+      ? 1.35
+      : player.injury.severity === 'moderate'
+        ? 1.1
+        : 0.85;
+  const perMatchBase = 0.42 + Math.min(1.4, player.marketValueM * 0.014);
+  const raw = Math.max(0.5, Math.min(6.0, player.injury.matchesRemaining * perMatchBase * sevMult));
+  return Number(Math.max(0.3, raw * getMedicalCostMultiplier(medicalLevel)).toFixed(1));
+}
+
+const INJURY_CATALOG: Record<InjurySeverity, { types: string[]; minMatches: number; maxMatches: number }> = {
+  minor: {
+    types: ['Căng cơ nhẹ', 'Bầm phần mềm cổ chân', 'Quá tải cơ bắp chân', 'Đau khớp gối nhẹ'],
+    minMatches: 1,
+    maxMatches: 2,
+  },
+  moderate: {
+    types: ['Lật cổ chân', 'Căng cơ gân kheo', 'Rách nhẹ cơ háng', 'Viêm gân gót Achilles'],
+    minMatches: 2,
+    maxMatches: 3,
+  },
+  severe: {
+    types: ['Rách cơ đùi sau', 'Giãn dây chằng đầu gối', 'Chấn thương sụn chêm', 'Nứt xương bàn chân'],
+    minMatches: 4,
+    maxMatches: 5,
+  },
+};
+
+export function rollMatchInjuriesAndTickRecovery(params: {
+  squad: Player[];
+  participatedIds: Set<string>;
+  tactics: TacticSettings;
+  trainingIntensity: CareerSave['trainingIntensity'];
+  medicalLevel: 1 | 2 | 3;
+  matchweek: number;
+  competitionLabel: string;
+  allowNewInjuries: boolean;
+}): {
+  nextSquad: Player[];
+  newlyInjured: Player[];
+  recoveredPlayers: Player[];
+} {
+  const {
+    squad,
+    participatedIds,
+    tactics,
+    trainingIntensity,
+    medicalLevel,
+    matchweek,
+    competitionLabel,
+    allowNewInjuries,
+  } = params;
+
+  const recoveredPlayers: Player[] = [];
+  const newlyInjured: Player[] = [];
+
+  // Step 1: Tick down existing injuries by 1 match (medicalLevel 3 has 25% chance for an extra -1 recovery)
+  let nextSquad = squad.map((p) => {
+    if (!p.injury || p.injury.matchesRemaining <= 0) return p;
+    const bonusRecovery = medicalLevel === 3 && Math.random() < 0.25 ? 1 : 0;
+    const rem = p.injury.matchesRemaining - 1 - bonusRecovery;
+    if (rem <= 0) {
+      const { injury: _removed, ...rest } = p;
+      const healed: Player = {
+        ...rest,
+        fitness: Math.max(88, p.fitness),
+        morale: Math.min(100, p.morale + 3),
+      };
+      recoveredPlayers.push(healed);
+      return healed;
+    }
+    return {
+      ...p,
+      injury: {
+        ...p.injury,
+        matchesRemaining: rem,
+      },
+    };
+  });
+
+  if (!allowNewInjuries) {
+    return { nextSquad, newlyInjured, recoveredPlayers };
+  }
+
+  // Step 2: Check if squad is healthy enough to sustain a new injury (keep >= 13 healthy players)
+  const healthyCount = nextSquad.filter((p) => !isPlayerInjured(p)).length;
+  if (healthyCount <= 13) {
+    return { nextSquad, newlyInjured, recoveredPlayers };
+  }
+
+  const healthyGkCount = nextSquad.filter((p) => p.position === 'GK' && !isPlayerInjured(p)).length;
+  const medicalRiskMult = medicalLevel === 3 ? 0.5 : medicalLevel === 2 ? 0.75 : 1.0;
+  const tacticRiskMult =
+    1 +
+    Math.max(0, tactics.pressingIntensity - 3) * 0.12 +
+    (tactics.counterPress ? 0.1 : 0) +
+    (trainingIntensity === 'intense' ? 0.15 : trainingIntensity === 'light' ? -0.15 : 0);
+
+  const candidates = nextSquad.filter(
+    (p) =>
+      participatedIds.has(p.id) &&
+      !isPlayerInjured(p) &&
+      !(p.position === 'GK' && healthyGkCount <= 1)
+  );
+
+  // Roll at most 1 new injury per match for balanced gameplay
+  for (const p of candidates) {
+    const baseRisk =
+      p.fitness < 68
+        ? 0.085
+        : p.fitness < 78
+          ? 0.038
+          : p.fitness < 88
+            ? 0.016
+            : 0.008;
+    const starResilience = (p.stars ?? 1) >= 5 ? 0.8 : 1.0;
+    const gkFactor = p.position === 'GK' ? 0.45 : 1.0;
+    const finalChance = Math.min(0.16, baseRisk * medicalRiskMult * tacticRiskMult * starResilience * gkFactor);
+
+    if (Math.random() < finalChance) {
+      const sevRoll = Math.random();
+      const severity: InjurySeverity =
+        p.fitness < 72
+          ? sevRoll < 0.25
+            ? 'severe'
+            : sevRoll < 0.72
+              ? 'moderate'
+              : 'minor'
+          : sevRoll < 0.12
+            ? 'severe'
+            : sevRoll < 0.48
+              ? 'moderate'
+              : 'minor';
+      const catalog = INJURY_CATALOG[severity];
+      const injuryType = catalog.types[Math.floor(Math.random() * catalog.types.length)];
+      const matches =
+        catalog.minMatches +
+        Math.floor(Math.random() * (catalog.maxMatches - catalog.minMatches + 1));
+
+      const injuryObj: PlayerInjury = {
+        type: injuryType,
+        severity,
+        matchesRemaining: matches,
+        totalMatches: matches,
+        injuredAtMatchweek: matchweek,
+        occurredIn: competitionLabel,
+      };
+      const updatedPlayer: Player = {
+        ...p,
+        injury: injuryObj,
+        fitness: Math.max(45, p.fitness - 15),
+        morale: Math.max(40, p.morale - 4),
+      };
+      newlyInjured.push(updatedPlayer);
+      nextSquad = nextSquad.map((sp) => (sp.id === p.id ? updatedPlayer : sp));
+      break;
+    }
+  }
+
+  return { nextSquad, newlyInjured, recoveredPlayers };
 }
 

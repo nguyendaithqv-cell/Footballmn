@@ -19,6 +19,8 @@ import {
 import {
   computeSeasonEndRewardBundle,
   computeSeasonPayrollBreakdown,
+  getActiveCareerManager,
+  getActiveManagerContractUntil,
   getNextSeasonString,
   isCompetitionFinished,
 } from '../lib/careerEngine';
@@ -448,6 +450,43 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
             </div>
           </div>
         )}
+
+        {/* Expiring Contracts Pre-Season Alert */}
+        {leagueFinished && (() => {
+          const curYear = Number(career.season.slice(0, 4)) || 2026;
+          const expiring = career.squad.filter((p) => p.contractUntil <= curYear + 1);
+          const activeMgr = getActiveCareerManager(career);
+          const mgrUntil = getActiveManagerContractUntil(career, activeMgr);
+          const mgrExpiring = Boolean(activeMgr && mgrUntil !== null && mgrUntil <= curYear + 1);
+          if (expiring.length === 0 && !mgrExpiring) return null;
+          return (
+            <div className="rounded-xl bg-rose-500/10 border border-rose-500/35 p-3 text-xs text-rose-200 space-y-1">
+              {mgrExpiring && activeMgr && (
+                <div className="flex items-start gap-2">
+                  <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <p className="text-[11px]">
+                    <strong className="text-rose-100">Hợp đồng HLV {activeMgr.name} hết hạn ({mgrUntil}):</strong>{' '}
+                    Nếu không gia hạn tại <strong>CLB → HLV trưởng</strong> hoặc <strong>Gia hạn Hợp đồng</strong> trước khi sang mùa {nextSeasonLabel}, HLV sẽ rời CLB!
+                  </p>
+                </div>
+              )}
+              {expiring.length > 0 && (
+                <div className="flex items-start gap-2">
+                  <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">
+                      Lưu ý hết hạn hợp đồng ({expiring.length} cầu thủ):
+                    </p>
+                    <p className="text-[11px] text-rose-200/85 mt-0.5">
+                      {expiring.slice(0, 5).map((p) => `${p.shortName} (HĐ ${p.contractUntil})`).join(', ')}
+                      {expiring.length > 5 ? ` và ${expiring.length - 5} cầu thủ khác` : ''} sẽ ra đi tự do khi bạn bấm &ldquo;Khởi Tranh Mùa {nextSeasonLabel}&rdquo;. Hãy vào Kinh tế &amp; Sân bãi → Gia hạn Hợp đồng nếu muốn giữ lại!
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         <div className="flex flex-col sm:flex-row gap-2.5">
           {isPayrollSettled ? (
