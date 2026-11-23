@@ -22,6 +22,8 @@ export interface PackCatalogItem {
 
 export type PlayerUpgradeTier = 'standard' | 'elite' | 'superstar' | 'legend';
 
+export const MAX_PLAYER_STARS = 7;
+
 export const FITNESS_BOOSTER_RECOVERY = 25;
 
 export const PACK_CATALOG: PackCatalogItem[] = [
@@ -110,7 +112,7 @@ export const STAR_UPGRADE_STEPS: StarUpgradeStep[] = [
     cardsRequired: 1,
     ovrGain: 1,
     valueMultiplier: 1.06,
-    shardsByTier: { standard: 10, elite: 15, superstar: 25, legend: 40 },
+    shardsByTier: { standard: 50, elite: 75, superstar: 125, legend: 200 },
     feeByTier: { standard: 1.0, elite: 1.5, superstar: 3.0, legend: 5.0 },
   },
   {
@@ -119,7 +121,7 @@ export const STAR_UPGRADE_STEPS: StarUpgradeStep[] = [
     cardsRequired: 1,
     ovrGain: 1,
     valueMultiplier: 1.08,
-    shardsByTier: { standard: 15, elite: 25, superstar: 40, legend: 60 },
+    shardsByTier: { standard: 75, elite: 125, superstar: 200, legend: 300 },
     feeByTier: { standard: 2.0, elite: 3.5, superstar: 6.0, legend: 10.0 },
   },
   {
@@ -128,7 +130,7 @@ export const STAR_UPGRADE_STEPS: StarUpgradeStep[] = [
     cardsRequired: 2,
     ovrGain: 2,
     valueMultiplier: 1.1,
-    shardsByTier: { standard: 25, elite: 35, superstar: 60, legend: 90 },
+    shardsByTier: { standard: 125, elite: 175, superstar: 300, legend: 450 },
     feeByTier: { standard: 4.0, elite: 6.0, superstar: 10.0, legend: 16.0 },
   },
   {
@@ -137,8 +139,26 @@ export const STAR_UPGRADE_STEPS: StarUpgradeStep[] = [
     cardsRequired: 2,
     ovrGain: 2,
     valueMultiplier: 1.12,
-    shardsByTier: { standard: 35, elite: 50, superstar: 85, legend: 125 },
+    shardsByTier: { standard: 175, elite: 250, superstar: 425, legend: 625 },
     feeByTier: { standard: 6.0, elite: 10.0, superstar: 16.0, legend: 24.0 },
+  },
+  {
+    fromStars: 5,
+    toStars: 6,
+    cardsRequired: 3,
+    ovrGain: 2,
+    valueMultiplier: 1.14,
+    shardsByTier: { standard: 250, elite: 350, superstar: 575, legend: 850 },
+    feeByTier: { standard: 9.0, elite: 15.0, superstar: 24.0, legend: 35.0 },
+  },
+  {
+    fromStars: 6,
+    toStars: 7,
+    cardsRequired: 3,
+    ovrGain: 2,
+    valueMultiplier: 1.16,
+    shardsByTier: { standard: 350, elite: 500, superstar: 800, legend: 1150 },
+    feeByTier: { standard: 14.0, elite: 22.0, superstar: 35.0, legend: 50.0 },
   },
 ];
 
@@ -165,7 +185,7 @@ export function resolvePlayerUpgradeTier(player: Player): {
   baseRating: number;
 } {
   const baseSource = BASE_PLAYER_MAP.get(player.id);
-  const currentStars = Math.max(1, Math.min(5, player.stars ?? 1));
+  const currentStars = Math.max(1, Math.min(MAX_PLAYER_STARS, player.stars ?? 1));
   const baseRating =
     typeof player.baseRating === 'number' && player.baseRating > 0
       ? player.baseRating
@@ -194,12 +214,12 @@ export function computeStarAttrDelta(
   position: Position,
   fromStars: number
 ): Player['attributes'] {
-  // Primary / Secondary / Tertiary growth across steps (1->2, 2->3, 3->4, 4->5)
-  const idx = Math.max(0, Math.min(3, fromStars - 1));
-  const pri = [2, 3, 3, 4][idx];
-  const sec = [1, 2, 2, 3][idx];
-  const low = [0, 1, 1, 1][idx];
-  const min = [0, 0, 1, 1][idx];
+  // Primary / Secondary / Tertiary growth across steps (1->2, 2->3, 3->4, 4->5, 5->6, 6->7)
+  const idx = Math.max(0, Math.min(5, fromStars - 1));
+  const pri = [2, 3, 3, 4, 4, 5][idx];
+  const sec = [1, 2, 2, 3, 3, 4][idx];
+  const low = [0, 1, 1, 1, 2, 2][idx];
+  const min = [0, 0, 1, 1, 1, 2][idx];
 
   switch (position) {
     case 'GK':
@@ -411,16 +431,16 @@ export function getStarUpgradePlan(
   inventory: InventoryState,
   transferBudgetM: number
 ): StarUpgradePlan {
-  const currentStars = Math.max(1, Math.min(5, player.stars ?? 1));
+  const currentStars = Math.max(1, Math.min(MAX_PLAYER_STARS, player.stars ?? 1));
   const step = STAR_UPGRADE_STEPS.find((s) => s.fromStars === currentStars);
   const ownedDuplicateCards = inventory.playerCards[player.id] ?? 0;
   const { tier, label: tierLabel, baseRating } = resolvePlayerUpgradeTier(player);
   const zeroGains: Player['attributes'] = { pac: 0, sho: 0, pas: 0, dri: 0, def: 0, phy: 0 };
 
-  if (!step || currentStars >= 5) {
+  if (!step || currentStars >= MAX_PLAYER_STARS) {
     return {
-      currentStars: 5,
-      nextStars: 5,
+      currentStars: MAX_PLAYER_STARS,
+      nextStars: MAX_PLAYER_STARS,
       isMax: true,
       tier,
       tierLabel,
@@ -550,8 +570,8 @@ export function getQuickDismantlePlan(
     const refPlayer = squadPlayer ?? dbPlayer;
     if (!refPlayer) continue;
 
-    // An toàn: chỉ gom tách thẻ của cầu thủ ĐH đã max 5★, hoặc thẻ Tiêu chuẩn/Tinh Anh ngoài ĐH (<86 OVR & không phải ICON/UCL17/Global)
-    const isMaxedSquadCard = Boolean(squadPlayer && (squadPlayer.stars ?? 1) >= 5);
+    // An toàn: chỉ gom tách thẻ của cầu thủ ĐH đã max 7★, hoặc thẻ Tiêu chuẩn/Tinh Anh ngoài ĐH (<86 OVR & không phải ICON/UCL17/Global)
+    const isMaxedSquadCard = Boolean(squadPlayer && (squadPlayer.stars ?? 1) >= MAX_PLAYER_STARS);
     const isSafeExcessNonSquad =
       !squadPlayer &&
       refPlayer.cardTier !== 'icon' &&

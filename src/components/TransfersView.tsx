@@ -250,7 +250,7 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
               <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
                 <span className="text-amber-200 flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                  Chiêu mộ trực tiếp bằng Ngân sách + Mảnh Ngôi Sao, hoặc săn trong{' '}
+                  Chiêu mộ trực tiếp bằng Ngân sách + 500 Mảnh Ngôi Sao, hoặc săn trong{' '}
                   <strong className="text-amber-300">Gói Huyền Thoại ICON</strong>.
                 </span>
                 <span className="font-mono-num font-bold text-amber-300 shrink-0">

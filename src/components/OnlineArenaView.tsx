@@ -22,6 +22,7 @@ import {
 import { CLUBS } from '../data/footballDatabase';
 import {
   formatRankLabel,
+  getOnlineTournamentEntryFeeM,
   getRankConfig,
   RANK_TIERS,
   RankedOutcomeResult,
@@ -976,56 +977,84 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
         <div className="space-y-4">
           {!tourney ? (
             <div className="rounded-2xl bg-[#121B24] border border-white/10 p-5 space-y-4">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                  Giải Đấu Loại Trực Tiếp Liên Server
-                </p>
-                <h3 className="font-display text-2xl font-extrabold text-white mt-0.5">
-                  Thi Đấu Giải Online (Cúp 8 &amp; 16 HLV)
-                </h3>
-                <p className="text-xs text-slate-300 mt-1">
-                  Quy tụ các người chơi thực trên server và các HLV Bot AI tinh anh. Thắng các vòng để nâng Cúp Online và nhận Gói Siêu Sao 86+!
-                </p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
+                    Giải Đấu Loại Trực Tiếp Liên Server
+                  </p>
+                  <h3 className="font-display text-2xl font-extrabold text-white mt-0.5">
+                    Thi Đấu Giải Online (Cúp 8 &amp; 16 HLV)
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-1">
+                    Quy tụ các người chơi thực trên server và các HLV Bot AI tinh anh. Thắng các vòng để nâng Cúp Online và nhận Gói Siêu Sao 86+!
+                  </p>
+                </div>
+                <div className="rounded-xl bg-[#0B1117] border border-white/10 px-3 py-2 text-right shrink-0">
+                  <p className="text-[10px] text-slate-400">Ngân sách CLB</p>
+                  <p className="font-mono-num text-sm font-extrabold text-emerald-400">
+                    €{career.transferBudget.toFixed(1)}M
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="rounded-xl bg-[#0B1117] border border-emerald-500/35 p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-emerald-400">THỂ THỨC 8 ĐỘI</span>
-                    <Trophy className="w-5 h-5 text-emerald-400" />
-                  </div>
-                  <h4 className="text-base font-bold text-white">Cúp Chiến Thuật Online 8 HLV</h4>
-                  <p className="text-xs text-slate-400">
-                    3 vòng đấu: Tứ kết → Bán kết → Chung kết. Thưởng vô địch: +€15M, +1 Gói Tinh Anh 82+, +1 Rương Quà Vinh Quang &amp; +30 Mảnh.
-                  </p>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyKey)}
-                    onClick={() => handleStartTourney(8)}
-                    className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs"
-                  >
-                    Khởi tạo Giải 8 HLV
-                  </button>
-                </div>
+                {(() => {
+                  const fee8 = getOnlineTournamentEntryFeeM(8);
+                  const canAfford8 = career.transferBudget >= fee8;
+                  return (
+                    <div className="rounded-xl bg-[#0B1117] border border-emerald-500/35 p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-400">
+                          THỂ THỨC 8 ĐỘI · PHÍ €{fee8}M
+                        </span>
+                        <Trophy className="w-5 h-5 text-emerald-400" />
+                      </div>
+                      <h4 className="text-base font-bold text-white">Cúp Chiến Thuật Online 8 HLV</h4>
+                      <p className="text-xs text-slate-400">
+                        3 vòng đấu: Tứ kết → Bán kết → Chung kết. Lệ phí tham dự: <strong className="text-amber-300">€{fee8}M</strong>. Thưởng vô địch: +€15M, +1 Gói Tinh Anh 82+, +1 Rương Quà Vinh Quang &amp; +30 Mảnh.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={Boolean(busyKey) || !canAfford8}
+                        onClick={() => handleStartTourney(8)}
+                        className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs disabled:opacity-45"
+                      >
+                        {canAfford8
+                          ? `Khởi tạo Giải 8 HLV (-€${fee8}M)`
+                          : `Không đủ ngân sách (Cần €${fee8}M)`}
+                      </button>
+                    </div>
+                  );
+                })()}
 
-                <div className="rounded-xl bg-[#0B1117] border border-amber-400/40 p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-amber-400">THỂ THỨC 16 ĐỘI</span>
-                    <Crown className="w-5 h-5 text-amber-400" />
-                  </div>
-                  <h4 className="text-base font-bold text-white">Siêu Cúp Online 16 HLV</h4>
-                  <p className="text-xs text-slate-400">
-                    4 vòng đấu: Vòng 1/8 → Tứ kết → Bán kết → Chung kết. Thưởng vô địch: +€25M, +1 Gói Siêu Sao 86+, +1 Rương Quà Vinh Quang &amp; +50 Mảnh.
-                  </p>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyKey)}
-                    onClick={() => handleStartTourney(16)}
-                    className="w-full h-11 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
-                  >
-                    Khởi tạo Siêu Cúp 16 HLV
-                  </button>
-                </div>
+                {(() => {
+                  const fee16 = getOnlineTournamentEntryFeeM(16);
+                  const canAfford16 = career.transferBudget >= fee16;
+                  return (
+                    <div className="rounded-xl bg-[#0B1117] border border-amber-400/40 p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-amber-400">
+                          THỂ THỨC 16 ĐỘI · PHÍ €{fee16}M
+                        </span>
+                        <Crown className="w-5 h-5 text-amber-400" />
+                      </div>
+                      <h4 className="text-base font-bold text-white">Siêu Cúp Online 16 HLV</h4>
+                      <p className="text-xs text-slate-400">
+                        4 vòng đấu: Vòng 1/8 → Tứ kết → Bán kết → Chung kết. Lệ phí tham dự: <strong className="text-amber-300">€{fee16}M</strong>. Thưởng vô địch: +€25M, +1 Gói Siêu Sao 86+, +1 Rương Quà Vinh Quang &amp; +50 Mảnh.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={Boolean(busyKey) || !canAfford16}
+                        onClick={() => handleStartTourney(16)}
+                        className="w-full h-11 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs disabled:opacity-45"
+                      >
+                        {canAfford16
+                          ? `Khởi tạo Siêu Cúp 16 HLV (-€${fee16}M)`
+                          : `Không đủ ngân sách (Cần €${fee16}M)`}
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ) : (
@@ -1059,19 +1088,25 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
                     <>
                       <button
                         type="button"
-                        disabled={Boolean(busyKey)}
+                        disabled={
+                          Boolean(busyKey) ||
+                          career.transferBudget < getOnlineTournamentEntryFeeM(8)
+                        }
                         onClick={() => handleStartTourney(8)}
-                        className="h-10 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs"
+                        className="h-10 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs disabled:opacity-45"
                       >
-                        Giải mới (8 HLV)
+                        Giải mới 8 HLV (-€{getOnlineTournamentEntryFeeM(8)}M)
                       </button>
                       <button
                         type="button"
-                        disabled={Boolean(busyKey)}
+                        disabled={
+                          Boolean(busyKey) ||
+                          career.transferBudget < getOnlineTournamentEntryFeeM(16)
+                        }
                         onClick={() => handleStartTourney(16)}
-                        className="h-10 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
+                        className="h-10 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs disabled:opacity-45"
                       >
-                        Giải mới (16 HLV)
+                        Giải mới 16 HLV (-€{getOnlineTournamentEntryFeeM(16)}M)
                       </button>
                     </>
                   )}

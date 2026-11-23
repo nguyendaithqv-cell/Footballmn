@@ -163,7 +163,7 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                 )}
                 {isOwnPlayer && (
                   <span className="inline-flex items-center gap-0.5 ml-1">
-                    {[1, 2, 3, 4, 5].map((n) => (
+                    {[1, 2, 3, 4, 5, 6, 7].map((n) => (
                       <Star
                         key={n}
                         className={`w-3.5 h-3.5 ${
@@ -372,14 +372,14 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                   </div>
                   <span className="font-mono-num text-xs font-bold text-amber-400 shrink-0">
                     {upgradePlan.isMax
-                      ? '5★ Tối đa'
+                      ? '7★ Tối đa'
                       : `${upgradePlan.currentStars}★ → ${upgradePlan.nextStars}★ (OVR ${player.rating} → ${upgradePlan.previewRating})`}
                   </span>
                 </div>
 
                 {upgradePlan.isMax ? (
                   <p className="text-[11px] text-amber-300">
-                    Cầu thủ đạt cảnh giới tối đa 5★: Miễn giảm OVR do tuổi tác &amp; tăng hiệu suất thi đấu đỉnh cao.
+                    Cầu thủ đạt cảnh giới tối đa 7★: Miễn giảm OVR do tuổi tác &amp; đạt đỉnh cao hiệu suất thi đấu.
                   </p>
                 ) : (
                   <>
@@ -428,6 +428,9 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                       )}
                       {upgradePlan.nextStars === 5 && (
                         <span className="text-amber-300 font-semibold">Mở khóa 5★: Bất tử tuổi tác</span>
+                      )}
+                      {upgradePlan.nextStars === 7 && (
+                        <span className="text-amber-300 font-semibold">Mở khóa 7★: Đỉnh cao Huyền thoại</span>
                       )}
                     </div>
 

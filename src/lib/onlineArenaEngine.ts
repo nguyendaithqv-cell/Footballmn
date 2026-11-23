@@ -187,7 +187,7 @@ function toStarterSnapshot(player: Player, slotLabel?: Position): ArenaStarterSn
     shortName: player.shortName,
     position: slotLabel ?? player.position,
     rating: player.rating,
-    stars: Math.max(1, Math.min(5, player.stars ?? 1)),
+    stars: Math.max(1, Math.min(7, player.stars ?? 1)),
     pac: player.attributes.pac,
     sho: player.attributes.sho,
     pas: player.attributes.pas,
@@ -1020,6 +1020,10 @@ function getRoundLabelForSize(size: 8 | 16, round: number): string {
   if (round === 1) return 'Tứ Kết';
   if (round === 2) return 'Bán Kết';
   return 'Chung Kết';
+}
+
+export function getOnlineTournamentEntryFeeM(size: 8 | 16): number {
+  return size === 16 ? 20 : 10;
 }
 
 export function createOnlineTournament(

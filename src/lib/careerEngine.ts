@@ -40,6 +40,7 @@ import {
   createEmptyClubRecords,
   ensureClubRecords,
   ensureYouthAcademy,
+  needsClubRecordsBackfill,
 } from './legacyAcademyEngine';
 
 export const COMPETITION_LABEL_MAP: Record<CompetitionId, string> = {
@@ -906,7 +907,7 @@ export function generateSeasonObjectives(
 
   const cupTarget = rep >= 87 ? 'cup_semi' : 'cup_semi';
   const goalTarget = rep >= 87 ? 18 : rep >= 82 ? 14 : 11;
-  const starTarget = Math.min(5, Math.max(3, maxStars + 1));
+  const starTarget = Math.min(7, Math.max(3, maxStars + 1));
 
   return [
     {
@@ -932,7 +933,7 @@ export function generateSeasonObjectives(
       rewardShards: 20,
       status: 'in_progress',
     },
-    starTarget <= 5 && maxStars < 5
+    starTarget <= 7 && maxStars < 7
       ? {
           id: `obj-${seasonKey}-star`,
           title: `Phát triển cầu thủ lên ${starTarget}★`,
@@ -1293,9 +1294,7 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
   const hasYouthAcademy = Boolean(
     career.youthAcademy && Array.isArray(career.youthAcademy.prospects)
   );
-  const hasClubRecords = Boolean(
-    career.clubRecords && career.clubRecords.playerLegends && career.clubRecords.headToHead
-  );
+  const hasClubRecords = !needsClubRecordsBackfill(career);
 
   if (
     hasComps &&
@@ -2005,13 +2004,14 @@ function computeUserConditionBonus(starters: StarterEntry[], cohesion: number): 
   const formMod = (avgForm - 7.1) * 0.45;
   const cohesionMod = cohesion >= 88 ? (cohesion - 88) * 0.06 : (cohesion - 88) * 0.14;
   const starPerkBonus = starters.reduce((sum, e) => {
-    const st = Math.max(1, Math.min(5, e.player.stars ?? 1));
+    const st = Math.max(1, Math.min(7, e.player.stars ?? 1));
+    if (st >= 7) return sum + 0.24;
     if (st >= 5) return sum + 0.16;
     if (st >= 3) return sum + 0.06;
     return sum;
   }, 0);
 
-  return Math.max(-4.5, Math.min(4.2, fitMod + moraleMod + formMod + cohesionMod + Math.min(1.5, starPerkBonus)));
+  return Math.max(-4.5, Math.min(4.5, fitMod + moraleMod + formMod + cohesionMod + Math.min(2.0, starPerkBonus)));
 }
 
 function computeAITeamProfile(

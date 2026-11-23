@@ -1048,10 +1048,7 @@ export function getIconShardCost(
 ): number {
   const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
   if (!isIcon) return 0;
-  if (player.rating >= 94) return 65;
-  if (player.rating >= 92) return 50;
-  if (player.rating >= 90) return 40;
-  return 30;
+  return 500;
 }
 
 type RawPlayerInput = [

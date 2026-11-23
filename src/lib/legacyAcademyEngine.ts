@@ -549,16 +549,116 @@ export function createEmptyClubRecords(): ClubRecordsState {
   };
 }
 
-export function ensureClubRecords(career: CareerSave): ClubRecordsState {
-  if (career.clubRecords && career.clubRecords.playerLegends && career.clubRecords.headToHead) {
-    return career.clubRecords;
+export function needsClubRecordsBackfill(career: CareerSave): boolean {
+  const cr = career.clubRecords;
+  if (!cr || !cr.playerLegends || !cr.headToHead) {
+    return true;
+  }
+  if (cr.headToHead[career.clubId]) {
+    return true;
+  }
+  if (cr.totalMatches > 0) {
+    return false;
   }
 
-  // Backfill cleanly from current season squad & standing if migrating an existing save
-  const myRow = career.standings.find((s) => s.clubId === career.clubId);
+  const myRow = career.standings?.find((s) => s.clubId === career.clubId);
+  if (myRow && myRow.played > 0) return true;
+  if (
+    career.fixtures?.some(
+      (f) => f.played && (f.homeClubId === career.clubId || f.awayClubId === career.clubId)
+    )
+  ) {
+    return true;
+  }
+  if (
+    career.competitions?.championsCup?.matches?.some(
+      (m) => m.played && (m.homeClubId === career.clubId || m.awayClubId === career.clubId)
+    )
+  ) {
+    return true;
+  }
+  if (
+    career.competitions?.nationalCup?.matches?.some(
+      (m) => m.played && (m.homeClubId === career.clubId || m.awayClubId === career.clubId)
+    )
+  ) {
+    return true;
+  }
+  const sc = career.competitions?.superCup?.match;
+  if (sc?.played && (sc.homeClubId === career.clubId || sc.awayClubId === career.clubId)) {
+    return true;
+  }
+  if (
+    (career.recentResults ?? []).some(
+      (r) =>
+        r.competition !== 'friendly' &&
+        (r.homeClubId === career.clubId || r.awayClubId === career.clubId)
+    )
+  ) {
+    return true;
+  }
+  if (career.squad?.some((p) => p.appearances > 0 || p.goals > 0 || p.assists > 0)) {
+    return true;
+  }
+  if ((career.seasonHistory?.length ?? 0) > 0) {
+    return true;
+  }
+  return false;
+}
+
+export function ensureClubRecords(career: CareerSave): ClubRecordsState {
+  const existing = career.clubRecords;
+  if (
+    existing &&
+    existing.playerLegends &&
+    existing.headToHead &&
+    !needsClubRecordsBackfill(career)
+  ) {
+    return existing;
+  }
+
+  // If existing records had real opponent H2H alongside a bogus self-entry, strip only the bogus self-entry
+  if (existing && existing.playerLegends && existing.headToHead && existing.headToHead[career.clubId]) {
+    const otherOppKeys = Object.keys(existing.headToHead).filter((id) => id !== career.clubId);
+    if (otherOppKeys.length > 0 && existing.totalMatches > existing.headToHead[career.clubId].played) {
+      const selfEntry = existing.headToHead[career.clubId];
+      const cleanedH2H = { ...existing.headToHead };
+      delete cleanedH2H[career.clubId];
+      return {
+        ...existing,
+        totalMatches: Math.max(0, existing.totalMatches - selfEntry.played),
+        wins: Math.max(0, existing.wins - selfEntry.won),
+        draws: Math.max(0, existing.draws - selfEntry.drawn),
+        losses: Math.max(0, existing.losses - selfEntry.lost),
+        goalsFor: Math.max(0, existing.goalsFor - selfEntry.gf),
+        goalsAgainst: Math.max(0, existing.goalsAgainst - selfEntry.ga),
+        headToHead: cleanedH2H,
+      };
+    }
+  }
+
+  // Backfill cleanly from current season squad, leaderboards, fixtures, cups, recentResults & standings
+  const myRow = career.standings?.find((s) => s.clubId === career.clubId);
+
+  const motmByPlayerId = new Map<string, number>();
+  const leaderboards = career.competitions?.leaderboards;
+  if (leaderboards) {
+    for (const compKey of ['league', 'champions-cup', 'national-cup', 'super-cup'] as const) {
+      for (const row of leaderboards[compKey] ?? []) {
+        if (row.clubId === career.clubId && (row.motmCount ?? 0) > 0) {
+          motmByPlayerId.set(
+            row.playerId,
+            (motmByPlayerId.get(row.playerId) ?? 0) + (row.motmCount ?? 0)
+          );
+        }
+      }
+    }
+  }
+
   const playerLegends: Record<string, ClubPlayerCareerRecord> = {};
-  for (const p of career.squad) {
-    if (p.appearances > 0 || p.goals > 0 || p.assists > 0) {
+  for (const p of career.squad ?? []) {
+    const motmCount = motmByPlayerId.get(p.id) ?? 0;
+    if (p.appearances > 0 || p.goals > 0 || p.assists > 0 || motmCount > 0) {
       playerLegends[p.id] = {
         playerId: p.id,
         playerName: p.name,
@@ -572,28 +672,214 @@ export function ensureClubRecords(career: CareerSave): ClubRecordsState {
         appearances: p.appearances,
         goals: p.goals,
         assists: p.assists,
-        motmCount: 0,
+        motmCount,
         peakRating: p.rating,
       };
     }
   }
 
-  const headToHead: Record<string, ClubHeadToHeadRecord> = {};
-  let biggestWin = createEmptyClubRecords().biggestWin;
-  let highestScoringMatch = createEmptyClubRecords().highestScoringMatch;
+  interface BackfillMatch {
+    id: string;
+    compKey: string;
+    competitionLabel: string;
+    matchweek: number;
+    sortOrder: number;
+    homeClubId: string;
+    awayClubId: string;
+    oppId: string;
+    gf: number;
+    ga: number;
+    won: boolean;
+    drawn: boolean;
+  }
 
-  for (const res of career.recentResults ?? []) {
+  const collected: BackfillMatch[] = [];
+  const seenIds = new Set<string>();
+  const seenSignatures = new Set<string>();
+
+  const pushMatch = (m: BackfillMatch) => {
+    if (!m.oppId || m.oppId === career.clubId) return;
+    if (seenIds.has(m.id)) return;
+    const sig = `${m.compKey}:${m.homeClubId}:${m.awayClubId}:${m.gf}:${m.ga}`;
+    if (m.compKey !== 'league' && seenSignatures.has(sig)) return;
+    const leagueSig = `${m.compKey}:${m.matchweek}:${m.homeClubId}:${m.awayClubId}:${m.gf}:${m.ga}`;
+    if (m.compKey === 'league' && seenSignatures.has(leagueSig)) return;
+
+    seenIds.add(m.id);
+    seenSignatures.add(m.compKey === 'league' ? leagueSig : sig);
+    collected.push(m);
+  };
+
+  const scMatch = career.competitions?.superCup?.match;
+  if (
+    scMatch?.played &&
+    (scMatch.homeClubId === career.clubId || scMatch.awayClubId === career.clubId) &&
+    typeof scMatch.homeGoals === 'number' &&
+    typeof scMatch.awayGoals === 'number'
+  ) {
+    const isHome = scMatch.homeClubId === career.clubId;
+    const gf = isHome ? scMatch.homeGoals : scMatch.awayGoals;
+    const ga = isHome ? scMatch.awayGoals : scMatch.homeGoals;
+    const oppId = isHome ? scMatch.awayClubId : scMatch.homeClubId;
+    const won = scMatch.winnerId ? scMatch.winnerId === career.clubId : gf > ga;
+    const drawn = !scMatch.winnerId && gf === ga;
+    pushMatch({
+      id: scMatch.id,
+      compKey: 'super-cup',
+      competitionLabel: 'Siêu Cúp',
+      matchweek: 1,
+      sortOrder: 0,
+      homeClubId: scMatch.homeClubId,
+      awayClubId: scMatch.awayClubId,
+      oppId,
+      gf,
+      ga,
+      won,
+      drawn,
+    });
+  }
+
+  for (const f of career.fixtures ?? []) {
+    if (!f.played || typeof f.homeGoals !== 'number' || typeof f.awayGoals !== 'number') continue;
+    if (f.homeClubId !== career.clubId && f.awayClubId !== career.clubId) continue;
+    const isHome = f.homeClubId === career.clubId;
+    const gf = isHome ? f.homeGoals : f.awayGoals;
+    const ga = isHome ? f.awayGoals : f.homeGoals;
+    const oppId = isHome ? f.awayClubId : f.homeClubId;
+    pushMatch({
+      id: f.id,
+      compKey: 'league',
+      competitionLabel: 'Super League',
+      matchweek: f.matchweek,
+      sortOrder: 10 + f.matchweek * 10,
+      homeClubId: f.homeClubId,
+      awayClubId: f.awayClubId,
+      oppId,
+      gf,
+      ga,
+      won: gf > ga,
+      drawn: gf === ga,
+    });
+  }
+
+  for (const m of career.competitions?.championsCup?.matches ?? []) {
+    if (!m.played || typeof m.homeGoals !== 'number' || typeof m.awayGoals !== 'number') continue;
+    if (m.homeClubId !== career.clubId && m.awayClubId !== career.clubId) continue;
+    const isHome = m.homeClubId === career.clubId;
+    const gf = isHome ? m.homeGoals : m.awayGoals;
+    const ga = isHome ? m.awayGoals : m.homeGoals;
+    const oppId = isHome ? m.awayClubId : m.homeClubId;
+    const won = m.winnerId ? m.winnerId === career.clubId : gf > ga;
+    const drawn = !m.winnerId && gf === ga;
+    pushMatch({
+      id: m.id,
+      compKey: 'champions-cup',
+      competitionLabel: 'Champions Cup',
+      matchweek: m.round,
+      sortOrder: 1000 + m.round * 10,
+      homeClubId: m.homeClubId,
+      awayClubId: m.awayClubId,
+      oppId,
+      gf,
+      ga,
+      won,
+      drawn,
+    });
+  }
+
+  for (const m of career.competitions?.nationalCup?.matches ?? []) {
+    if (!m.played || typeof m.homeGoals !== 'number' || typeof m.awayGoals !== 'number') continue;
+    if (m.homeClubId !== career.clubId && m.awayClubId !== career.clubId) continue;
+    const isHome = m.homeClubId === career.clubId;
+    const gf = isHome ? m.homeGoals : m.awayGoals;
+    const ga = isHome ? m.awayGoals : m.homeGoals;
+    const oppId = isHome ? m.awayClubId : m.homeClubId;
+    const won = m.winnerId ? m.winnerId === career.clubId : gf > ga;
+    const drawn = !m.winnerId && gf === ga;
+    pushMatch({
+      id: m.id,
+      compKey: 'national-cup',
+      competitionLabel: 'Cúp Quốc Gia',
+      matchweek: m.round,
+      sortOrder: 2000 + m.round * 10,
+      homeClubId: m.homeClubId,
+      awayClubId: m.awayClubId,
+      oppId,
+      gf,
+      ga,
+      won,
+      drawn,
+    });
+  }
+
+  for (const res of [...(career.recentResults ?? [])].reverse()) {
+    if (res.competition === 'friendly') continue;
     const isHome = res.homeClubId === career.clubId;
     const isAway = res.awayClubId === career.clubId;
     if (!isHome && !isAway) continue;
     const oppId = isHome ? res.awayClubId : res.homeClubId;
     const gf = isHome ? res.homeGoals : res.awayGoals;
     const ga = isHome ? res.awayGoals : res.homeGoals;
-    const won = gf > ga;
-    const drawn = gf === ga;
+    const won = res.winnerId ? res.winnerId === career.clubId : gf > ga;
+    const drawn = !res.winnerId && gf === ga;
+    const compKey = res.competition ?? 'league';
+    const compLabel =
+      res.roundLabel ||
+      (compKey === 'champions-cup'
+        ? 'Champions Cup'
+        : compKey === 'national-cup'
+          ? 'Cúp Quốc Gia'
+          : compKey === 'super-cup'
+            ? 'Siêu Cúp'
+            : 'Super League');
+    pushMatch({
+      id: res.id,
+      compKey,
+      competitionLabel: compLabel,
+      matchweek: res.matchweek,
+      sortOrder: 3000 + res.matchweek,
+      homeClubId: res.homeClubId,
+      awayClubId: res.awayClubId,
+      oppId,
+      gf,
+      ga,
+      won,
+      drawn,
+    });
+  }
 
-    const curH2H = headToHead[oppId] ?? {
-      opponentClubId: oppId,
+  collected.sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const headToHead: Record<string, ClubHeadToHeadRecord> = {};
+  let biggestWin = createEmptyClubRecords().biggestWin;
+  let highestScoringMatch = createEmptyClubRecords().highestScoringMatch;
+  let totalMatches = 0;
+  let wins = 0;
+  let draws = 0;
+  let losses = 0;
+  let goalsFor = 0;
+  let goalsAgainst = 0;
+  let currentUnbeatenStreak = 0;
+  let longestUnbeatenStreak = 0;
+  let currentWinStreak = 0;
+  let longestWinStreak = 0;
+
+  for (const m of collected) {
+    const lost = !m.won && !m.drawn;
+    totalMatches += 1;
+    if (m.won) wins += 1;
+    else if (m.drawn) draws += 1;
+    else losses += 1;
+    goalsFor += m.gf;
+    goalsAgainst += m.ga;
+
+    currentUnbeatenStreak = lost ? 0 : currentUnbeatenStreak + 1;
+    longestUnbeatenStreak = Math.max(longestUnbeatenStreak, currentUnbeatenStreak);
+    currentWinStreak = m.won ? currentWinStreak + 1 : 0;
+    longestWinStreak = Math.max(longestWinStreak, currentWinStreak);
+
+    const curH2H = headToHead[m.oppId] ?? {
+      opponentClubId: m.oppId,
       played: 0,
       won: 0,
       drawn: 0,
@@ -601,74 +887,83 @@ export function ensureClubRecords(career: CareerSave): ClubRecordsState {
       gf: 0,
       ga: 0,
     };
-    headToHead[oppId] = {
+    headToHead[m.oppId] = {
       ...curH2H,
       played: curH2H.played + 1,
-      won: curH2H.won + (won ? 1 : 0),
-      drawn: curH2H.drawn + (drawn ? 1 : 0),
-      lost: curH2H.lost + (!won && !drawn ? 1 : 0),
-      gf: curH2H.gf + gf,
-      ga: curH2H.ga + ga,
+      won: curH2H.won + (m.won ? 1 : 0),
+      drawn: curH2H.drawn + (m.drawn ? 1 : 0),
+      lost: curH2H.lost + (lost ? 1 : 0),
+      gf: curH2H.gf + m.gf,
+      ga: curH2H.ga + m.ga,
     };
 
-    const margin = gf - ga;
-    const compLabel =
-      res.roundLabel ||
-      (res.competition === 'champions-cup'
-        ? 'Champions Cup'
-        : res.competition === 'national-cup'
-          ? 'Cúp Quốc Gia'
-          : res.competition === 'super-cup'
-            ? 'Siêu Cúp'
-            : 'Super League');
-
-    if (won && (!biggestWin || margin > biggestWin.margin || (margin === biggestWin.margin && gf > Number(biggestWin.scoreText.split('-')[0] || 0)))) {
+    const margin = m.gf - m.ga;
+    if (
+      m.won &&
+      (!biggestWin ||
+        margin > biggestWin.margin ||
+        (margin === biggestWin.margin &&
+          m.gf > Number(biggestWin.scoreText.split('-')[0] || 0)))
+    ) {
       biggestWin = {
-        matchId: res.id,
-        opponentClubId: oppId,
-        scoreText: `${gf}-${ga}`,
+        matchId: m.id,
+        opponentClubId: m.oppId,
+        scoreText: `${m.gf}-${m.ga}`,
         margin,
-        competitionLabel: compLabel,
+        competitionLabel: m.competitionLabel,
         season: career.season,
-        matchweek: res.matchweek,
+        matchweek: m.matchweek,
       };
     }
+
     if (
       !highestScoringMatch ||
-      gf + ga >
+      m.gf + m.ga >
         Number(highestScoringMatch.scoreText.split('-')[0] || 0) +
           Number(highestScoringMatch.scoreText.split('-')[1] || 0)
     ) {
       highestScoringMatch = {
-        matchId: res.id,
-        opponentClubId: oppId,
-        scoreText: `${gf}-${ga}`,
+        matchId: m.id,
+        opponentClubId: m.oppId,
+        scoreText: `${m.gf}-${m.ga}`,
         margin,
-        competitionLabel: compLabel,
+        competitionLabel: m.competitionLabel,
         season: career.season,
-        matchweek: res.matchweek,
+        matchweek: m.matchweek,
       };
     }
   }
 
+  if (totalMatches === 0 && myRow && myRow.played > 0) {
+    totalMatches = myRow.played;
+    wins = myRow.won;
+    draws = myRow.drawn;
+    losses = myRow.lost;
+    goalsFor = myRow.gf;
+    goalsAgainst = myRow.ga;
+    longestUnbeatenStreak = myRow.won ? Math.min(myRow.won + myRow.drawn, 3) : 0;
+    longestWinStreak = myRow.won ? Math.min(myRow.won, 2) : 0;
+  }
+
   const squadValueM = Number(
-    career.squad.reduce((sum, p) => sum + p.marketValueM, 0).toFixed(1)
+    (career.squad ?? []).reduce((sum, p) => sum + p.marketValueM, 0).toFixed(1)
   );
   const avgOvr = Math.round(
-    career.squad.reduce((sum, p) => sum + p.rating, 0) / Math.max(1, career.squad.length)
+    (career.squad ?? []).reduce((sum, p) => sum + p.rating, 0) /
+      Math.max(1, (career.squad ?? []).length)
   );
 
   return {
-    totalMatches: myRow?.played ?? 0,
-    wins: myRow?.won ?? 0,
-    draws: myRow?.drawn ?? 0,
-    losses: myRow?.lost ?? 0,
-    goalsFor: myRow?.gf ?? 0,
-    goalsAgainst: myRow?.ga ?? 0,
-    currentUnbeatenStreak: 0,
-    longestUnbeatenStreak: myRow?.won ? Math.min(myRow.won + myRow.drawn, 3) : 0,
-    currentWinStreak: 0,
-    longestWinStreak: myRow?.won ? Math.min(myRow.won, 2) : 0,
+    totalMatches,
+    wins,
+    draws,
+    losses,
+    goalsFor,
+    goalsAgainst,
+    currentUnbeatenStreak,
+    longestUnbeatenStreak,
+    currentWinStreak,
+    longestWinStreak,
     ...(biggestWin ? { biggestWin } : {}),
     ...(highestScoringMatch ? { highestScoringMatch } : {}),
     playerLegends,
@@ -712,6 +1007,10 @@ export function recordOfficialMatchInClubRecords(
     motmPlayerId,
     nextSquad,
   } = params;
+
+  if (!opponentClubId || opponentClubId === prevCareer.clubId) {
+    return prev;
+  }
 
   const lost = !won && !drawn;
   const nextUnbeaten = lost ? 0 : prev.currentUnbeatenStreak + 1;

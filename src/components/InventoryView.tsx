@@ -54,7 +54,7 @@ interface InventoryViewProps {
 function renderStarsRow(stars: number, sizeClass = 'w-3.5 h-3.5') {
   return (
     <span className="inline-flex items-center gap-0.5" aria-label={`${stars} sao`}>
-      {[1, 2, 3, 4, 5].map((n) => (
+      {[1, 2, 3, 4, 5, 6, 7].map((n) => (
         <Star
           key={n}
           className={`${sizeClass} ${
@@ -127,7 +127,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         if (!player) return null;
         const inSquad = squadIds.has(playerId);
         const isExcess =
-          (inSquad && (player.stars ?? 1) >= 5) ||
+          (inSquad && (player.stars ?? 1) >= 7) ||
           (!inSquad &&
             player.cardTier !== 'icon' &&
             player.cardTier !== 'ucl17' &&
@@ -578,7 +578,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           {onBulkDismantleCards && quickDismantlePlan.totalCards > 0 && (
             <div className="rounded-xl bg-[#121B24] border border-amber-400/25 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-slate-300">
-                Có <strong className="text-white font-mono-num">{quickDismantlePlan.totalCards}</strong> thẻ dư an toàn (cầu thủ ĐH đã 5★ hoặc thẻ thường ngoài ĐH).
+                Có <strong className="text-white font-mono-num">{quickDismantlePlan.totalCards}</strong> thẻ dư an toàn (cầu thủ ĐH đã 7★ hoặc thẻ thường ngoài ĐH).
               </p>
               <button
                 type="button"
@@ -653,7 +653,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       <div className="rounded-xl bg-[#0B1117] border border-white/5 px-3 py-1.5 text-[11px] flex items-center justify-between gap-2">
                         {plan.isMax ? (
                           <span className="text-amber-300 font-semibold">
-                            Đã đạt tối đa 5★ · Có thể tách thẻ dư lấy +{dismantleShards} Mảnh/thẻ
+                            Đã đạt tối đa 7★ · Có thể tách thẻ dư lấy +{dismantleShards} Mảnh/thẻ
                           </span>
                         ) : (
                           <>
@@ -695,7 +695,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         >
                           <ArrowUpCircle className="w-3.5 h-3.5" />
                           {plan?.isMax
-                            ? 'Đã tối đa 5★'
+                            ? 'Đã tối đa 7★'
                             : plan?.canUpgrade
                               ? `Nâng lên ${plan.nextStars}★`
                               : 'Xem điều kiện sao'}
@@ -736,11 +736,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-1.5">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
-              Đột Phá Sao Đội Hình (1★ → 5★)
+              Đột Phá Sao Đội Hình (1★ → 7★)
             </h3>
             <p className="text-xs text-slate-400 leading-relaxed">
               Yêu cầu <strong className="text-white">đủ cả Thẻ Trùng Lặp</strong> của chính cầu thủ đó{' '}
-              <strong className="text-amber-300">LẪN Mảnh Ngôi Sao</strong> theo bậc hiếm (Tiêu chuẩn / Tinh anh / Siêu sao / Huyền thoại). Cống hiến ≥20 trận được giảm 20% Mảnh; mốc <strong className="text-sky-300">3★ giảm hao thể lực</strong> và <strong className="text-amber-300">5★ miễn lão hóa</strong>.
+              <strong className="text-amber-300">LẪN Mảnh Ngôi Sao</strong> theo bậc hiếm (Tiêu chuẩn / Tinh anh / Siêu sao / Huyền thoại). Cống hiến ≥20 trận được giảm 20% Mảnh; mốc <strong className="text-sky-300">3★ giảm hao thể lực</strong>, <strong className="text-amber-300">5★ miễn lão hóa</strong> và <strong className="text-amber-200">7★ Đỉnh cao Huyền thoại</strong>.
             </p>
           </div>
 
@@ -801,7 +801,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
                   {plan.isMax ? (
                     <div className="rounded-xl bg-amber-500/10 border border-amber-400/30 px-3 py-2 text-xs font-bold text-amber-300 text-center">
-                      5★ Biểu tượng CLB · Miễn lão hóa &amp; tăng hiệu suất thi đấu
+                      7★ Biểu tượng CLB · Đỉnh cao Huyền thoại &amp; Miễn lão hóa
                     </div>
                   ) : (
                     <>

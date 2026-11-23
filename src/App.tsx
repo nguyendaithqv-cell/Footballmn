@@ -54,6 +54,7 @@ import {
   getTodayPurchaseDateKey,
   getTotalUnopenedPacks,
   hasPurchasedPackToday,
+  MAX_PLAYER_STARS,
   normalizeInventory,
   openPackFromInventory,
   PACK_CATALOG,
@@ -67,6 +68,7 @@ import {
 import {
   advanceAcademyOnMatch,
   buildPromotedPlayerFromProspect,
+  ensureClubRecords,
   ensureYouthAcademy,
   generateAcademyProspect,
   getAcademyUpgradeCostM,
@@ -126,6 +128,7 @@ import {
   createOnlineTournament,
   formatRankLabel,
   getFriendshipDocId,
+  getOnlineTournamentEntryFeeM,
   getRankScore,
   mergeLeaderboardWithBots,
   playOnlineTournamentRound,
@@ -648,7 +651,7 @@ export default function App() {
 
       const inv = normalizeInventory(hydratedCareer.inventory);
       const nextPacks = { ...inv.packs };
-      let shardsEarned = won ? 5 : drawn ? 2 : 1;
+      let shardsEarned = won ? 5 : drawn ? 2 : 0;
       if (won) {
         if (myGoals - oppGoals >= 3) {
           nextPacks.elite_pack = (nextPacks.elite_pack ?? 0) + 1;
@@ -673,7 +676,32 @@ export default function App() {
       const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
       const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
       const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
-      const matchPrizeM = Number(((won ? 3.5 : drawn ? 1.8 : 1.0) * stadiumMult + sponsorBonus).toFixed(1));
+      const matchPrizeM =
+        won || drawn
+          ? Number(((won ? 3.5 : 1.8) * stadiumMult + sponsorBonus).toFixed(1))
+          : 0;
+
+      const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
+      const motmPlayerId =
+        userMatch.manOfTheMatch?.clubId === hydratedCareer.clubId
+          ? userMatch.manOfTheMatch.playerId
+          : userMatch.playerRatings?.find((r) => r.clubId === hydratedCareer.clubId && r.isMotm)
+              ?.playerId;
+      const nextClubRecords = recordOfficialMatchInClubRecords(hydratedCareer, {
+        matchId: userMatch.id,
+        opponentClubId,
+        myGoals,
+        oppGoals,
+        won,
+        drawn,
+        competitionLabel: 'Super League',
+        matchweek: hydratedCareer.matchweek,
+        participatedPlayerIds: starterSet,
+        goalEvents,
+        playerRatings: userMatch.playerRatings,
+        motmPlayerId,
+        nextSquad,
+      });
 
       const preAwardCareer: CareerSave = {
         ...hydratedCareer,
@@ -688,17 +716,21 @@ export default function App() {
         fixtures: nextFixtures,
         competitions: nextComps,
         trophyCabinet: nextCabinet,
-        financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
-          createLedgerEntry({
-            season: hydratedCareer.season,
-            matchweek: hydratedCareer.matchweek,
-            type: 'income',
-            category: 'match_prize',
-            title: `Thưởng trận VĐQG Vòng ${hydratedCareer.matchweek}: ${hMatchShort} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aMatchShort}`,
-            detail: won ? 'Chiến thắng' : drawn ? 'Hòa' : 'Phí tham dự trận',
-            amountM: matchPrizeM,
-          }),
-        ]),
+        clubRecords: nextClubRecords,
+        financialLedger:
+          matchPrizeM > 0
+            ? appendLedgerEntries(hydratedCareer.financialLedger, [
+                createLedgerEntry({
+                  season: hydratedCareer.season,
+                  matchweek: hydratedCareer.matchweek,
+                  type: 'income',
+                  category: 'match_prize',
+                  title: `Thưởng trận VĐQG Vòng ${hydratedCareer.matchweek}: ${hMatchShort} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aMatchShort}`,
+                  detail: won ? 'Chiến thắng' : 'Hòa',
+                  amountM: matchPrizeM,
+                }),
+              ])
+            : hydratedCareer.financialLedger,
         inventory: nextInv,
         recentResults: [
           userMatch,
@@ -727,11 +759,12 @@ export default function App() {
 
         const hName = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
         const aName = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
-        const prizeBonus = won ? 3.5 : drawn ? 1.8 : 1.0;
         await pushClubNotification(
           'match',
           `VĐQG Vòng ${hydratedCareer.matchweek}: ${hName} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aName}`,
-          `${won ? 'Chiến thắng!' : drawn ? 'Chia điểm!' : 'Thất bại.'} Thưởng trận đấu +€${prizeBonus}M vào ngân sách CLB.`
+          matchPrizeM > 0
+            ? `${won ? 'Chiến thắng!' : 'Chia điểm!'} Thưởng trận đấu +€${matchPrizeM}M vào ngân sách CLB.`
+            : 'Thất bại — Trận thua không nhận được phần thưởng.'
         );
         if (awardedLeagueTrophy > 0) {
           const myClubName = CLUBS.find((c) => c.id === hydratedCareer.clubId)?.name ?? hydratedCareer.clubId;
@@ -771,7 +804,9 @@ export default function App() {
       const nextComps = applyCupMatchResults(prevComps, competition, resultsMap);
 
       let nextSquad = hydratedCareer.squad;
+      let nextClubRecords = ensureClubRecords(hydratedCareer);
       let budgetBonus = 0;
+      let matchCash = 0;
       let wonMatch = false;
       let drawnMatch = false;
 
@@ -783,7 +818,15 @@ export default function App() {
           ? userMatch.winnerId === hydratedCareer.clubId
           : myGoals > oppGoals;
         drawnMatch = !userMatch.winnerId && myGoals === oppGoals;
-        budgetBonus += wonMatch ? 2.5 : drawnMatch ? 1.2 : 0.6;
+        if (wonMatch || drawnMatch) {
+          const facilities = ensureClubFacilities(hydratedCareer);
+          const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
+          const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
+          const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
+          const baseCupCash = wonMatch ? 2.5 : 1.2;
+          matchCash = Number((baseCupCash * stadiumMult + sponsorBonus).toFixed(1));
+          budgetBonus += matchCash;
+        }
 
         const activeMgr = getActiveCareerManager(hydratedCareer);
         const mgrImpact = getManagerImpactSummary(activeMgr, hydratedCareer.tactics);
@@ -836,6 +879,35 @@ export default function App() {
             form: nextForm,
             morale: Math.max(45, Math.min(100, p.morale + (wonMatch ? 4 : drawnMatch ? 1 : -2))),
           };
+        });
+
+        const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
+        const motmPlayerId =
+          userMatch.manOfTheMatch?.clubId === hydratedCareer.clubId
+            ? userMatch.manOfTheMatch.playerId
+            : userMatch.playerRatings?.find((r) => r.clubId === hydratedCareer.clubId && r.isMotm)
+                ?.playerId;
+        const recordCompLabel =
+          userMatch.roundLabel ||
+          (competition === 'champions-cup'
+            ? 'Champions Cup'
+            : competition === 'national-cup'
+              ? 'Cúp Quốc Gia'
+              : 'Siêu Cúp');
+        nextClubRecords = recordOfficialMatchInClubRecords(hydratedCareer, {
+          matchId: userMatch.id,
+          opponentClubId,
+          myGoals,
+          oppGoals,
+          won: wonMatch,
+          drawn: drawnMatch,
+          competitionLabel: recordCompLabel,
+          matchweek: userMatch.matchweek || hydratedCareer.matchweek,
+          participatedPlayerIds: starterSet,
+          goalEvents,
+          playerRatings: userMatch.playerRatings,
+          motmPlayerId,
+          nextSquad,
         });
       }
 
@@ -934,8 +1006,6 @@ export default function App() {
             }
           } else if (drawnMatch) {
             shardsEarned += 3;
-          } else {
-            shardsEarned += 1;
           }
         }
         if (trophiesAdded > 0) {
@@ -961,12 +1031,6 @@ export default function App() {
             : competition === 'national-cup'
               ? 'Cúp QG'
               : 'Siêu Cúp';
-        const facilities = ensureClubFacilities(hydratedCareer);
-        const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
-        const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
-        const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
-        const baseCupCash = userMatch ? (wonMatch ? 2.5 : drawnMatch ? 1.2 : 0.6) : 0;
-        const matchCash = baseCupCash > 0 ? Number((baseCupCash * stadiumMult + sponsorBonus).toFixed(1)) : 0;
         if (matchCash > 0 && userMatch) {
           const hS = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
           const aS = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
@@ -1004,6 +1068,7 @@ export default function App() {
         squad: nextSquad,
         competitions: nextCompsWithStats,
         trophyCabinet: nextCabinet,
+        clubRecords: nextClubRecords,
         financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, cupLedgerEntries),
         inventory: nextInv,
         recentResults: userMatch
@@ -1052,7 +1117,9 @@ export default function App() {
           await pushClubNotification(
             'match',
             `${compLabel}: ${hName} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aName}${penLabel}`,
-            `${userMatch.roundLabel || compLabel} · Ngân sách CLB cộng thêm +€${budgetBonus.toFixed(1)}M.`
+            budgetBonus > 0
+              ? `${userMatch.roundLabel || compLabel} · Ngân sách CLB cộng thêm +€${budgetBonus.toFixed(1)}M.`
+              : `${userMatch.roundLabel || compLabel} · Thất bại — Không nhận được phần thưởng.`
           );
           if (trophiesAdded > 0) {
             const myClubName = CLUBS.find((c) => c.id === hydratedCareer.clubId)?.name ?? hydratedCareer.clubId;
@@ -1143,30 +1210,34 @@ export default function App() {
         : undefined;
 
       const inv = normalizeInventory(hydratedCareer.inventory);
+      const friendlyShards = won ? 3 : drawn ? 1 : 0;
       const nextInv = normalizeInventory({
         ...inv,
-        universalShards: inv.universalShards + (won ? 3 : 1),
+        universalShards: inv.universalShards + friendlyShards,
       });
 
       const hFr = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
       const aFr = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
-      const friendlyPrizeM = won ? 3.0 : 2.0;
+      const friendlyPrizeM = won ? 3.0 : drawn ? 2.0 : 0;
 
       const nextCareer: CareerSave = {
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + friendlyPrizeM).toFixed(1)),
         squad: nextSquad,
         competitions: nextComps,
-        financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
-          createLedgerEntry({
-            season: hydratedCareer.season,
-            matchweek: hydratedCareer.matchweek,
-            type: 'income',
-            category: 'match_prize',
-            title: `Thưởng Giao hữu: ${hFr} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aFr}`,
-            amountM: friendlyPrizeM,
-          }),
-        ]),
+        financialLedger:
+          friendlyPrizeM > 0
+            ? appendLedgerEntries(hydratedCareer.financialLedger, [
+                createLedgerEntry({
+                  season: hydratedCareer.season,
+                  matchweek: hydratedCareer.matchweek,
+                  type: 'income',
+                  category: 'match_prize',
+                  title: `Thưởng Giao hữu: ${hFr} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aFr}`,
+                  amountM: friendlyPrizeM,
+                }),
+              ])
+            : hydratedCareer.financialLedger,
         inventory: nextInv,
         recentResults: [
           userMatch,
@@ -1194,7 +1265,9 @@ export default function App() {
         await pushClubNotification(
           'match',
           `Giao hữu: ${hName} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aName}`,
-          `Hoàn tất trận giao hữu quốc tế · Doanh thu +€${won ? '3.0' : '2.0'}M và tăng tinh thần đội bóng.`
+          friendlyPrizeM > 0
+            ? `Hoàn tất trận giao hữu quốc tế · Doanh thu +€${friendlyPrizeM.toFixed(1)}M, +${friendlyShards} Mảnh Ngôi Sao.`
+            : 'Thất bại trong trận giao hữu — Không nhận được phần thưởng.'
         );
       } catch (err) {
         console.error('Lỗi cập nhật giao hữu:', err);
@@ -1459,19 +1532,6 @@ export default function App() {
       ...hydratedCareer,
       squad: nextSquad,
       youthAcademy: nextAcademy,
-      clubRecords: recordOfficialMatchInClubRecords(hydratedCareer, {
-        matchId: `promo-${Date.now()}`,
-        opponentClubId: hydratedCareer.clubId,
-        myGoals: 0,
-        oppGoals: 0,
-        won: false,
-        drawn: true,
-        competitionLabel: 'Đôn lên Đội 1',
-        matchweek: hydratedCareer.matchweek,
-        participatedPlayerIds: new Set(),
-        goalEvents: [],
-        nextSquad,
-      }),
     };
 
     await saveCareerCloud(nextCareer);
@@ -2427,7 +2487,7 @@ export default function App() {
       const inv = normalizeInventory(hydratedCareer.inventory);
       const plan = getStarUpgradePlan(target, inv, hydratedCareer.transferBudget);
       if (plan.isMax) {
-        return { ok: false, message: `${target.name} đã đạt tối đa 5★.` };
+        return { ok: false, message: `${target.name} đã đạt tối đa ${MAX_PLAYER_STARS}★.` };
       }
       if (!plan.hasEnoughCards) {
         return {
@@ -2637,7 +2697,7 @@ export default function App() {
     if (quickPlan.totalCards === 0) {
       return {
         ok: false,
-        message: 'Không có thẻ dư thừa an toàn (5★ tối đa hoặc thẻ thường ngoài ĐH) để tách.',
+        message: `Không có thẻ dư thừa an toàn (${MAX_PLAYER_STARS}★ tối đa hoặc thẻ thường ngoài ĐH) để tách.`,
       };
     }
 
@@ -3101,11 +3161,11 @@ export default function App() {
       `Đấu Hạng vs ${opponent.managerName}`
     );
 
-    // Career rewards from ranked match + first-time promotion milestone
+    // Career rewards from ranked match (0 on loss) + first-time promotion milestone
     const inv = normalizeInventory(hydratedCareer.inventory);
     const nextPacks = { ...inv.packs };
-    let shardsBonus = userWon ? 4 : 1;
-    let budgetBonusM = userWon ? 0.8 : 0.2;
+    let shardsBonus = userWon ? 4 : 0;
+    let budgetBonusM = userWon ? 0.8 : 0;
 
     const milestone = rankedResult.milestoneReward;
     if (milestone) {
@@ -3126,17 +3186,20 @@ export default function App() {
       ...hydratedCareer,
       transferBudget: Number((hydratedCareer.transferBudget + budgetBonusM).toFixed(2)),
       inventory: nextInv,
-      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
-        createLedgerEntry({
-          season: hydratedCareer.season,
-          matchweek: hydratedCareer.matchweek,
-          type: 'income',
-          category: 'match_prize',
-          title: `Thưởng Đấu Hạng Online vs ${opponent.managerName}`,
-          detail: milestone ? `Mốc thăng hạng ${milestone.tierName}` : `${summary.homeGoals}-${summary.awayGoals}`,
-          amountM: budgetBonusM,
-        }),
-      ]),
+      financialLedger:
+        budgetBonusM > 0
+          ? appendLedgerEntries(hydratedCareer.financialLedger, [
+              createLedgerEntry({
+                season: hydratedCareer.season,
+                matchweek: hydratedCareer.matchweek,
+                type: 'income',
+                category: 'match_prize',
+                title: `Thưởng Đấu Hạng Online vs ${opponent.managerName}`,
+                detail: milestone ? `Mốc thăng hạng ${milestone.tierName}` : `${summary.homeGoals}-${summary.awayGoals}`,
+                amountM: budgetBonusM,
+              }),
+            ])
+          : hydratedCareer.financialLedger,
     });
 
     const rankSummaryText = `${formatRankLabel(
@@ -3223,25 +3286,32 @@ export default function App() {
       );
 
       const inv = normalizeInventory(hydratedCareer.inventory);
-      const shardsGain = won ? 3 : drawn ? 2 : 1;
-      await saveCareerCloud({
-        ...hydratedCareer,
-        inventory: normalizeInventory({
-          ...inv,
-          universalShards: inv.universalShards + shardsGain,
-        }),
-      });
+      const shardsGain = won ? 3 : drawn ? 2 : 0;
+      if (shardsGain > 0) {
+        await saveCareerCloud({
+          ...hydratedCareer,
+          inventory: normalizeInventory({
+            ...inv,
+            universalShards: inv.universalShards + shardsGain,
+          }),
+        });
+      }
 
       const modeLabel = mode === 'friendly' ? 'Giao hữu' : 'Tỷ thí';
       await pushClubNotification(
         'online',
         `${modeLabel}: ${userArena.managerName} ${summary.homeGoals}-${summary.awayGoals} ${opponent.managerName}`,
-        `Nhận +${shardsGain} Mảnh Ngôi Sao từ trận ${modeLabel.toLowerCase()} Online.`
+        shardsGain > 0
+          ? `Nhận +${shardsGain} Mảnh Ngôi Sao từ trận ${modeLabel.toLowerCase()} Online.`
+          : `Thất bại — Không nhận được phần thưởng.`
       );
 
       return {
         ok: true,
-        message: `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (+${shardsGain} Mảnh Ngôi Sao).`,
+        message:
+          shardsGain > 0
+            ? `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (+${shardsGain} Mảnh Ngôi Sao).`
+            : `${modeLabel} hoàn tất: ${summary.homeGoals} - ${summary.awayGoals} (Thua trận — Không nhận được thưởng).`,
         summary,
       };
     },
@@ -3413,19 +3483,41 @@ export default function App() {
       if (!hydratedCareer || !userArena) {
         return { ok: false, message: 'Chưa sẵn sàng dữ liệu giải đấu.' };
       }
+      if (hydratedCareer.onlineTournament?.status === 'active') {
+        return { ok: false, message: 'Giải đấu Online hiện tại chưa kết thúc.' };
+      }
+      const entryFeeM = getOnlineTournamentEntryFeeM(size);
+      if (hydratedCareer.transferBudget < entryFeeM) {
+        return {
+          ok: false,
+          message: `Không đủ ngân sách đóng lệ phí giải ${size} đội (Cần €${entryFeeM}M, hiện có €${hydratedCareer.transferBudget.toFixed(1)}M).`,
+        };
+      }
       const nextTournament = createOnlineTournament(userArena, leaderboard, size);
       await saveCareerCloud({
         ...hydratedCareer,
+        transferBudget: Number((hydratedCareer.transferBudget - entryFeeM).toFixed(1)),
         onlineTournament: nextTournament,
+        financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
+          createLedgerEntry({
+            season: hydratedCareer.season,
+            matchweek: hydratedCareer.matchweek,
+            type: 'expense',
+            category: 'tournament_entry',
+            title: `Lệ phí tạo giải Online (${size} đội)`,
+            detail: nextTournament.title,
+            amountM: entryFeeM,
+          }),
+        ]),
       });
       await pushClubNotification(
         'online',
         `Khởi tranh ${nextTournament.title}`,
-        `Giải đấu loại trực tiếp ${size} HLV đã bốc thăm nhánh đấu. Sẵn sàng cho vòng đầu tiên!`
+        `Đã đóng lệ phí €${entryFeeM}M và bốc thăm nhánh đấu ${size} HLV. Sẵn sàng cho vòng đầu tiên!`
       );
       return {
         ok: true,
-        message: `Đã bốc thăm ${nextTournament.title} gồm ${size} HLV!`,
+        message: `Đã đóng lệ phí €${entryFeeM}M & bốc thăm ${nextTournament.title} gồm ${size} HLV!`,
       };
     },
     [hydratedCareer, userArena, leaderboard, saveCareerCloud, pushClubNotification]
@@ -3448,8 +3540,8 @@ export default function App() {
 
     const inv = normalizeInventory(hydratedCareer.inventory);
     const nextPacks = { ...inv.packs };
-    let budgetBonusM = userWon ? 2.5 : 0.8;
-    let shardsBonus = userWon ? 8 : 3;
+    let budgetBonusM = userWon ? 2.5 : 0;
+    let shardsBonus = userWon ? 8 : 0;
     let nextCabinet = [...(hydratedCareer.trophyCabinet ?? [])];
 
     if (wonTitle) {
@@ -3486,23 +3578,26 @@ export default function App() {
       transferBudget: Number((hydratedCareer.transferBudget + budgetBonusM).toFixed(2)),
       inventory: nextInv,
       trophyCabinet: nextCabinet,
-      financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
-        createLedgerEntry({
-          season: hydratedCareer.season,
-          matchweek: hydratedCareer.matchweek,
-          type: 'income',
-          category: wonTitle ? 'competition_bonus' : 'match_prize',
-          title: wonTitle
-            ? `Thưởng Vô địch ${nextTournament.title}`
-            : `Thưởng giải Online ${nextTournament.title}`,
-          amountM: budgetBonusM,
-        }),
-      ]),
+      financialLedger:
+        budgetBonusM > 0
+          ? appendLedgerEntries(hydratedCareer.financialLedger, [
+              createLedgerEntry({
+                season: hydratedCareer.season,
+                matchweek: hydratedCareer.matchweek,
+                type: 'income',
+                category: wonTitle ? 'competition_bonus' : 'match_prize',
+                title: wonTitle
+                  ? `Thưởng Vô địch ${nextTournament.title}`
+                  : `Thưởng giải Online ${nextTournament.title}`,
+                amountM: budgetBonusM,
+              }),
+            ])
+          : hydratedCareer.financialLedger,
     });
 
     await saveArenaProfileCloud({
       ...userArena,
-      eloPoints: Math.min(10000, userArena.eloPoints + (wonTitle ? 45 : userWon ? 18 : 2)),
+      eloPoints: Math.min(10000, userArena.eloPoints + (wonTitle ? 45 : userWon ? 18 : 0)),
       matchesPlayed: userArena.matchesPlayed + 1,
       wins: userArena.wins + (userWon ? 1 : 0),
       losses: userArena.losses + (userWon ? 0 : 1),
@@ -3523,7 +3618,7 @@ export default function App() {
           : `Dừng bước tại ${nextTournament.title}`,
         userWon
           ? `Thắng trận và tiến vào vòng tiếp theo (+€${budgetBonusM}M, +${shardsBonus} Mảnh).`
-          : `Đội bóng đã bị loại ở vòng ${hydratedCareer.onlineTournament.currentRound} (+€${budgetBonusM}M, +${shardsBonus} Mảnh an ủi).`
+          : `Đội bóng đã bị loại ở vòng ${hydratedCareer.onlineTournament.currentRound} (Thua trận — Không nhận được phần thưởng).`
       );
     }
 
@@ -3533,7 +3628,7 @@ export default function App() {
         ? `CHÚC MỪNG VÔ ĐỊCH ${nextTournament.title}! (+€${budgetBonusM}M, +${shardsBonus} Mảnh & Gói Cao Cấp)`
         : userWon
           ? `Chiến thắng vòng ${hydratedCareer.onlineTournament.currentRound}! Tiến vào vòng tiếp theo.`
-          : `Rất tiếc, bạn đã dừng bước ở vòng ${hydratedCareer.onlineTournament.currentRound}.`,
+          : `Rất tiếc, bạn đã dừng bước ở vòng ${hydratedCareer.onlineTournament.currentRound} (Không có thưởng).`,
       summary: userMatchSummary ?? undefined,
     };
   }, [

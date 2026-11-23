@@ -603,7 +603,8 @@ export type FinancialLedgerCategory =
   | 'medical_recovery'
   | 'academy'
   | 'sponsor'
-  | 'facility_upgrade';
+  | 'facility_upgrade'
+  | 'tournament_entry';
 
 export interface FinancialLedgerEntry {
   id: string;

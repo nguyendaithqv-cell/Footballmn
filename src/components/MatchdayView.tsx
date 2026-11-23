@@ -2393,7 +2393,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                     Tour Giao hữu Quốc tế
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Thử nghiệm chiến thuật mới với bất kỳ đối thủ nào trong 20 CLB thực tế và nhận thưởng +€2–3M mỗi trận.
+                    Thử nghiệm chiến thuật mới với bất kỳ đối thủ nào trong 20 CLB thực tế và nhận thưởng +€2–3M khi thắng/hòa (thua không có thưởng).
                   </p>
                 </div>
 

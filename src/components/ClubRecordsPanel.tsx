@@ -264,7 +264,7 @@ export const ClubRecordsPanel: React.FC<ClubRecordsPanelProps> = ({ career }) =>
                 {mostCapped ? `${mostCapped.appearances} trận` : '0 trận'}
               </p>
               <p className="text-[11px] text-slate-400 font-mono-num tabular-nums">
-                {mostCapped ? `${mostCapped.seasonsActive.length} mùa gắn bó` : 'Đá để ghi danh'}
+                {mostCapped ? `${mostCapped.seasonsActive?.length ?? 1} mùa gắn bó` : 'Đá để ghi danh'}
               </p>
             </div>
 
@@ -351,7 +351,7 @@ export const ClubRecordsPanel: React.FC<ClubRecordsPanelProps> = ({ career }) =>
                         <td className="py-2.5 px-2">
                           <p className="font-bold text-white">{pl.playerName}</p>
                           <p className="text-[11px] text-slate-400">
-                            {pl.nationality} · {pl.seasonsActive.length} mùa
+                            {pl.nationality} · {pl.seasonsActive?.length ?? 1} mùa
                             {pl.isYouthGraduate ? ' · Trưởng thành từ Học viện' : ''}
                           </p>
                         </td>

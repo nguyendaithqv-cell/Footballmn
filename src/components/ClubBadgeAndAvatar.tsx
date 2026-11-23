@@ -72,7 +72,7 @@ export const PlayerAvatar: React.FC<PlayerAvatarProps> = React.memo(
     const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
     const isUcl17 = player.cardTier === 'ucl17' || player.clubId === 'rma-ucl-2017';
     const isGlobal = player.cardTier === 'global';
-    const stars = Math.max(1, Math.min(5, player.stars ?? 1));
+    const stars = Math.max(1, Math.min(7, player.stars ?? 1));
     const primary = isIcon ? '#D97706' : isUcl17 ? '#312E81' : club?.primaryColor ?? '#10B981';
     const secondary = isIcon ? '#FDE68A' : isUcl17 ? '#F59E0B' : club?.secondaryColor ?? '#0F172A';
     const clubTrim = club?.accentColor ?? club?.primaryColor ?? '#10B981';
