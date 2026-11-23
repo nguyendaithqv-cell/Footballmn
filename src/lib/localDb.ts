@@ -3,6 +3,7 @@ import {
   ArenaChallenge,
   ArenaProfile,
   CareerSave,
+  CareerSlotMeta,
   ClubNotificationItem,
   Friendship,
   MarketOverride,
@@ -10,15 +11,21 @@ import {
   PushNotificationItem,
   UserProfile,
 } from '../types/game';
+import { CLUBS } from '../data/footballDatabase';
 
 const DB_NAME = 'touchline_xi_local_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SESSION_UID_KEY = 'txi_local_session_uid';
+const ACTIVE_SLOT_PREFIX = 'txi_active_slot_';
+
+export type CareerSlotId = 'slot1' | 'slot2' | 'slot3';
+export const CAREER_SLOT_IDS: CareerSlotId[] = ['slot1', 'slot2', 'slot3'];
 
 const STORES = {
   ACCOUNTS: 'accounts',
   USERS: 'users',
   CAREERS: 'careers',
+  CAREER_SLOTS: 'careerSlots',
   CLUB_NOTIFICATIONS: 'clubNotifications',
   NEWS: 'news',
   NOTIFICATIONS: 'notifications',
@@ -74,6 +81,9 @@ function openLocalDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORES.CAREERS)) {
         db.createObjectStore(STORES.CAREERS, { keyPath: 'uid' });
+      }
+      if (!db.objectStoreNames.contains(STORES.CAREER_SLOTS)) {
+        db.createObjectStore(STORES.CAREER_SLOTS, { keyPath: 'slotKey' });
       }
       if (!db.objectStoreNames.contains(STORES.CLUB_NOTIFICATIONS)) {
         const s = db.createObjectStore(STORES.CLUB_NOTIFICATIONS, { keyPath: 'id' });
@@ -379,16 +389,121 @@ export async function listLocalUsers(): Promise<UserProfile[]> {
   return users.sort((a, b) => toTimestampMs(b.updatedAt) - toTimestampMs(a.updatedAt));
 }
 
-// --- Careers ---
+// --- Careers & Multi-Save Slots ---
+interface StoredCareerSlot {
+  slotKey: string; // `${uid}__${slotId}`
+  uid: string;
+  slotId: CareerSlotId;
+  career: CareerSave;
+  updatedAt: number;
+}
+
+export function getActiveSlotId(uid: string): CareerSlotId {
+  try {
+    if (typeof window === 'undefined') return 'slot1';
+    const raw = window.localStorage.getItem(`${ACTIVE_SLOT_PREFIX}${uid}`);
+    if (raw === 'slot1' || raw === 'slot2' || raw === 'slot3') return raw;
+    return 'slot1';
+  } catch {
+    return 'slot1';
+  }
+}
+
+export function setActiveSlotId(uid: string, slotId: CareerSlotId): void {
+  try {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(`${ACTIVE_SLOT_PREFIX}${uid}`, slotId);
+  } catch {
+    // Ignore storage quota issues
+  }
+}
+
+export async function getLocalCareerSlot(
+  uid: string,
+  slotId: CareerSlotId
+): Promise<CareerSave | null> {
+  const rec = await idbGet<StoredCareerSlot>(STORES.CAREER_SLOTS, `${uid}__${slotId}`);
+  if (rec?.career) return rec.career;
+  if (slotId === 'slot1') {
+    const legacy = await idbGet<CareerSave>(STORES.CAREERS, uid);
+    if (legacy) {
+      await idbPut<StoredCareerSlot>(STORES.CAREER_SLOTS, {
+        slotKey: `${uid}__slot1`,
+        uid,
+        slotId: 'slot1',
+        career: legacy,
+        updatedAt: Date.now(),
+      });
+      return legacy;
+    }
+  }
+  return null;
+}
+
+export async function putLocalCareerSlot(
+  career: CareerSave,
+  slotId: CareerSlotId
+): Promise<void> {
+  const stamped: CareerSave = {
+    ...career,
+    updatedAt: Date.now(),
+  };
+  await idbPut<StoredCareerSlot>(STORES.CAREER_SLOTS, {
+    slotKey: `${career.uid}__${slotId}`,
+    uid: career.uid,
+    slotId,
+    career: stamped,
+    updatedAt: Date.now(),
+  });
+  if (slotId === getActiveSlotId(career.uid) || slotId === 'slot1') {
+    await idbPut(STORES.CAREERS, stamped);
+  }
+}
+
+export async function deleteLocalCareerSlot(uid: string, slotId: CareerSlotId): Promise<void> {
+  await idbDelete(STORES.CAREER_SLOTS, `${uid}__${slotId}`);
+  if (slotId === 'slot1') {
+    await idbDelete(STORES.CAREERS, uid);
+  }
+}
+
+export async function listCareerSlots(uid: string): Promise<CareerSlotMeta[]> {
+  const results: CareerSlotMeta[] = [];
+  for (const slotId of CAREER_SLOT_IDS) {
+    const c = await getLocalCareerSlot(uid, slotId);
+    if (!c) {
+      results.push({ slotId, occupied: false });
+    } else {
+      const club = CLUBS.find((cl) => cl.id === c.clubId);
+      results.push({
+        slotId,
+        occupied: true,
+        clubId: c.clubId,
+        clubName: club?.name ?? c.clubId,
+        season: c.season,
+        matchweek: c.matchweek,
+        transferBudget: c.transferBudget,
+        squadCount: c.squad.length,
+        updatedAt: toTimestampMs(c.updatedAt) || Date.now(),
+      });
+    }
+  }
+  return results;
+}
+
 export async function getLocalCareer(uid: string): Promise<CareerSave | null> {
-  return idbGet<CareerSave>(STORES.CAREERS, uid);
+  const activeSlot = getActiveSlotId(uid);
+  const slotCareer = await getLocalCareerSlot(uid, activeSlot);
+  if (slotCareer) return slotCareer;
+  if (activeSlot !== 'slot1') {
+    return getLocalCareerSlot(uid, 'slot1');
+  }
+  return null;
 }
 
 export async function putLocalCareer(career: CareerSave): Promise<void> {
-  await idbPut(STORES.CAREERS, {
-    ...career,
-    updatedAt: Date.now(),
-  });
+  const activeSlot = getActiveSlotId(career.uid);
+  await putLocalCareerSlot(career, activeSlot);
 }
 
 // --- Club Notifications ---

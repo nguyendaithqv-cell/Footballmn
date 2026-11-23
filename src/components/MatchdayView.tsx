@@ -10,7 +10,10 @@ import {
   Shield,
   Trophy,
   Users,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
+import { playSfx, isSoundEnabled, setSoundEnabled } from '../lib/soundFx';
 import { CLUBS, FORMATION_TEMPLATES, INITIAL_PLAYERS, REAL_MANAGERS } from '../data/footballDatabase';
 import {
   buildEffectiveDatabasePlayers,
@@ -142,6 +145,37 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   const [liveResult, setLiveResult] = useState<MatchResultSummary | null>(null);
   const [simContext, setSimContext] = useState<ActiveSimContext | null>(null);
   const [savingMatch, setSavingMatch] = useState(false);
+
+  // Sound effects state & triggers
+  const [soundOn, setSoundOn] = useState(() => isSoundEnabled());
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundOn(next);
+    setSoundEnabled(next);
+  };
+
+  useEffect(() => {
+    if (isLive && minute === 1) {
+      playSfx('whistle');
+    }
+    if (isLive && minute >= 90) {
+      playSfx('whistle');
+    }
+  }, [isLive, minute]);
+
+  useEffect(() => {
+    if (!isLive || !liveResult) return;
+    const currentEvent = liveResult.events.find((e) => e.minute === minute);
+    if (currentEvent) {
+      if (currentEvent.type === 'goal') {
+        playSfx('goal');
+      } else if (currentEvent.type === 'yellow' || currentEvent.type === 'red') {
+        playSfx('card');
+      } else if (currentEvent.type === 'save') {
+        playSfx('save');
+      }
+    }
+  }, [isLive, liveResult, minute]);
 
   // In-match live substitution, pause & penalty shootout state
   const [isPaused, setIsPaused] = useState(false);
@@ -494,6 +528,51 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       simContext?.kind === 'super-cup' ||
       (simContext?.kind === 'champions-cup' && Boolean(simContext.isNeutralVenue)) ||
       (simContext?.kind === 'national-cup' && Boolean(simContext.isNeutralVenue));
+    const adapted = resimulateMatchFromMinute({
+      currentMatch: liveResult,
+      fromMinute: minute,
+      userClubId: career.clubId,
+      nextUserTactics: nextTactics,
+      userSquad: career.squad,
+      allPlayers: effectiveAllPlayers,
+      userManager: activeUserManager,
+      isKnockout: isKnockoutCtx,
+      isNeutralVenue: isNeutralCtx,
+      participatedUserPlayerIds: participatedIds,
+    });
+    setLiveResult(adapted);
+  };
+
+  const handleLiveFormationChange = (nextFormation: FormationId) => {
+    if (!isLive || !liveResult || minute >= 90 || shootoutStep >= 0) return;
+    const tpl = FORMATION_TEMPLATES[nextFormation] ?? FORMATION_TEMPLATES['4-3-3'];
+    const activeSlots = matchSlots.length > 0 ? matchSlots : career.tactics.slots;
+    const currentAssignedPlayerIds = activeSlots.map((s) => s.playerId).filter(Boolean);
+    const nextSlots: TacticSlot[] = tpl.map((slot, idx) => ({
+      slotIndex: idx,
+      label: slot.label,
+      x: slot.x,
+      y: slot.y,
+      playerId: currentAssignedPlayerIds[idx] ?? currentAssignedPlayerIds[0] ?? '',
+      role: slot.defaultRole,
+    }));
+
+    setMatchSlots(nextSlots);
+    const nextTactics = {
+      ...career.tactics,
+      formation: nextFormation,
+      slots: nextSlots,
+    };
+
+    const isKnockoutCtx =
+      simContext?.kind === 'national-cup' ||
+      simContext?.kind === 'super-cup' ||
+      (simContext?.kind === 'champions-cup' && simContext.isKnockout);
+    const isNeutralCtx =
+      simContext?.kind === 'super-cup' ||
+      (simContext?.kind === 'champions-cup' && Boolean(simContext.isNeutralVenue)) ||
+      (simContext?.kind === 'national-cup' && Boolean(simContext.isNeutralVenue));
+
     const adapted = resimulateMatchFromMinute({
       currentMatch: liveResult,
       fromMinute: minute,
@@ -1015,24 +1094,52 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
               </div>
 
               {shootoutStep < 0 && (
-                <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
-                  {LIVE_MENTALITY_OPTIONS.map((opt) => {
-                    const active = career.tactics.mentality === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => handleLiveMentalityChange(opt.id)}
-                        className={`h-9 rounded-lg text-[10px] sm:text-xs font-bold transition-colors truncate px-1 ${
-                          active
-                            ? 'bg-amber-400 text-slate-950'
-                            : 'text-slate-300 hover:bg-white/5 hover:text-white'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
+                <div className="space-y-2">
+                  <div>
+                    <span className="text-[11px] font-bold text-slate-400 block mb-1">Đổi Tâm lý thi đấu:</span>
+                    <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+                      {LIVE_MENTALITY_OPTIONS.map((opt) => {
+                        const active = career.tactics.mentality === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => handleLiveMentalityChange(opt.id)}
+                            className={`h-9 rounded-lg text-[10px] sm:text-xs font-bold transition-colors truncate px-1 ${
+                              active
+                                ? 'bg-amber-400 text-slate-950'
+                                : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="text-[11px] font-bold text-slate-400 block mb-1">Đổi Sơ đồ chiến thuật trực tiếp:</span>
+                    <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
+                      {(['4-3-3', '4-4-2', '3-5-2', '5-3-2', '4-2-3-1'] as FormationId[]).map((formId) => {
+                        const active = career.tactics.formation === formId;
+                        return (
+                          <button
+                            key={formId}
+                            type="button"
+                            onClick={() => handleLiveFormationChange(formId)}
+                            className={`h-9 rounded-lg text-[10px] sm:text-xs font-bold transition-colors truncate px-1 ${
+                              active
+                                ? 'bg-emerald-500 text-slate-950'
+                                : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                            }`}
+                          >
+                            {formId}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -1326,6 +1433,31 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           </div>
         )}
 
+        {(() => {
+          const oppPlayers = effectiveAllPlayers.filter((p) => p.clubId === opp.id).sort((a, b) => b.rating - a.rating);
+          const dangerMan = oppPlayers[0] ?? { name: 'Ngôi sao chủ lực', rating: 86, position: 'ST' };
+          return (
+            <div className="rounded-xl bg-[#0B1117] border border-sky-500/30 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between text-xs font-bold text-sky-300">
+                <span>🔍 Soi kèo & Phân tích đối thủ ({opp.name})</span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-sky-500/20 text-sky-200">Phong độ: W-W-D-W-L</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div className="p-2 rounded-lg bg-slate-900/60 border border-white/5">
+                  <span className="text-slate-400 block text-[10px]">Cầu thủ nguy hiểm nhất (Danger Man):</span>
+                  <span className="font-bold text-amber-300">{dangerMan.name} ({dangerMan.position} · OVR {dangerMan.rating})</span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-900/60 border border-white/5">
+                  <span className="text-slate-400 block text-[10px]">Gợi ý chiến thuật khắc chế:</span>
+                  <span className="font-bold text-emerald-300">
+                    {oppMgr.style === 'Tấn công' ? 'Đá phòng ngự phản công chặt chẽ hoặc pressing' : 'Đẩy cao kiểm soát bóng và khoét cánh'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1473,6 +1605,21 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 bg-[#121B24] border border-white/10 rounded-2xl p-3">
+        <div className="flex items-center gap-2">
+          <Trophy className="w-5 h-5 text-amber-400" />
+          <h3 className="font-display text-sm font-bold text-white">Trung tâm Quản lý & Lịch đấu</h3>
+        </div>
+        <button
+          type="button"
+          onClick={toggleSound}
+          className="h-9 px-3 rounded-xl bg-slate-800 border border-white/15 text-xs font-bold text-white flex items-center gap-1.5 hover:bg-slate-700 transition-colors"
+        >
+          {soundOn ? <Volume2 className="w-4 h-4 text-emerald-400" /> : <VolumeX className="w-4 h-4 text-slate-400" />}
+          <span>{soundOn ? 'Âm thanh: Bật' : 'Âm thanh: Tắt'}</span>
+        </button>
+      </div>
+
       {/* Competition Selector Tabs */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-xl bg-[#121B24] border border-white/10">
         <button

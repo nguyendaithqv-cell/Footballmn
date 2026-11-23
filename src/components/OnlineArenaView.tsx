@@ -21,7 +21,9 @@ import {
 } from 'lucide-react';
 import { CLUBS } from '../data/footballDatabase';
 import {
+  computeOnlineSeasonReward,
   formatRankLabel,
+  getCurrentOnlineSeasonInfo,
   getOnlineTournamentEntryFeeM,
   getRankConfig,
   RANK_TIERS,
@@ -78,6 +80,7 @@ interface OnlineArenaViewProps {
     accept: boolean
   ) => Promise<{ ok: boolean; message: string }>;
   onRemoveFriendship: (friendshipId: string) => Promise<{ ok: boolean; message: string }>;
+  onClaimOnlineSeasonReward?: () => Promise<{ ok: boolean; message: string }>;
 }
 
 type ArenaSubTab = 'ranked' | 'duel' | 'tournament' | 'leaderboard' | 'friends';
@@ -99,6 +102,7 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
   onSendFriendRequest,
   onRespondFriendRequest,
   onRemoveFriendship,
+  onClaimOnlineSeasonReward,
 }) => {
   const [subTab, setSubTab] = useState<ArenaSubTab>('ranked');
   const [lbFilter, setLbFilter] = useState<'all' | 'real' | 'bot'>('all');
@@ -677,6 +681,55 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
                 </>
               )}
             </button>
+
+            {(() => {
+              const seasonInfo = getCurrentOnlineSeasonInfo();
+              const rewardPreview = computeOnlineSeasonReward(userArena.highestRankIndex ?? 0);
+              const claimedThisMonth = career.onlineRankSeasonClaimedId === seasonInfo.seasonId;
+              return (
+                <div className="rounded-xl bg-[#0B1117] border border-amber-400/25 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-extrabold text-amber-300">{seasonInfo.label}</span>
+                      <span className="px-2 py-0.5 rounded bg-white/5 font-mono-num text-[10px] text-slate-300">
+                        Còn {seasonInfo.daysRemaining} ngày
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      Quà mùa Rank ({rewardPreview.tierName}):{' '}
+                      <strong className="text-emerald-400">+€{rewardPreview.budgetM}M</strong> ·{' '}
+                      <strong className="text-sky-300">+{rewardPreview.shards} Mảnh</strong> ·{' '}
+                      <strong className="text-amber-300">
+                        +1 Gói {rewardPreview.packTier === 'legend_pack' ? 'Huyền Thoại' : rewardPreview.packTier === 'elite_pack' ? 'Ngôi Sao' : 'Tuyển Trạch'}
+                      </strong>
+                    </p>
+                  </div>
+                  {onClaimOnlineSeasonReward && (
+                    <button
+                      type="button"
+                      disabled={Boolean(busyKey) || claimedThisMonth || userArena.matchesPlayed === 0}
+                      onClick={async () => {
+                        setBusyKey('claim-online-season');
+                        setFeedback(null);
+                        try {
+                          const res = await onClaimOnlineSeasonReward();
+                          setFeedback({ ok: res.ok, text: res.message });
+                        } finally {
+                          setBusyKey(null);
+                        }
+                      }}
+                      className="h-9 px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-45"
+                    >
+                      {claimedThisMonth
+                        ? 'Đã nhận quà mùa'
+                        : userArena.matchesPlayed === 0
+                          ? 'Đá 1 trận để mở'
+                          : 'Nhận Thưởng Mùa Rank'}
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Right Panel: Latest Ranked Result */}

@@ -85,6 +85,12 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
   const yellowsAway =
     match.yellowsAway ??
     match.events.filter((e) => e.type === 'yellow' && matchesAwayEvent(e)).length;
+  const redsHome =
+    match.redsHome ??
+    match.events.filter((e) => e.type === 'red' && matchesHomeEvent(e)).length;
+  const redsAway =
+    match.redsAway ??
+    match.events.filter((e) => e.type === 'red' && matchesAwayEvent(e)).length;
 
   const homeGoalsEvents = match.events
     .filter((e) => e.type === 'goal' && matchesHomeEvent(e))
@@ -101,6 +107,7 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
     { label: 'Phạt góc', h: cornersHome, a: cornersAway, hv: cornersHome, av: cornersAway },
     { label: 'Phạm lỗi', h: foulsHome, a: foulsAway, hv: foulsHome, av: foulsAway },
     { label: 'Thẻ vàng', h: yellowsHome, a: yellowsAway, hv: yellowsHome, av: yellowsAway },
+    { label: 'Thẻ đỏ', h: redsHome, a: redsAway, hv: redsHome, av: redsAway },
   ];
 
   const motmRawClubId = match.manOfTheMatch?.clubId;
@@ -339,6 +346,8 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
                     className={`rounded-xl px-3 py-2 text-xs border ${
                       ev.type === 'goal' || ev.type === 'penalty'
                         ? 'bg-emerald-500/15 border-emerald-500/35 text-white'
+                        : ev.type === 'red'
+                          ? 'bg-red-500/20 border-red-500/45 text-red-200 font-semibold'
                         : ev.type === 'yellow'
                           ? 'bg-amber-500/10 border-amber-400/30 text-amber-200'
                         : ev.type === 'injury'
@@ -456,6 +465,12 @@ export const MatchStatsBreakdown: React.FC<MatchStatsBreakdownProps> = ({
                           <span className="inline-flex items-center gap-1 text-amber-300 font-semibold">
                             <span className="inline-block w-2 h-2.5 rounded-[2px] bg-amber-400" />
                             Thẻ vàng
+                          </span>
+                        )}
+                        {item.redCard && (
+                          <span className="inline-flex items-center gap-1 text-red-300 font-semibold">
+                            <span className="inline-block w-2 h-2.5 rounded-[2px] bg-red-500" />
+                            Thẻ đỏ
                           </span>
                         )}
                       </div>

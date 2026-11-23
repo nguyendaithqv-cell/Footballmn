@@ -2,18 +2,25 @@ import React, { useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Cloud,
+  CloudDownload,
+  CloudUpload,
   Download,
   FileJson,
   HardDriveDownload,
+  LogIn,
+  LogOut,
   RotateCcw,
   Upload,
   X,
 } from 'lucide-react';
+import { User } from 'firebase/auth';
 import {
   BackupSummary,
   ClubBackupBundle,
   parseAndValidateBackup,
 } from '../lib/backupEngine';
+import { CloudBackupMeta } from '../lib/cloudSync';
 
 interface BackupRestoreCardProps {
   title?: string;
@@ -22,6 +29,13 @@ interface BackupRestoreCardProps {
   isAdmin?: boolean;
   onExportBackup?: (includeAdminData: boolean) => Promise<void> | void;
   onRestoreBackup: (bundle: ClubBackupBundle, restoreAdminData: boolean) => Promise<{ ok: boolean; message: string }>;
+  cloudUser?: User | null;
+  cloudSyncBusy?: boolean;
+  cloudMeta?: CloudBackupMeta | null;
+  onSignInCloud?: () => Promise<void> | void;
+  onSignOutCloud?: () => Promise<void> | void;
+  onPushCloudBackup?: () => Promise<{ ok: boolean; message: string }>;
+  onPullCloudBackup?: () => Promise<{ ok: boolean; message: string }>;
 }
 
 export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
@@ -31,6 +45,13 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
   isAdmin = false,
   onExportBackup,
   onRestoreBackup,
+  cloudUser,
+  cloudSyncBusy = false,
+  cloudMeta,
+  onSignInCloud,
+  onSignOutCloud,
+  onPushCloudBackup,
+  onPullCloudBackup,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -258,6 +279,106 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
             <RotateCcw className={`w-4 h-4 ${restoring ? 'animate-spin' : ''}`} />
             {restoring ? 'Đang phục hồi dữ liệu...' : 'Xác nhận Phục hồi Dữ liệu ngay'}
           </button>
+        </div>
+      )}
+
+      {(onSignInCloud || onPushCloudBackup || onPullCloudBackup) && (
+        <div className="pt-3 border-t border-white/10 space-y-2.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div>
+                <p className="text-xs font-bold text-white">Đồng bộ Đám mây (Firebase + Google)</p>
+                <p className="text-[11px] text-slate-400">
+                  {cloudUser
+                    ? `Đang liên kết: ${cloudUser.email || cloudUser.displayName || 'Google Account'}`
+                    : 'Đăng nhập Google để lưu & chuyển dữ liệu save giữa mọi thiết bị.'}
+                </p>
+              </div>
+            </div>
+            {cloudUser ? (
+              onSignOutCloud && (
+                <button
+                  type="button"
+                  disabled={cloudSyncBusy}
+                  onClick={() => void onSignOutCloud()}
+                  className="h-8 px-2.5 rounded-lg bg-[#0B1117] border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white inline-flex items-center gap-1"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Đăng xuất Google
+                </button>
+              )
+            ) : (
+              onSignInCloud && (
+                <button
+                  type="button"
+                  disabled={cloudSyncBusy}
+                  onClick={async () => {
+                    setFeedback(null);
+                    try {
+                      await onSignInCloud();
+                    } catch (err) {
+                      setFeedback({
+                        ok: false,
+                        text: err instanceof Error ? err.message : 'Đăng nhập Google thất bại.',
+                      });
+                    }
+                  }}
+                  className="h-9 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 disabled:opacity-60"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  Liên kết Google
+                </button>
+              )
+            )}
+          </div>
+
+          {cloudUser && (
+            <>
+              {cloudMeta && (
+                <div className="rounded-lg bg-[#0B1117] border border-emerald-500/20 px-3 py-2 text-[11px] text-slate-300 flex items-center justify-between gap-2 flex-wrap">
+                  <span>
+                    Bản lưu Cloud: <strong className="text-white">{cloudMeta.clubName}</strong> ({cloudMeta.season} · Vòng {cloudMeta.matchweek})
+                  </span>
+                  <span className="font-mono-num text-slate-400">
+                    {new Date(cloudMeta.syncedAtIso).toLocaleString('vi-VN')}
+                  </span>
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {canExport && onPushCloudBackup && (
+                  <button
+                    type="button"
+                    disabled={cloudSyncBusy}
+                    onClick={async () => {
+                      setFeedback(null);
+                      const res = await onPushCloudBackup();
+                      setFeedback({ ok: res.ok, text: res.message });
+                    }}
+                    className="h-10 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-200 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <CloudUpload className="w-4 h-4" />
+                    {cloudSyncBusy ? 'Đang đồng bộ...' : 'Lưu lên Đám mây'}
+                  </button>
+                )}
+                {onPullCloudBackup && (
+                  <button
+                    type="button"
+                    disabled={cloudSyncBusy}
+                    onClick={async () => {
+                      setFeedback(null);
+                      const res = await onPullCloudBackup();
+                      setFeedback({ ok: res.ok, text: res.message });
+                    }}
+                    className="h-10 px-3 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-200 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <CloudDownload className="w-4 h-4" />
+                    {cloudSyncBusy ? 'Đang tải...' : 'Tải bản lưu từ Đám mây'}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

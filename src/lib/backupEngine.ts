@@ -212,6 +212,16 @@ export function buildCompactCareerForStorage(rawCareer: CareerSave, targetUid: s
     payrollHistory: (hydrated.payrollHistory ?? []).slice(0, 50),
     ...(hydrated.youthAcademy ? { youthAcademy: hydrated.youthAcademy } : {}),
     ...(hydrated.clubRecords ? { clubRecords: hydrated.clubRecords } : {}),
+    ...(hydrated.lastSeasonRetiredPlayers ? { lastSeasonRetiredPlayers: hydrated.lastSeasonRetiredPlayers.slice(0, 20) } : {}),
+    ...(hydrated.lastSeasonRetiredSeason ? { lastSeasonRetiredSeason: String(hydrated.lastSeasonRetiredSeason).slice(0, 16) } : {}),
+    ...(Array.isArray(hydrated.freeAgents) ? { freeAgents: hydrated.freeAgents.slice(0, 40) } : {}),
+    ...(Array.isArray(hydrated.loanedOutPlayers) ? { loanedOutPlayers: hydrated.loanedOutPlayers.slice(0, 20) } : {}),
+    ...(Array.isArray(hydrated.loanedInPlayers) ? { loanedInPlayers: hydrated.loanedInPlayers.slice(0, 20) } : {}),
+    ...(Array.isArray(hydrated.incomingTransferOffers) ? { incomingTransferOffers: hydrated.incomingTransferOffers.slice(0, 15) } : {}),
+    ...(hydrated.quests ? { quests: hydrated.quests } : {}),
+    ...(hydrated.aiClubStrengthBoosts ? { aiClubStrengthBoosts: hydrated.aiClubStrengthBoosts } : {}),
+    ...(hydrated.onlineRankSeasonId ? { onlineRankSeasonId: String(hydrated.onlineRankSeasonId).slice(0, 16) } : {}),
+    ...(hydrated.onlineRankSeasonClaimedId ? { onlineRankSeasonClaimedId: String(hydrated.onlineRankSeasonClaimedId).slice(0, 16) } : {}),
     inventory: normalizeInventory(hydrated.inventory),
   };
 }

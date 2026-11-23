@@ -49,6 +49,8 @@ const CATEGORY_LABELS: Record<FinancialLedgerCategory, string> = {
   sponsor: 'Tài trợ chính',
   facility_upgrade: 'Nâng cấp hạ tầng',
   tournament_entry: 'Lệ phí giải đấu Online',
+  loan_fee: 'Phí cho mượn',
+  quest_reward: 'Thưởng nhiệm vụ',
 };
 
 export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({

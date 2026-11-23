@@ -1,7 +1,21 @@
 import React, { useMemo, useState } from 'react';
-import { Crown, ExternalLink, Globe, RefreshCw, Search, Sparkles, TrendingUp, Trophy } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  Check,
+  Crown,
+  ExternalLink,
+  Globe,
+  Inbox,
+  RefreshCw,
+  Search,
+  Sparkles,
+  TrendingUp,
+  Trophy,
+  UserPlus,
+  X,
+} from 'lucide-react';
 import { getClubById, getIconShardCost, INITIAL_PLAYERS } from '../data/footballDatabase';
-import { applyMarketOverrides } from '../lib/careerEngine';
+import { applyMarketOverrides, ensureFreeAgentsPool, getLoanInTerms } from '../lib/careerEngine';
 import { normalizeInventory } from '../lib/inventoryEngine';
 import { CareerSave, MarketOverride, NewsArticle, Player, Position } from '../types/game';
 import { ClubCrest, PlayerAvatar } from './ClubBadgeAndAvatar';
@@ -11,6 +25,10 @@ interface TransfersViewProps {
   news: NewsArticle[];
   marketOverrides: Record<string, MarketOverride>;
   onSelectPlayer: (player: Player) => void;
+  onSignFreeAgent?: (player: Player, years?: 1 | 2 | 3 | 4) => Promise<{ ok: boolean; message: string }>;
+  onLoanInPlayer?: (player: Player) => Promise<{ ok: boolean; message: string }>;
+  onBuyOutLoanedInPlayer?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onRespondIncomingOffer?: (offerId: string, action: 'accept' | 'reject' | 'counter') => Promise<{ ok: boolean; message: string }>;
 }
 
 interface LiveNewsItem {
@@ -47,13 +65,19 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
   news,
   marketOverrides,
   onSelectPlayer,
+  onSignFreeAgent,
+  onLoanInPlayer,
+  onBuyOutLoanedInPlayer,
+  onRespondIncomingOffer,
 }) => {
-  const [tab, setTab] = useState<'market' | 'live'>('market');
+  const [tab, setTab] = useState<'market' | 'free' | 'loans' | 'offers' | 'live'>('market');
   const [tierFilter, setTierFilter] = useState<'all' | 'ucl17' | 'icon' | 'global' | 'standard'>('all');
   const [queryText, setQueryText] = useState('');
   const [posFilter, setPosFilter] = useState<'ALL' | Position>('ALL');
   const [onlyListed, setOnlyListed] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Real-time Web Transfer News State
   const [liveItems, setLiveItems] = useState<LiveNewsItem[]>([]);
@@ -68,6 +92,27 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
   const mergedMarketBase = useMemo(
     () => applyMarketOverrides(INITIAL_PLAYERS, marketOverrides).filter((p) => !ownIds.has(p.id)),
     [marketOverrides, ownIds]
+  );
+
+  const freeAgentsPool = useMemo(
+    () => ensureFreeAgentsPool(career, marketOverrides).filter((p) => !ownIds.has(p.id)),
+    [career, marketOverrides, ownIds]
+  );
+
+  const loanMarketPlayers = useMemo(
+    () =>
+      mergedMarketBase
+        .filter((p) => p.transferStatus === 'loan' && p.cardTier !== 'icon' && p.cardTier !== 'ucl17')
+        .sort((a, b) => b.rating - a.rating),
+    [mergedMarketBase]
+  );
+
+  const activeOffers = useMemo(
+    () =>
+      (career.incomingTransferOffers ?? []).filter(
+        (o) => o.expiresAtMatchweek >= career.matchweek && ownIds.has(o.playerId)
+      ),
+    [career.incomingTransferOffers, career.matchweek, ownIds]
   );
 
   const tierCounts = useMemo(() => {
@@ -150,27 +195,56 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#0B1117]">
-          <button
-            type="button"
-            onClick={() => setTab('market')}
-            className={`h-10 px-4 rounded-lg text-xs font-semibold ${
-              tab === 'market' ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
-            }`}
-          >
-            Sàn Cầu thủ
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('live')}
-            className={`h-10 px-4 rounded-lg text-xs font-semibold ${
-              tab === 'live' ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'
-            }`}
-          >
-            Tin Chuyển nhượng
-          </button>
+        <div className="flex flex-wrap gap-1 p-1 rounded-xl bg-[#0B1117]">
+          {[
+            { id: 'market', label: 'Sàn Cầu thủ' },
+            { id: 'free', label: `Tự do (${freeAgentsPool.length})` },
+            { id: 'loans', label: 'Cho mượn' },
+            {
+              id: 'offers',
+              label: activeOffers.length > 0 ? `Lời mời (${activeOffers.length})` : 'Lời mời mua',
+            },
+            { id: 'live', label: 'Tin CN' },
+          ].map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                setTab(t.id as typeof tab);
+                setActionFeedback(null);
+              }}
+              className={`h-9 px-3 rounded-lg text-xs font-semibold whitespace-nowrap ${
+                tab === t.id
+                  ? 'bg-emerald-500 text-slate-950'
+                  : t.id === 'offers' && activeOffers.length > 0
+                    ? 'text-amber-300 bg-amber-500/10'
+                    : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
+
+      {actionFeedback && (
+        <div
+          className={`rounded-xl p-3 text-xs border flex items-center justify-between gap-2 ${
+            actionFeedback.ok
+              ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-200'
+              : 'bg-red-500/15 border-red-500/35 text-red-200'
+          }`}
+        >
+          <span>{actionFeedback.message}</span>
+          <button
+            type="button"
+            onClick={() => setActionFeedback(null)}
+            className="text-slate-400 hover:text-white"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {tab === 'market' && (
         <div className="space-y-3">
@@ -357,6 +431,341 @@ export const TransfersView: React.FC<TransfersViewProps> = ({
             >
               Hiển thị tất cả {marketPlayers.length} cầu thủ
             </button>
+          )}
+        </div>
+      )}
+
+      {tab === 'free' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-[#121B24] border border-emerald-500/25 p-4 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                <UserPlus className="w-4 h-4 text-emerald-400" />
+                Thị trường Cầu thủ Tự do (Free Agents · Phí €0M)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Chiêu mộ trực tiếp không mất phí chuyển nhượng — chỉ trả lương tuần &amp; tiền lót tay ký hợp đồng.
+              </p>
+            </div>
+          </div>
+
+          {freeAgentsPool.length === 0 ? (
+            <div className="rounded-2xl bg-[#121B24] border border-white/10 p-8 text-center text-xs text-slate-400">
+              Hiện chưa có cầu thủ tự do nào khả dụng.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {freeAgentsPool.map((player) => {
+                const signBonusM = Number(Math.max(0.2, (player.wageK * 1.5) / 1000 * 3).toFixed(2));
+                const freeClub = getClubById('free-agent');
+                return (
+                  <div
+                    key={player.id}
+                    className="rounded-2xl bg-[#121B24] border border-white/10 p-3 flex items-center justify-between gap-3"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onSelectPlayer(player)}
+                      className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                    >
+                      <PlayerAvatar player={player} club={freeClub} size={44} />
+                      <div className="min-w-0">
+                        <p className="font-bold text-sm text-white truncate">{player.name}</p>
+                        <p className="text-xs text-slate-400 truncate">
+                          {player.position} · {player.age}t · OVR{' '}
+                          <strong className="font-mono-num text-emerald-400">{player.rating}</strong> · €{player.wageK}K/tuần
+                        </p>
+                      </div>
+                    </button>
+                    {onSignFreeAgent && (
+                      <button
+                        type="button"
+                        disabled={actionBusy !== null || career.transferBudget < signBonusM}
+                        onClick={async () => {
+                          setActionBusy(`fa-${player.id}`);
+                          setActionFeedback(null);
+                          try {
+                            const res = await onSignFreeAgent(player, 3);
+                            setActionFeedback(res);
+                          } finally {
+                            setActionBusy(null);
+                          }
+                        }}
+                        className="h-9 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-45"
+                      >
+                        {career.transferBudget < signBonusM
+                          ? `Thiếu €${signBonusM}M`
+                          : `Ký €0M (+€${signBonusM}M)`}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'loans' && (
+        <div className="space-y-4">
+          {/* Loaned In */}
+          {(career.loanedInPlayers ?? []).length > 0 && (
+            <div className="rounded-2xl bg-[#121B24] border border-sky-500/30 p-4 space-y-2.5">
+              <h3 className="text-sm font-bold text-sky-300 flex items-center gap-1.5">
+                <ArrowLeftRight className="w-4 h-4" />
+                Cầu thủ đang Mượn về CLB ({career.loanedInPlayers!.length})
+              </h3>
+              <div className="space-y-2">
+                {career.loanedInPlayers!.map((li) => {
+                  const p = career.squad.find((sp) => sp.id === li.playerId);
+                  if (!p) return null;
+                  const parentClub = getClubById(li.fromClubId);
+                  return (
+                    <div
+                      key={li.playerId}
+                      className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <PlayerAvatar player={p} club={parentClub} size={40} isUserCard />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate">
+                            {p.name} ({p.position} · OVR {p.rating})
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            Mượn từ {parentClub.shortName} · Điều khoản mua đứt:{' '}
+                            <strong className="font-mono-num text-amber-300">€{li.buyOptionM}M</strong>
+                          </p>
+                        </div>
+                      </div>
+                      {onBuyOutLoanedInPlayer && (
+                        <button
+                          type="button"
+                          disabled={actionBusy !== null || career.transferBudget < li.buyOptionM}
+                          onClick={async () => {
+                            setActionBusy(`buyout-${li.playerId}`);
+                            setActionFeedback(null);
+                            try {
+                              const res = await onBuyOutLoanedInPlayer(li.playerId);
+                              setActionFeedback(res);
+                            } finally {
+                              setActionBusy(null);
+                            }
+                          }}
+                          className="h-9 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-45"
+                        >
+                          {career.transferBudget < li.buyOptionM
+                            ? `Thiếu €${li.buyOptionM}M`
+                            : `Mua đứt (-€${li.buyOptionM}M)`}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Loaned Out */}
+          {(career.loanedOutPlayers ?? []).length > 0 && (
+            <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-2.5">
+              <h3 className="text-sm font-bold text-white">
+                Cầu thủ đang Cho mượn ({career.loanedOutPlayers!.length} · Trở về đầu mùa tới)
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {career.loanedOutPlayers!.map((lo) => {
+                  const destClub = getClubById(lo.toClubId);
+                  return (
+                    <div
+                      key={lo.player.id}
+                      className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white truncate">
+                          {lo.player.name} ({lo.player.position} · OVR {lo.player.rating})
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          Đang đá cho {destClub.name} · Dự kiến tăng +{lo.expectedGrowth} OVR
+                        </p>
+                      </div>
+                      <span className="font-mono-num text-xs font-bold text-emerald-400 shrink-0">
+                        +€{lo.loanFeeM}M
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Available for Loan In */}
+          <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4 space-y-3">
+            <div>
+              <h3 className="text-sm font-bold text-white">Danh sách Sẵn sàng Cho mượn (1 mùa + Tùy chọn Mua đứt)</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Mượn ngắn hạn chỉ với ~14% giá trị thị trường. Để cho mượn cầu thủ nhà, bấm vào cầu thủ đó trong tab Đội hình.
+              </p>
+            </div>
+            {loanMarketPlayers.length === 0 ? (
+              <p className="text-xs text-slate-400 py-4 text-center">
+                Hiện chưa có cầu thủ nào trên thị trường cho mượn.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {loanMarketPlayers.slice(0, 24).map((p) => {
+                  const club = getClubById(p.clubId);
+                  const terms = getLoanInTerms(p);
+                  return (
+                    <div
+                      key={p.id}
+                      className="rounded-xl bg-[#0B1117] border border-white/10 p-3 flex items-center justify-between gap-2.5"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelectPlayer(p)}
+                        className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+                      >
+                        <PlayerAvatar player={p} club={club} size={42} />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate">{p.name}</p>
+                          <p className="text-[11px] text-slate-400 truncate">
+                            {club.shortName} · {p.position} · OVR{' '}
+                            <strong className="font-mono-num text-emerald-400">{p.rating}</strong> · Mua đứt €{terms.buyOptionM}M
+                          </p>
+                        </div>
+                      </button>
+                      {onLoanInPlayer && (
+                        <button
+                          type="button"
+                          disabled={actionBusy !== null || career.transferBudget < terms.loanFeeM}
+                          onClick={async () => {
+                            setActionBusy(`loan-in-${p.id}`);
+                            setActionFeedback(null);
+                            try {
+                              const res = await onLoanInPlayer(p);
+                              setActionFeedback(res);
+                            } finally {
+                              setActionBusy(null);
+                            }
+                          }}
+                          className="h-9 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-45"
+                        >
+                          {career.transferBudget < terms.loanFeeM
+                            ? `Thiếu €${terms.loanFeeM}M`
+                            : `Mượn (-€${terms.loanFeeM}M)`}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'offers' && (
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-[#121B24] border border-white/10 p-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+              <Inbox className="w-4 h-4 text-amber-400" />
+              Hộp thư Đề nghị Mua Cầu thủ từ CLB khác ({activeOffers.length})
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Các CLB đối thủ sẽ gửi lời hỏi mua sau mỗi vòng đấu (ưu tiên cầu thủ đang rao bán hoặc dự bị).
+            </p>
+          </div>
+
+          {activeOffers.length === 0 ? (
+            <div className="rounded-2xl bg-[#121B24] border border-white/10 p-8 text-center text-xs text-slate-400">
+              Chưa có đề nghị hỏi mua mới. Hãy đưa các cầu thủ dư thừa lên sàn chuyển nhượng hoặc thi đấu tiếp các vòng tới.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {activeOffers.map((offer) => {
+                const buyerClub = getClubById(offer.fromClubId);
+                const ownPlayer = career.squad.find((p) => p.id === offer.playerId);
+                return (
+                  <div
+                    key={offer.id}
+                    className="rounded-2xl bg-[#121B24] border border-amber-400/35 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <ClubCrest club={buyerClub} size={34} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white truncate">
+                          {buyerClub.name} hỏi mua{' '}
+                          <span className="text-emerald-300">{offer.playerName}</span> ({offer.position} · OVR {offer.rating})
+                        </p>
+                        <p className="text-[11px] text-slate-300 mt-0.5">
+                          Giá đề nghị:{' '}
+                          <strong className="font-mono-num text-amber-300">€{offer.offerM}M</strong>
+                          {ownPlayer ? ` (Định giá: €${ownPlayer.marketValueM}M)` : ''} · Hết hạn Vòng {offer.expiresAtMatchweek}
+                        </p>
+                      </div>
+                    </div>
+
+                    {onRespondIncomingOffer && (
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                        <button
+                          type="button"
+                          disabled={actionBusy !== null || career.squad.length <= 21}
+                          onClick={async () => {
+                            setActionBusy(`off-acc-${offer.id}`);
+                            setActionFeedback(null);
+                            try {
+                              const res = await onRespondIncomingOffer(offer.id, 'accept');
+                              setActionFeedback(res);
+                            } finally {
+                              setActionBusy(null);
+                            }
+                          }}
+                          className="h-9 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1 disabled:opacity-45"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          {career.squad.length <= 21 ? 'Đội ≥21' : `Bán €${offer.offerM}M`}
+                        </button>
+                        {!offer.countered && (
+                          <button
+                            type="button"
+                            disabled={actionBusy !== null}
+                            onClick={async () => {
+                              setActionBusy(`off-cnt-${offer.id}`);
+                              setActionFeedback(null);
+                              try {
+                                const res = await onRespondIncomingOffer(offer.id, 'counter');
+                                setActionFeedback(res);
+                              } finally {
+                                setActionBusy(null);
+                              }
+                            }}
+                            className="h-9 px-3 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 font-bold text-xs"
+                          >
+                            Ép giá +15%
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={actionBusy !== null}
+                          onClick={async () => {
+                            setActionBusy(`off-rej-${offer.id}`);
+                            setActionFeedback(null);
+                            try {
+                              const res = await onRespondIncomingOffer(offer.id, 'reject');
+                              setActionFeedback(res);
+                            } finally {
+                              setActionBusy(null);
+                            }
+                          }}
+                          className="h-9 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                        >
+                          Từ chối
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}

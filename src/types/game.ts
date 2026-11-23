@@ -67,6 +67,9 @@ export interface Player {
   goals: number;
   assists: number;
   appearances: number;
+  yellowCardsSeason?: number;
+  suspendedMatches?: number;
+  trainingXp?: number;
   injury?: PlayerInjury;
   transferStatus: 'available' | 'listed' | 'untouchable' | 'loan';
   role?: PlayerRole;
@@ -187,7 +190,7 @@ export type CompetitionId = 'league' | 'champions-cup' | 'national-cup' | 'super
 
 export interface MatchEvent {
   minute: number;
-  type: 'goal' | 'yellow' | 'chance' | 'save' | 'sub' | 'kickoff' | 'fulltime' | 'penalty' | 'injury';
+  type: 'goal' | 'yellow' | 'red' | 'chance' | 'save' | 'sub' | 'kickoff' | 'fulltime' | 'penalty' | 'injury';
   teamId: string;
   playerId?: string;
   playerName: string;
@@ -213,6 +216,7 @@ export interface MatchPlayerRating {
   goals: number;
   assists: number;
   yellowCard?: boolean;
+  redCard?: boolean;
   isMotm?: boolean;
 }
 
@@ -228,6 +232,8 @@ export interface CompactMatchReport {
   foulsAway?: number;
   yellowsHome?: number;
   yellowsAway?: number;
+  redsHome?: number;
+  redsAway?: number;
   xgHome: number;
   xgAway: number;
   homeFormation?: string;
@@ -264,6 +270,8 @@ export interface MatchResultSummary {
   foulsAway?: number;
   yellowsHome?: number;
   yellowsAway?: number;
+  redsHome?: number;
+  redsAway?: number;
   xgHome: number;
   xgAway: number;
   homeFormation?: string;
@@ -433,7 +441,7 @@ export interface TransferRecord {
   toClubId: string;
   feeM: number;
   wageK: number;
-  type: 'buy' | 'sell' | 'loan' | 'free_out';
+  type: 'buy' | 'sell' | 'loan' | 'loan_out' | 'loan_in' | 'free_in' | 'free_out' | 'retire';
   matchweek: number;
   date: string;
 }
@@ -616,7 +624,9 @@ export type FinancialLedgerCategory =
   | 'academy'
   | 'sponsor'
   | 'facility_upgrade'
-  | 'tournament_entry';
+  | 'tournament_entry'
+  | 'loan_fee'
+  | 'quest_reward';
 
 export interface FinancialLedgerEntry {
   id: string;
@@ -748,6 +758,89 @@ export interface FreeDepartureSummary {
   contractUntil: number;
 }
 
+export interface RetiredPlayerSummary {
+  playerId: string;
+  playerName: string;
+  position: Position;
+  age: number;
+  rating: number;
+  appearances: number;
+  goals: number;
+  legacyShards: number;
+}
+
+export interface LoanedOutPlayer {
+  player: Player;
+  toClubId: string;
+  loanFeeM: number;
+  seasonStarted: string;
+  expectedGrowth: number;
+}
+
+export interface LoanedInPlayer {
+  playerId: string;
+  fromClubId: string;
+  loanFeeM: number;
+  buyOptionM: number;
+  seasonStarted: string;
+}
+
+export interface IncomingTransferOffer {
+  id: string;
+  playerId: string;
+  playerName: string;
+  position: Position;
+  rating: number;
+  fromClubId: string;
+  offerM: number;
+  expiresAtMatchweek: number;
+  countered?: boolean;
+  createdAt: string;
+}
+
+export type QuestCategory = 'daily' | 'weekly';
+
+export type QuestMetric =
+  | 'match_played'
+  | 'match_win'
+  | 'clean_sheet'
+  | 'goal_scored'
+  | 'online_match'
+  | 'training_or_star';
+
+export interface QuestItem {
+  id: string;
+  category: QuestCategory;
+  metric: QuestMetric;
+  title: string;
+  description: string;
+  target: number;
+  progress: number;
+  claimed: boolean;
+  rewardShards: number;
+  rewardBudgetM: number;
+  rewardBoosters: number;
+  rewardPack?: PackTier;
+}
+
+export interface QuestsState {
+  dailyKey: string;
+  weeklyKey: string;
+  items: QuestItem[];
+}
+
+export interface CareerSlotMeta {
+  slotId: 'slot1' | 'slot2' | 'slot3';
+  occupied: boolean;
+  clubId?: string;
+  clubName?: string;
+  season?: string;
+  matchweek?: number;
+  transferBudget?: number;
+  squadCount?: number;
+  updatedAt?: number;
+}
+
 export interface CareerSave {
   uid: string;
   clubId: string;
@@ -789,6 +882,16 @@ export interface CareerSave {
   lastSeasonFreeDepartures?: FreeDepartureSummary[];
   lastSeasonDepartureSeason?: string;
   lastSeasonEmergencyPromoted?: number;
+  lastSeasonRetiredPlayers?: RetiredPlayerSummary[];
+  lastSeasonRetiredSeason?: string;
+  freeAgents?: Player[];
+  loanedOutPlayers?: LoanedOutPlayer[];
+  loanedInPlayers?: LoanedInPlayer[];
+  incomingTransferOffers?: IncomingTransferOffer[];
+  quests?: QuestsState;
+  aiClubStrengthBoosts?: Record<string, number>;
+  onlineRankSeasonId?: string;
+  onlineRankSeasonClaimedId?: string;
   updatedAt?: unknown;
 }
 
@@ -848,7 +951,9 @@ export type ClubNotificationCategory =
   | 'contract'
   | 'inventory'
   | 'upgrade'
-  | 'online';
+  | 'online'
+  | 'quest'
+  | 'discipline';
 
 export interface ClubNotificationItem {
   id: string;

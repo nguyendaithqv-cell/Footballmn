@@ -77,9 +77,83 @@ export function getMedicalCostMultiplier(level: 1 | 2 | 3): number {
   return 1.0;
 }
 
-export function getContractRenewalCostK(player: Player): { wageIncreaseK: number; bonusM: number; targetYears: number } {
-  const targetYears = 3;
-  const wageIncreaseK = Math.max(2, Math.round(player.wageK * 0.15));
-  const bonusM = Number(Math.max(0.02, player.marketValueM * 0.08).toFixed(2));
+export function getContractRenewalCostK(
+  player: Player,
+  years: 1 | 2 | 3 | 4 = 3
+): { wageIncreaseK: number; bonusM: number; targetYears: 1 | 2 | 3 | 4 } {
+  const targetYears = years;
+  const wageRate = years === 1 ? 0.08 : years === 2 ? 0.12 : years === 3 ? 0.15 : 0.2;
+  const bonusRate = years === 1 ? 0.04 : years === 2 ? 0.06 : years === 3 ? 0.08 : 0.11;
+  const wageIncreaseK = Math.max(1, Math.round(player.wageK * wageRate));
+  const bonusM = Number(Math.max(0.02, player.marketValueM * bonusRate).toFixed(2));
   return { wageIncreaseK, bonusM, targetYears };
 }
+
+export interface BoardStatusSummary {
+  level: 'strong' | 'stable' | 'warning' | 'ultimatum';
+  label: string;
+  ticketMultiplier: number;
+  sponsorMultiplier: number;
+  homeMoraleBonus: number;
+  description: string;
+}
+
+export function getBoardStatusSummary(
+  boardConfidence: number,
+  fanSupport: number
+): BoardStatusSummary {
+  let fanTicketMult = 1.0;
+  let homeMoraleBonus = 0;
+  if (fanSupport >= 85) {
+    fanTicketMult = 1.1;
+    homeMoraleBonus = 2;
+  } else if (fanSupport < 40) {
+    fanTicketMult = 0.85;
+    homeMoraleBonus = -1;
+  }
+
+  if (boardConfidence < 30) {
+    return {
+      level: 'ultimatum',
+      label: 'Tối hậu thư BLĐ',
+      ticketMultiplier: Number((fanTicketMult * 0.9).toFixed(2)),
+      sponsorMultiplier: 0.7,
+      homeMoraleBonus,
+      description: 'BLĐ mất kiên nhẫn: thưởng tài trợ bị siết 30%. Kết thúc mùa dưới 25% sẽ bị thay HLV & tái cơ cấu.',
+    };
+  }
+  if (boardConfidence < 50) {
+    return {
+      level: 'warning',
+      label: 'Áp lực sa thải',
+      ticketMultiplier: fanTicketMult,
+      sponsorMultiplier: 0.85,
+      homeMoraleBonus,
+      description: 'BLĐ đang theo dõi sát: thưởng tài trợ giảm 15% cho đến khi thành tích khởi sắc.',
+    };
+  }
+  if (boardConfidence >= 85) {
+    return {
+      level: 'strong',
+      label: 'Tín nhiệm tuyệt đối',
+      ticketMultiplier: Number((fanTicketMult * 1.05).toFixed(2)),
+      sponsorMultiplier: 1.1,
+      homeMoraleBonus,
+      description: 'BLĐ & CĐV đồng lòng: thưởng tài trợ +10%' + (fanSupport >= 85 ? ' & chảo lửa sân nhà +10% vé.' : '.'),
+    };
+  }
+  return {
+    level: 'stable',
+    label: 'Ổn định',
+    ticketMultiplier: fanTicketMult,
+    sponsorMultiplier: 1.0,
+    homeMoraleBonus,
+    description:
+      fanSupport >= 85
+        ? 'CĐV cực kỳ cuồng nhiệt (+10% doanh thu vé sân nhà).'
+        : fanSupport < 40
+          ? 'Khán đài vắng khách (-15% doanh thu vé sân nhà).'
+          : 'Mối quan hệ BLĐ & CĐV ổn định.',
+  };
+}
+

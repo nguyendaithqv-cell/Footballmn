@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   ArrowUpCircle,
   Award,
+  Ban,
   CheckCircle2,
   Crown,
   DollarSign,
@@ -13,15 +14,20 @@ import {
   Star,
   Stethoscope,
   Trophy,
+  UserCheck,
   X,
 } from 'lucide-react';
 import { getClubById, getIconShardCost } from '../data/footballDatabase';
 import {
   getInjurySeverityLabel,
   getInjuryTreatmentCostM,
+  getLoanInTerms,
+  getLoanOutTerms,
   getPlayerRecoveryCostM,
   isPlayerInjured,
+  isPlayerSuspended,
 } from '../lib/careerEngine';
+import { getContractRenewalCostK } from '../lib/economyEngine';
 import {
   FITNESS_BOOSTER_RECOVERY,
   getStarUpgradePlan,
@@ -39,6 +45,7 @@ import { ClubCrest, PlayerAvatar } from './ClubBadgeAndAvatar';
 interface PlayerDetailSheetProps {
   player: Player;
   isOwnPlayer: boolean;
+  isFreeAgent?: boolean;
   transferBudgetM: number;
   currentYear?: number;
   medicalLevel?: 1 | 2 | 3;
@@ -50,17 +57,21 @@ interface PlayerDetailSheetProps {
   onClose: () => void;
   onToggleTransferList?: (playerId: string) => void;
   onSellPlayer?: (playerId: string) => void;
-  onRenewContract?: (playerId: string) => void;
+  onRenewContract?: (playerId: string, years?: 1 | 2 | 3 | 4) => void;
   onRecoverFitness?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onTreatInjury?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onUseFitnessBooster?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onUpgradeStar?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
   onMakeOffer?: (player: Player, bidM: number, wageK: number) => Promise<{ ok: boolean; message: string }>;
+  onSignFreeAgent?: (player: Player, years?: 1 | 2 | 3 | 4) => Promise<{ ok: boolean; message: string }>;
+  onLoanInPlayer?: (player: Player) => Promise<{ ok: boolean; message: string }>;
+  onLoanOutPlayer?: (playerId: string) => Promise<{ ok: boolean; message: string }>;
 }
 
 export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   player,
   isOwnPlayer,
+  isFreeAgent = false,
   transferBudgetM,
   currentYear = 2026,
   medicalLevel = 1,
@@ -78,11 +89,15 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   onUseFitnessBooster,
   onUpgradeStar,
   onMakeOffer,
+  onSignFreeAgent,
+  onLoanInPlayer,
+  onLoanOutPlayer,
 }) => {
   const club = getClubById(player.clubId);
   const isIcon = player.cardTier === 'icon' || player.clubId === 'icons-fc';
   const isUcl17 = player.cardTier === 'ucl17' || player.clubId === 'rma-ucl-2017';
   const isGlobal = player.cardTier === 'global';
+  const isFreePool = isFreeAgent || player.clubId === 'free-agent';
   const iconShardCost = getIconShardCost(player);
   const rawMinAsk =
     player.transferStatus === 'listed'
@@ -94,10 +109,16 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
 
   const [bidM, setBidM] = useState<number>(minAskM);
   const [wageK, setWageK] = useState<number>(Math.round(player.wageK * 1.15));
+  const [renewYears, setRenewYears] = useState<1 | 2 | 3 | 4>(2);
+  const [freeSignYears, setFreeSignYears] = useState<1 | 2 | 3 | 4>(3);
+  const [negotiationRejected, setNegotiationRejected] = useState(false);
 
   useEffect(() => {
     setBidM(minAskM);
     setWageK(Math.round(player.wageK * 1.15));
+    setRenewYears(2);
+    setFreeSignYears(3);
+    setNegotiationRejected(false);
   }, [player.id, minAskM, player.wageK]);
   const [negotiating, setNegotiating] = useState(false);
   const [recovering, setRecovering] = useState(false);
@@ -106,10 +127,13 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
   const recoveryCostM = getPlayerRecoveryCostM(player.fitness, medicalLevel);
   const injuryCostM = getInjuryTreatmentCostM(player, medicalLevel);
   const playerInjured = isPlayerInjured(player);
+  const playerSuspended = isPlayerSuspended(player);
+  const yellowAccum = (player.yellowCardsSeason ?? 0) % 5;
   const isExpiringContract = isOwnPlayer && player.contractUntil <= currentYear + 1;
   const normInventory = normalizeInventory(inventory);
   const upgradePlan = getStarUpgradePlan(player, normInventory, transferBudgetM);
   const hasEnoughIconShards = normInventory.universalShards >= iconShardCost;
+  const renewalInfo = getContractRenewalCostK(player, renewYears);
 
   const attrList = [
     { label: 'Tốc độ (PAC)', val: player.attributes.pac },
@@ -120,13 +144,15 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
     { label: 'Thể lực (PHY)', val: player.attributes.phy },
   ];
 
-  const handleBidSubmit = async () => {
+  const handleBidSubmit = async (overrideBidM?: number) => {
     if (!onMakeOffer) return;
+    const submitBid = overrideBidM ?? bidM;
     setNegotiating(true);
     setFeedback(null);
     try {
-      const res = await onMakeOffer(player, bidM, wageK);
+      const res = await onMakeOffer(player, submitBid, wageK);
       setFeedback({ ok: res.ok, text: res.message });
+      setNegotiationRejected(!res.ok);
     } finally {
       setNegotiating(false);
     }
@@ -291,6 +317,28 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                     : `Điều trị dứt điểm (-€${injuryCostM}M)`}
               </button>
             )}
+          </div>
+        )}
+
+        {playerSuspended && (
+          <div className="rounded-xl bg-red-500/15 border border-red-500/45 px-3.5 py-2.5 text-xs text-red-200 flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 font-semibold">
+              <Ban className="w-4 h-4 text-red-400 shrink-0" />
+              Đang bị Treo giò: Nghỉ thi đấu còn{' '}
+              <strong className="font-mono-num text-white">{player.suspendedMatches} trận chính thức</strong>
+            </span>
+            <span className="font-mono-num text-[11px] text-amber-300 shrink-0">
+              Thẻ vàng mùa: {player.yellowCardsSeason ?? 0}
+            </span>
+          </div>
+        )}
+
+        {isOwnPlayer && !playerSuspended && (player.yellowCardsSeason ?? 0) > 0 && (
+          <div className="rounded-xl bg-amber-500/10 border border-amber-400/25 px-3.5 py-2 text-[11px] text-amber-200 flex items-center justify-between gap-2">
+            <span>Thẻ vàng tích lũy (đủ 5 thẻ vàng bị treo giò 1 trận):</span>
+            <span className="font-mono-num font-bold text-amber-300">
+              {yellowAccum}/5 thẻ (Tổng mùa: {player.yellowCardsSeason})
+            </span>
           </div>
         )}
 
@@ -604,21 +652,78 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                       : `Trị liệu hồi phục về 100% (-€${recoveryCostM}M)`}
               </button>
             )}
+            {onRenewContract && (
+              <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-white">Gia hạn Hợp đồng ({player.contractUntil})</span>
+                  <div className="flex items-center gap-1">
+                    {([1, 2, 3, 4] as const).map((yrs) => (
+                      <button
+                        key={yrs}
+                        type="button"
+                        onClick={() => setRenewYears(yrs)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono-num font-bold ${
+                          renewYears === yrs
+                            ? 'bg-emerald-500 text-slate-950'
+                            : 'bg-[#121B24] text-slate-300 border border-white/10'
+                        }`}
+                      >
+                        +{yrs}n
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                  <span>
+                    Đến {Math.max(player.contractUntil, currentYear) + renewYears} · Lương +{renewalInfo.wageIncreaseK}K/tuần
+                  </span>
+                  <button
+                    type="button"
+                    disabled={transferBudgetM < renewalInfo.bonusM}
+                    onClick={() => {
+                      const nextContract = Math.max(player.contractUntil, currentYear) + renewYears;
+                      onRenewContract(player.id, renewYears);
+                      setFeedback({
+                        ok: true,
+                        text: `Đã gia hạn hợp đồng với ${player.shortName} thêm ${renewYears} năm (đến ${nextContract}).`,
+                      });
+                    }}
+                    className="h-9 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 disabled:opacity-45"
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    {transferBudgetM < renewalInfo.bonusM
+                      ? `Thiếu €${renewalInfo.bonusM}M`
+                      : `Ký +${renewYears} năm (-€${renewalInfo.bonusM}M)`}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              {onRenewContract && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextContract = Math.max(player.contractUntil, currentYear) + 2;
-                    onRenewContract(player.id);
-                    setFeedback({ ok: true, text: `Đã gia hạn hợp đồng với ${player.shortName} đến ${nextContract}.` });
-                  }}
-                  className="h-11 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
-                >
-                  <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                  Gia hạn (+2 năm)
-                </button>
-              )}
+              {onLoanOutPlayer && !isIcon && !isUcl17 && (() => {
+                const blockedMinSquad = typeof squadLength === 'number' && squadLength <= 21;
+                const terms = getLoanOutTerms(player);
+                return (
+                  <button
+                    type="button"
+                    disabled={blockedMinSquad || negotiating}
+                    onClick={async () => {
+                      setNegotiating(true);
+                      setFeedback(null);
+                      try {
+                        const res = await onLoanOutPlayer(player.id);
+                        setFeedback({ ok: res.ok, text: res.message });
+                        if (res.ok) onClose();
+                      } finally {
+                        setNegotiating(false);
+                      }
+                    }}
+                    className="h-11 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-sky-200 text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-45"
+                  >
+                    {blockedMinSquad ? 'Mượn (≥22 cầu thủ)' : `Cho mượn (+€${terms.loanFeeM}M)`}
+                  </button>
+                );
+              })()}
               {onToggleTransferList && (
                 <button
                   type="button"
@@ -652,11 +757,87 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
               })()}
             </div>
           </div>
+        ) : isFreePool && onSignFreeAgent ? (
+          <div className="rounded-2xl bg-[#0B1117] border border-emerald-500/35 p-4 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                <UserCheck className="w-4 h-4" />
+                Chiêu mộ Cầu thủ Tự do (Phí €0M)
+              </span>
+              <span className="font-mono-num text-slate-300">
+                Lương: €{player.wageK}K/tuần
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-400">Thời hạn hợp đồng đề xuất</span>
+              <div className="flex items-center gap-1">
+                {([1, 2, 3, 4] as const).map((yrs) => (
+                  <button
+                    key={yrs}
+                    type="button"
+                    onClick={() => setFreeSignYears(yrs)}
+                    className={`px-2.5 py-1 rounded text-[11px] font-mono-num font-bold ${
+                      freeSignYears === yrs
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'bg-[#121B24] text-slate-300 border border-white/10'
+                    }`}
+                  >
+                    {yrs} năm
+                  </button>
+                ))}
+              </div>
+            </div>
+            {(() => {
+              const signBonusM = Number(Math.max(0.2, (player.wageK * 1.5) / 1000 * freeSignYears).toFixed(2));
+              return (
+                <button
+                  type="button"
+                  disabled={negotiating || transferBudgetM < signBonusM}
+                  onClick={async () => {
+                    setNegotiating(true);
+                    setFeedback(null);
+                    try {
+                      const res = await onSignFreeAgent(player, freeSignYears);
+                      setFeedback({ ok: res.ok, text: res.message });
+                    } finally {
+                      setNegotiating(false);
+                    }
+                  }}
+                  className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs disabled:opacity-45"
+                >
+                  {transferBudgetM < signBonusM
+                    ? `Không đủ lót tay (€${signBonusM}M)`
+                    : negotiating
+                      ? 'Đang ký hợp đồng...'
+                      : `Ký Cầu thủ Tự do ${freeSignYears} năm (Lót tay €${signBonusM}M)`}
+                </button>
+              );
+            })()}
+          </div>
         ) : (
           onMakeOffer && (
             <div className="rounded-2xl bg-[#0B1117] border border-white/10 p-4 space-y-3.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-white">Đàm phán Chuyển nhượng</span>
+              <div className="flex items-center justify-between text-xs gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-white">Đàm phán Chuyển nhượng</span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      player.transferStatus === 'listed'
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : player.transferStatus === 'untouchable'
+                          ? 'bg-red-500/20 text-red-300'
+                          : 'bg-sky-500/20 text-sky-300'
+                    }`}
+                  >
+                    {player.transferStatus === 'listed'
+                      ? 'Sẵn sàng bán'
+                      : player.transferStatus === 'untouchable'
+                        ? 'Trụ cột (giá cao)'
+                        : player.transferStatus === 'loan'
+                          ? 'Cho mượn / Bán'
+                          : 'Thương lượng'}
+                  </span>
+                </div>
                 <span className="font-mono-num text-emerald-400">
                   Ngân sách: €{transferBudgetM.toFixed(1)}M
                 </span>
@@ -673,7 +854,10 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                   max={Number(Math.max(0.2, player.marketValueM * 1.9).toFixed(2))}
                   step={player.marketValueM < 2 ? 0.05 : player.marketValueM < 10 ? 0.2 : 0.5}
                   value={bidM}
-                  onChange={(e) => setBidM(Number(Number(e.target.value).toFixed(2)))}
+                  onChange={(e) => {
+                    setBidM(Number(Number(e.target.value).toFixed(2)));
+                    setNegotiationRejected(false);
+                  }}
                   className="w-full accent-emerald-500"
                 />
               </div>
@@ -712,26 +896,70 @@ export const PlayerDetailSheet: React.FC<PlayerDetailSheetProps> = ({
                 </div>
               )}
 
-              <button
-                type="button"
-                disabled={negotiating || bidM > transferBudgetM || !hasEnoughIconShards}
-                onClick={handleBidSubmit}
-                className={`w-full h-12 rounded-xl font-bold text-sm disabled:opacity-50 ${
-                  isIcon
-                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
-                }`}
-              >
-                {bidM > transferBudgetM
-                  ? 'Vượt quá ngân sách chuyển nhượng'
-                  : !hasEnoughIconShards
-                    ? `Cần ${iconShardCost} Mảnh Ngôi Sao (Thiếu ${iconShardCost - normInventory.universalShards})`
-                    : negotiating
-                      ? 'Đang đàm phán...'
-                      : iconShardCost > 0
-                        ? `Chiêu mộ ICON (-€${bidM}M & ${iconShardCost} Mảnh)`
-                        : `Gửi đề nghị €${bidM}M`}
-              </button>
+              {negotiationRejected && bidM < minAskM && (
+                <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 p-2.5 flex items-center justify-between gap-2 text-xs">
+                  <span className="text-amber-200">
+                    CLB chủ quản đòi tối thiểu <strong className="font-mono-num">€{minAskM}M</strong>
+                  </span>
+                  <button
+                    type="button"
+                    disabled={negotiating || minAskM > transferBudgetM || !hasEnoughIconShards}
+                    onClick={() => {
+                      setBidM(minAskM);
+                      void handleBidSubmit(minAskM);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-bold text-[11px] shrink-0 disabled:opacity-45"
+                  >
+                    Chốt giá €{minAskM}M
+                  </button>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={negotiating || bidM > transferBudgetM || !hasEnoughIconShards}
+                  onClick={() => void handleBidSubmit()}
+                  className={`flex-1 h-12 rounded-xl font-bold text-sm disabled:opacity-50 ${
+                    isIcon
+                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                  }`}
+                >
+                  {bidM > transferBudgetM
+                    ? 'Vượt quá ngân sách chuyển nhượng'
+                    : !hasEnoughIconShards
+                      ? `Cần ${iconShardCost} Mảnh Ngôi Sao (Thiếu ${iconShardCost - normInventory.universalShards})`
+                      : negotiating
+                        ? 'Đang đàm phán...'
+                        : iconShardCost > 0
+                          ? `Chiêu mộ ICON (-€${bidM}M & ${iconShardCost} Mảnh)`
+                          : `Gửi đề nghị €${bidM}M`}
+                </button>
+
+                {onLoanInPlayer && player.transferStatus === 'loan' && !isIcon && !isUcl17 && (() => {
+                  const loanTerms = getLoanInTerms(player);
+                  return (
+                    <button
+                      type="button"
+                      disabled={negotiating || transferBudgetM < loanTerms.loanFeeM}
+                      onClick={async () => {
+                        setNegotiating(true);
+                        setFeedback(null);
+                        try {
+                          const res = await onLoanInPlayer(player);
+                          setFeedback({ ok: res.ok, text: res.message });
+                        } finally {
+                          setNegotiating(false);
+                        }
+                      }}
+                      className="h-12 px-4 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/45 text-sky-200 font-bold text-xs shrink-0 disabled:opacity-45"
+                    >
+                      {`Mượn 1 mùa (-€${loanTerms.loanFeeM}M)`}
+                    </button>
+                  );
+                })()}
+              </div>
             </div>
           )
         )}

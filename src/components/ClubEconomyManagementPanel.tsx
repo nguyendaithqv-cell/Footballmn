@@ -20,6 +20,7 @@ import {
 } from '../lib/careerEngine';
 import {
   ensureClubFacilities,
+  getBoardStatusSummary,
   getContractRenewalCostK,
   getMedicalUpgradeCostM,
   getStadiumUpgradeCostM,
@@ -33,7 +34,7 @@ interface ClubEconomyManagementPanelProps {
   career: CareerSave;
   onSelectSponsor: (sponsorId: string) => Promise<{ ok: boolean; message: string }>;
   onUpgradeFacility: (facilityType: 'stadium' | 'medical') => Promise<{ ok: boolean; message: string }>;
-  onExtendContract: (playerId: string) => Promise<{ ok: boolean; message: string }>;
+  onExtendContract: (playerId: string, years?: 1 | 2 | 3 | 4) => Promise<{ ok: boolean; message: string }>;
   onExtendManagerContract?: (years: 1 | 2 | 3) => Promise<{ ok: boolean; message: string }>;
 }
 
@@ -47,6 +48,11 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
   const [subTab, setSubTab] = useState<'sponsors' | 'facilities' | 'contracts'>('sponsors');
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [contractYearsByPlayer, setContractYearsByPlayer] = useState<Record<string, 1 | 2 | 3 | 4>>({});
+  const boardStatus = useMemo(
+    () => getBoardStatusSummary(career.boardConfidence, career.fanSupport),
+    [career.boardConfidence, career.fanSupport]
+  );
 
   const club = useMemo(
     () => CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0],
@@ -144,6 +150,15 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                 }`}
               >
                 {isSponsorClaimedThisSeason ? 'Đã ký hợp đồng' : 'Chọn gói tài trợ'}
+              </span>
+            </div>
+
+            <div className="rounded-xl bg-[#0B1117] border border-white/10 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-slate-300">
+                Uy tín BLĐ &amp; CĐV: <strong className="text-white">{boardStatus.label}</strong> ({boardStatus.description})
+              </span>
+              <span className="font-mono-num font-bold text-amber-300">
+                Hệ số tài trợ: x{boardStatus.sponsorMultiplier.toFixed(2)} · Vé sân nhà: x{boardStatus.ticketMultiplier.toFixed(2)}
               </span>
             </div>
           </div>
@@ -386,7 +401,8 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                   .sort((a, b) => a.contractUntil - b.contractUntil || b.rating - a.rating)
                   .map((p) => {
                     const isExpiringSoon = p.contractUntil <= currentYear + 1;
-                    const renewalInfo = getContractRenewalCostK(p);
+                    const selectedYears = contractYearsByPlayer[p.id] ?? 3;
+                    const renewalInfo = getContractRenewalCostK(p, selectedYears);
                     const nextExpiry = Math.max(p.contractUntil, currentYear) + renewalInfo.targetYears;
                     return (
                       <div
@@ -411,25 +427,43 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between sm:justify-end gap-3">
-                          <div className="text-right">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
-                                isExpiringSoon
-                                  ? 'bg-rose-500/20 border border-rose-500/40 text-rose-200'
-                                  : 'bg-emerald-500/20 text-emerald-300'
-                              }`}
-                            >
-                              {isExpiringSoon
-                                ? `Hết hạn cuối mùa (${p.contractUntil})`
-                                : `HĐ đến ${p.contractUntil}`}
-                            </span>
+                        <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2">
+                          <div className="flex items-center gap-1 bg-[#121B24] p-0.5 rounded-lg border border-white/10">
+                            {([1, 2, 3, 4] as const).map((yrs) => (
+                              <button
+                                key={yrs}
+                                type="button"
+                                onClick={() =>
+                                  setContractYearsByPlayer((prev) => ({ ...prev, [p.id]: yrs }))
+                                }
+                                className={`px-2 py-1 rounded text-[10px] font-mono-num font-bold transition-colors ${
+                                  selectedYears === yrs
+                                    ? 'bg-emerald-500 text-slate-950'
+                                    : 'text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                +{yrs}n
+                              </button>
+                            ))}
                           </div>
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                              isExpiringSoon
+                                ? 'bg-rose-500/20 border border-rose-500/40 text-rose-200'
+                                : 'bg-emerald-500/20 text-emerald-300'
+                            }`}
+                          >
+                            {isExpiringSoon
+                              ? `Hết hạn cuối mùa (${p.contractUntil})`
+                              : `HĐ đến ${p.contractUntil}`}
+                          </span>
 
                           <button
                             type="button"
                             disabled={busyKey !== null || career.transferBudget < renewalInfo.bonusM}
-                            onClick={() => runAction(`contract-${p.id}`, () => onExtendContract(p.id))}
+                            onClick={() =>
+                              runAction(`contract-${p.id}`, () => onExtendContract(p.id, selectedYears))
+                            }
                             className="h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-50"
                           >
                             {busyKey === `contract-${p.id}`

@@ -237,6 +237,22 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "participants", "requesterUid", "recipientUid", "requesterName", "requesterClubId", "recipientName", "recipientClubId", "recipientIsBot", "status", "createdAt", "updatedAt"]
+    },
+    "ClubBackup": {
+      "title": "ClubBackup",
+      "description": "Serialized career backup bundle synced per authenticated Google user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clubId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clubName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "managerName": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "season": { "type": "string", "minLength": 4, "maxLength": 16 },
+        "matchweek": { "type": "integer" },
+        "payloadJson": { "type": "string", "minLength": 20, "maxLength": 900000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "clubId", "clubName", "managerName", "season", "matchweek", "payloadJson", "updatedAt"]
     }
   },
   "firestore": {
@@ -287,6 +303,10 @@
     "/friendships/{friendshipId}": {
       "schema": { "$ref": "#/entities/Friendship" },
       "description": "Friend relationships and pending requests."
+    },
+    "/clubBackups/{userId}": {
+      "schema": { "$ref": "#/entities/ClubBackup" },
+      "description": "Owner-only cloud backup bundle for cross-device career synchronization."
     }
   }
 }

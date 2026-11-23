@@ -1234,3 +1234,44 @@ export function playOnlineTournamentRound(
     wonTitle: false,
   };
 }
+
+export interface OnlineRankSeasonInfo {
+  seasonId: string;
+  label: string;
+  daysRemaining: number;
+}
+
+export function getCurrentOnlineSeasonInfo(now = new Date()): OnlineRankSeasonInfo {
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const seasonId = `${year}-${String(month).padStart(2, '0')}`;
+  const label = `Mùa Rank ${String(month).padStart(2, '0')}/${year}`;
+  const endOfMonth = new Date(year, month, 0, 23, 59, 59);
+  const diffDays = Math.max(1, Math.ceil((endOfMonth.getTime() - now.getTime()) / 86400000));
+  return { seasonId, label, daysRemaining: diffDays };
+}
+
+export function computeOnlineSeasonReward(highestRankIndex: number): {
+  tierName: string;
+  shards: number;
+  budgetM: number;
+  packTier: PackTier;
+} {
+  const safeIdx = Math.max(0, Math.min(RANK_TIERS.length - 1, highestRankIndex));
+  const tier = RANK_TIERS[safeIdx] ?? RANK_TIERS[0];
+  const shards = 15 + safeIdx * 12;
+  const budgetM = Number((1.5 + safeIdx * 1.2).toFixed(1));
+  const packTier: PackTier =
+    safeIdx >= 6
+      ? 'legend_pack'
+      : safeIdx >= 3
+        ? 'elite_pack'
+        : 'scout_pack';
+  return {
+    tierName: tier.name,
+    shards,
+    budgetM,
+    packTier,
+  };
+}
+
