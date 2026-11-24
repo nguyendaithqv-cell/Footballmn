@@ -21,6 +21,7 @@ import {
   parseAndValidateBackup,
 } from '../lib/backupEngine';
 import { CloudBackupMeta } from '../lib/cloudSync';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface BackupRestoreCardProps {
   title?: string;
@@ -61,6 +62,14 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
   const [restoreAdminAlso, setRestoreAdminAlso] = useState(true);
   const [restoring, setRestoring] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const handleExport = async () => {
     if (!onExportBackup) return;
@@ -301,7 +310,21 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
                 <button
                   type="button"
                   disabled={cloudSyncBusy}
-                  onClick={() => void onSignOutCloud()}
+                  onClick={() =>
+                    setPendingConfirm({
+                      title: 'Hủy liên kết / Đăng xuất Google Cloud?',
+                      description: (
+                        <p>
+                          Tài khoản Google sẽ được đăng xuất khỏi đồng bộ đám mây trên thiết bị này. Dữ liệu save hiện tại trên máy vẫn được giữ nguyên.
+                        </p>
+                      ),
+                      confirmLabel: 'Đăng xuất Google',
+                      tone: 'amber',
+                      action: async () => {
+                        await onSignOutCloud();
+                      },
+                    })
+                  }
                   className="h-8 px-2.5 rounded-lg bg-[#0B1117] border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white inline-flex items-center gap-1"
                 >
                   <LogOut className="w-3.5 h-3.5" />
@@ -350,11 +373,23 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
                   <button
                     type="button"
                     disabled={cloudSyncBusy}
-                    onClick={async () => {
-                      setFeedback(null);
-                      const res = await onPushCloudBackup();
-                      setFeedback({ ok: res.ok, text: res.message });
-                    }}
+                    onClick={() =>
+                      setPendingConfirm({
+                        title: 'Lưu & Ghi đè bản sao lưu lên Đám mây?',
+                        description: (
+                          <p>
+                            Bản lưu sự nghiệp hiện tại trên thiết bị sẽ được đồng bộ và ghi đè lên dữ liệu Google Cloud của bạn.
+                          </p>
+                        ),
+                        confirmLabel: 'Lưu lên Đám mây',
+                        tone: 'emerald',
+                        action: async () => {
+                          setFeedback(null);
+                          const res = await onPushCloudBackup();
+                          setFeedback({ ok: res.ok, text: res.message });
+                        },
+                      })
+                    }
                     className="h-10 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-200 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
                     <CloudUpload className="w-4 h-4" />
@@ -365,11 +400,24 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
                   <button
                     type="button"
                     disabled={cloudSyncBusy}
-                    onClick={async () => {
-                      setFeedback(null);
-                      const res = await onPullCloudBackup();
-                      setFeedback({ ok: res.ok, text: res.message });
-                    }}
+                    onClick={() =>
+                      setPendingConfirm({
+                        title: 'Tải bản lưu từ Đám mây & Ghi đè máy?',
+                        description: (
+                          <p>
+                            Thao tác này sẽ tải bản save từ Google Cloud về và{' '}
+                            <strong className="text-amber-300">ghi đè toàn bộ tiến trình hiện tại</strong> trên thiết bị này!
+                          </p>
+                        ),
+                        confirmLabel: 'Tải & Ghi đè dữ liệu máy',
+                        tone: 'amber',
+                        action: async () => {
+                          setFeedback(null);
+                          const res = await onPullCloudBackup();
+                          setFeedback({ ok: res.ok, text: res.message });
+                        },
+                      })
+                    }
                     className="h-10 px-3 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-200 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
                     <CloudDownload className="w-4 h-4" />
@@ -381,6 +429,27 @@ export const BackupRestoreCard: React.FC<BackupRestoreCardProps> = ({
           )}
         </div>
       )}
+
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'amber'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 };

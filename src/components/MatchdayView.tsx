@@ -42,6 +42,7 @@ import {
 } from '../types/game';
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 import { CompetitionStatsPanel } from './CompetitionStatsPanel';
+import { ConfirmActionModal } from './ConfirmActionModal';
 import { MatchDetailModal, MatchStatsBreakdown } from './MatchDetailModal';
 import { SeasonAwardsShowcase } from './SeasonAwardsShowcase';
 
@@ -59,6 +60,12 @@ interface MatchdayViewProps {
   onStartNextSeason: () => Promise<void>;
   onOpenFinancePayroll?: () => void;
   onQuickMentality: (mentality: Mentality) => void;
+  pauseLiveMatchExternal?: boolean;
+  onLiveMatchGuardChange?: (
+    active: boolean,
+    summary?: { matchTitle: string; scoreLine: string; minuteText: string }
+  ) => void;
+  forceFinishLiveMatchRef?: React.MutableRefObject<(() => Promise<void>) | null>;
 }
 
 type CompetitionViewTab = 'league' | 'champions-cup' | 'national-cup' | 'special';
@@ -110,6 +117,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   onStartNextSeason,
   onOpenFinancePayroll,
   onQuickMentality,
+  pauseLiveMatchExternal = false,
+  onLiveMatchGuardChange,
+  forceFinishLiveMatchRef,
 }) => {
   const [compTab, setCompTab] = useState<CompetitionViewTab>('league');
   const [subTab, setSubTab] = useState<'match' | 'standings' | 'fixtures' | 'scorers' | 'assists' | 'mvp'>(
@@ -145,6 +155,12 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   const [liveResult, setLiveResult] = useState<MatchResultSummary | null>(null);
   const [simContext, setSimContext] = useState<ActiveSimContext | null>(null);
   const [savingMatch, setSavingMatch] = useState(false);
+  const [confirmFinishLiveOpen, setConfirmFinishLiveOpen] = useState(false);
+  const [pendingQuickSim, setPendingQuickSim] = useState<{
+    title: string;
+    subtitle: string;
+    run: () => void;
+  } | null>(null);
 
   // Sound effects state & triggers
   const [soundOn, setSoundOn] = useState(() => isSoundEnabled());
@@ -180,6 +196,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   // In-match live substitution, pause & penalty shootout state
   const [isPaused, setIsPaused] = useState(false);
   const [matchSlots, setMatchSlots] = useState<TacticSlot[]>([]);
+  const [liveFormation, setLiveFormation] = useState<FormationId>(career.tactics.formation);
   const [subsMade, setSubsMade] = useState(0);
   const [subbedOutIds, setSubbedOutIds] = useState<string[]>([]);
   const [subbedInMinutes, setSubbedInMinutes] = useState<Record<string, number>>({});
@@ -437,6 +454,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     } else {
       setIsPaused(false);
       setMatchSlots(initialMatchSlots);
+      setLiveFormation(career.tactics.formation);
       setSubsMade(0);
       setSubbedOutIds([]);
       setSubbedInMinutes({});
@@ -451,24 +469,25 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     }
   };
 
-  const skipActiveLiveToFullTime = async () => {
+  const skipActiveLiveToFullTime = useCallback(async () => {
     if (timerRef.current) window.clearInterval(timerRef.current);
     if (shootoutTimerRef.current) window.clearInterval(shootoutTimerRef.current);
-    if (liveResult && simContext) {
-      matchEndTriggeredRef.current = liveResult.id;
+    if (liveResultRef.current && simContextRef.current) {
+      matchEndTriggeredRef.current = liveResultRef.current.id;
       setIsPaused(false);
       setSubPanelOpen(false);
       setShootoutStep(-1);
       setMinute(90);
-      await finalizeSimulation(liveResult, simContext);
+      await finalizeSimulation(liveResultRef.current, simContextRef.current);
     }
-  };
+  }, [finalizeSimulation]);
 
   const buildInMatchUserTactics = (
     slotsOverride: TacticSlot[],
     mentalityOverride?: Mentality,
     replacedOutId?: string,
-    incomingId?: string
+    incomingId?: string,
+    formationOverride?: FormationId
   ) => {
     const activeIds = new Set(slotsOverride.map((s) => s.playerId));
     const playerMap = new Map(career.squad.map((p) => [p.id, p]));
@@ -508,6 +527,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
 
     return {
       ...career.tactics,
+      formation: formationOverride ?? liveFormation,
       mentality: mentalityOverride ?? career.tactics.mentality,
       slots: slotsOverride,
       designatedPenaltyTakerId: designatedPen,
@@ -544,7 +564,10 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   };
 
   const handleLiveFormationChange = (nextFormation: FormationId) => {
-    if (!isLive || !liveResult || minute >= 90 || shootoutStep >= 0) return;
+    if (!isLive || !liveResult || minute >= 90 || shootoutStep >= 0 || nextFormation === liveFormation) {
+      return;
+    }
+    const prevFormation = liveFormation;
     const tpl = FORMATION_TEMPLATES[nextFormation] ?? FORMATION_TEMPLATES['4-3-3'];
     const activeSlots = matchSlots.length > 0 ? matchSlots : career.tactics.slots;
     const currentAssignedPlayerIds = activeSlots.map((s) => s.playerId).filter(Boolean);
@@ -558,11 +581,8 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     }));
 
     setMatchSlots(nextSlots);
-    const nextTactics = {
-      ...career.tactics,
-      formation: nextFormation,
-      slots: nextSlots,
-    };
+    setLiveFormation(nextFormation);
+    const nextTactics = buildInMatchUserTactics(nextSlots, undefined, undefined, undefined, nextFormation);
 
     const isKnockoutCtx =
       simContext?.kind === 'national-cup' ||
@@ -572,6 +592,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       simContext?.kind === 'super-cup' ||
       (simContext?.kind === 'champions-cup' && Boolean(simContext.isNeutralVenue)) ||
       (simContext?.kind === 'national-cup' && Boolean(simContext.isNeutralVenue));
+
+    const formationEvent: MatchEvent = {
+      minute,
+      type: 'sub',
+      teamId: career.clubId,
+      playerName: activeUserManager?.name ?? 'HLV',
+      description: `Điều chỉnh sơ đồ chiến thuật: Chuyển đội hình từ ${prevFormation} sang ${nextFormation}!`,
+    };
 
     const adapted = resimulateMatchFromMinute({
       currentMatch: liveResult,
@@ -583,6 +611,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       userManager: activeUserManager,
       isKnockout: isKnockoutCtx,
       isNeutralVenue: isNeutralCtx,
+      subEvent: formationEvent,
       participatedUserPlayerIds: participatedIds,
     });
     setLiveResult(adapted);
@@ -730,7 +759,17 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   const isClockDone = minute >= 90;
 
   useEffect(() => {
-    if (!isLive || isPaused || !hasLiveResult || shootoutStep >= 0 || isClockDone) return;
+    if (
+      !isLive ||
+      isPaused ||
+      confirmFinishLiveOpen ||
+      pauseLiveMatchExternal ||
+      !hasLiveResult ||
+      shootoutStep >= 0 ||
+      isClockDone
+    ) {
+      return;
+    }
     if (timerRef.current) window.clearInterval(timerRef.current);
 
     const intervalMs = speed === 4 ? 65 : speed === 2 ? 130 : 260;
@@ -741,7 +780,16 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
     };
-  }, [isLive, isPaused, speed, hasLiveResult, shootoutStep, isClockDone]);
+  }, [
+    isLive,
+    isPaused,
+    confirmFinishLiveOpen,
+    pauseLiveMatchExternal,
+    speed,
+    hasLiveResult,
+    shootoutStep,
+    isClockDone,
+  ]);
 
   useEffect(() => {
     if (!isLive || !liveMatchId || minute < 90 || shootoutStep >= 0) return;
@@ -834,6 +882,60 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       (e) => e.type === 'goal' && e.minute <= minute && e.teamId === liveResult.awayClubId
     ).length;
   }, [liveResult, minute]);
+
+  // Notify parent App about active unfinished 2D live match & wire browser unload barrier
+  const liveMatchActive = Boolean(
+    isLive && liveResult && finalizedMatchIdRef.current !== liveResult.id
+  );
+
+  useEffect(() => {
+    if (forceFinishLiveMatchRef) {
+      forceFinishLiveMatchRef.current = liveMatchActive ? skipActiveLiveToFullTime : null;
+    }
+  }, [liveMatchActive, forceFinishLiveMatchRef, skipActiveLiveToFullTime]);
+
+  useEffect(() => {
+    if (!onLiveMatchGuardChange) return;
+    if (!liveMatchActive || !liveResult) {
+      onLiveMatchGuardChange(false);
+      return;
+    }
+    const hClub = CLUBS.find((c) => c.id === liveResult.homeClubId);
+    const aClub = CLUBS.find((c) => c.id === liveResult.awayClubId);
+    onLiveMatchGuardChange(true, {
+      matchTitle: `${hClub?.shortName ?? liveResult.homeClubId} vs ${aClub?.shortName ?? liveResult.awayClubId}`,
+      scoreLine: `${liveHomeGoals} - ${liveAwayGoals}`,
+      minuteText: shootoutStep >= 0 ? 'Luân lưu 11m' : `Phút ${minute}'`,
+    });
+  }, [
+    liveMatchActive,
+    liveResult,
+    liveHomeGoals,
+    liveAwayGoals,
+    minute,
+    shootoutStep,
+    onLiveMatchGuardChange,
+  ]);
+
+  useEffect(() => {
+    if (!onLiveMatchGuardChange) return;
+    return () => {
+      onLiveMatchGuardChange(false);
+      if (forceFinishLiveMatchRef) {
+        forceFinishLiveMatchRef.current = null;
+      }
+    };
+  }, [onLiveMatchGuardChange, forceFinishLiveMatchRef]);
+
+  useEffect(() => {
+    if (!liveMatchActive) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [liveMatchActive]);
 
   const renderLivePitchOverlay = () => {
     if (!liveResult) return null;
@@ -1080,14 +1182,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                 )}
                 <div className="flex-1 min-w-[140px] rounded-xl bg-amber-500/10 border border-amber-400/25 px-3 py-2 flex items-center justify-between gap-2">
                   <span className="text-[11px] font-bold text-amber-300 truncate">
-                    Chỉ đạo: {LIVE_MENTALITY_OPTIONS.find((m) => m.id === career.tactics.mentality)?.label ?? career.tactics.mentality}
+                    Chỉ đạo: {LIVE_MENTALITY_OPTIONS.find((m) => m.id === career.tactics.mentality)?.label ?? career.tactics.mentality} · {liveFormation}
                   </span>
                 </div>
                 <button
                   type="button"
                   disabled={savingMatch}
-                  onClick={skipActiveLiveToFullTime}
-                  className="h-10 px-4 rounded-xl bg-slate-800 text-white text-xs font-semibold shrink-0"
+                  onClick={() => setConfirmFinishLiveOpen(true)}
+                  className="h-10 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold shrink-0"
                 >
                   {shootoutStep >= 0 ? 'Xem nhanh kết quả' : 'Kết thúc'}
                 </button>
@@ -1122,7 +1224,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
                     <span className="text-[11px] font-bold text-slate-400 block mb-1">Đổi Sơ đồ chiến thuật trực tiếp:</span>
                     <div className="grid grid-cols-5 gap-1 p-1 rounded-xl bg-[#121B24] border border-white/10">
                       {(['4-3-3', '4-4-2', '3-5-2', '5-3-2', '4-2-3-1'] as FormationId[]).map((formId) => {
-                        const active = career.tactics.formation === formId;
+                        const active = liveFormation === formId;
                         return (
                           <button
                             key={formId}
@@ -1471,8 +1573,14 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           <button
             type="button"
             disabled={savingMatch}
-            onClick={onQuickSim}
-            className="h-12 px-4 rounded-xl bg-[#0B1117] border border-white/15 text-slate-200 font-semibold text-xs flex items-center gap-1.5 disabled:opacity-50"
+            onClick={() =>
+              setPendingQuickSim({
+                title: `${hClub.shortName} vs ${aClub.shortName}`,
+                subtitle: `${title} · ${subtitle}`,
+                run: onQuickSim,
+              })
+            }
+            className="h-12 px-4 rounded-xl bg-[#0B1117] hover:bg-slate-800 border border-white/15 text-slate-200 font-semibold text-xs flex items-center gap-1.5 disabled:opacity-50"
           >
             <FastForward className="w-4 h-4 text-amber-400" />
             Mô phỏng nhanh
@@ -1580,25 +1688,92 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     );
   };
 
+  const renderMatchConfirmModals = () => (
+    <>
+      <ConfirmActionModal
+        open={confirmFinishLiveOpen}
+        title="Chốt kết quả trận đấu ngay?"
+        description={
+          <>
+            <p>
+              Trận đấu vẫn đang diễn ra ({shootoutStep >= 0 ? 'Luân lưu 11m' : `Phút ${minute}'`}). Nếu bấm xác nhận, hệ thống sẽ mô phỏng nhanh phần thời gian còn lại và <strong className="text-white">lưu chính thức kết quả</strong> vào BXH / thống kê.
+            </p>
+          </>
+        }
+        confirmLabel="Chốt kết quả ngay"
+        cancelLabel="Tiếp tục xem 2D"
+        tone="amber"
+        busy={savingMatch}
+        onConfirm={async () => {
+          setConfirmFinishLiveOpen(false);
+          await skipActiveLiveToFullTime();
+        }}
+        onCancel={() => setConfirmFinishLiveOpen(false)}
+      />
+
+      <ConfirmActionModal
+        open={Boolean(pendingQuickSim)}
+        title="Mô phỏng nhanh trận đấu?"
+        description={
+          pendingQuickSim ? (
+            <>
+              <p>
+                Trận <strong className="text-white">{pendingQuickSim.title}</strong> ({pendingQuickSim.subtitle}) sẽ được mô phỏng toàn bộ ngay lập tức và lưu kết quả chính thức (tính điểm, thể lực, thẻ phạt và chấn thương).
+              </p>
+            </>
+          ) : null
+        }
+        confirmLabel="Mô phỏng & Lưu kết quả"
+        cancelLabel="Hủy"
+        tone="emerald"
+        busy={savingMatch}
+        onConfirm={() => {
+          const runFn = pendingQuickSim?.run;
+          setPendingQuickSim(null);
+          runFn?.();
+        }}
+        onCancel={() => setPendingQuickSim(null)}
+      />
+    </>
+  );
+
   // If currently watching or just finished a 2D live match, render the pitch view prominently
   if (liveResult) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="font-display text-lg font-bold text-white">
-            Trực tiếp Trận đấu
-          </h2>
-          {!isLive && (
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <h2 className="font-display text-lg font-bold text-white">
+              Trực tiếp Trận đấu
+            </h2>
+            {liveMatchActive && (
+              <span className="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-400/45 text-[10px] font-bold text-rose-200 animate-pulse">
+                LIVE · ĐANG ĐẤU
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={clearLivePitch}
-              className="text-xs font-semibold text-emerald-400 hover:underline"
+              onClick={toggleSound}
+              className="h-8 px-2.5 rounded-lg bg-slate-800 border border-white/15 text-[11px] font-bold text-white flex items-center gap-1.5 hover:bg-slate-700 transition-colors"
             >
-              Quay lại danh sách giải đấu
+              {soundOn ? <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> : <VolumeX className="w-3.5 h-3.5 text-slate-400" />}
+              <span>{soundOn ? 'Âm thanh: Bật' : 'Âm thanh: Tắt'}</span>
             </button>
-          )}
+            {!isLive && (
+              <button
+                type="button"
+                onClick={clearLivePitch}
+                className="text-xs font-semibold text-emerald-400 hover:underline"
+              >
+                Quay lại danh sách giải đấu
+              </button>
+            )}
+          </div>
         </div>
         {renderLivePitchOverlay()}
+        {renderMatchConfirmModals()}
       </div>
     );
   }
@@ -2749,6 +2924,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
         userClubId={career.clubId}
         onClose={() => setInspectedMatch(null)}
       />
+      {renderMatchConfirmModals()}
     </div>
   );
 };

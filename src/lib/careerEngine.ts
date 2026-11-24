@@ -43,7 +43,7 @@ import {
   TransferRecord,
   TrophyItem,
 } from '../types/game';
-import { getMedicalCostMultiplier } from './economyEngine';
+import { getMedicalCostMultiplier, getPlayerRemainingSeasonWageM } from './economyEngine';
 import { createStarterInventory, normalizeInventory } from './inventoryEngine';
 import {
   advanceAcademyOnNewSeason,
@@ -375,6 +375,16 @@ export function applyMarketOverrides(
       transferStatus: ov.transferStatus,
     };
   });
+}
+
+export function applySeasonAgeToPlayers(players: Player[], season: string): Player[] {
+  const currentYear = Number(season.slice(0, 4)) || 2026;
+  const yearOffset = Math.max(0, currentYear - 2026);
+  if (yearOffset === 0) return players;
+  return players.map((p) => ({
+    ...p,
+    age: p.age + yearOffset,
+  }));
 }
 
 export function buildEffectiveDatabasePlayers(
@@ -4390,8 +4400,10 @@ export function claimSeasonEndRewards(career: CareerSave): {
 export function computeSeasonPayrollBreakdown(career: CareerSave): SeasonPayrollBreakdown {
   const club = CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0];
   const squadWeeklyWageK = career.squad.reduce((sum, p) => sum + (p.wageK || 0), 0);
-  // Quy đổi quyết toán lương cầu thủ cuối mùa (10 kỳ lương thi đấu chính thức)
-  const squadSeasonWageM = Number(((squadWeeklyWageK * 10) / 1000).toFixed(1));
+  // Quy đổi quyết toán lương cầu thủ còn lại chưa tất toán trong mùa (10 kỳ lương thi đấu chính thức)
+  const squadSeasonWageM = Number(
+    career.squad.reduce((sum, p) => sum + getPlayerRemainingSeasonWageM(p, career), 0).toFixed(1)
+  );
 
   const activeMgr = getActiveCareerManager(career);
   const managerName = activeMgr ? activeMgr.name : 'HLV Tạm quyền';
@@ -4431,9 +4443,10 @@ export function computeSeasonPayrollBreakdown(career: CareerSave): SeasonPayroll
 export function settleSeasonPayroll(career: CareerSave): {
   nextCareer: CareerSave;
   alreadySettled: boolean;
+  insufficientBudget: boolean;
+  shortfallM: number;
   breakdown: SeasonPayrollBreakdown;
   deductedBudgetM: number;
-  bailoutUsedM: number;
 } {
   const hydrated = ensureCareerCompetitions(career);
   const breakdown = computeSeasonPayrollBreakdown(hydrated);
@@ -4442,24 +4455,33 @@ export function settleSeasonPayroll(career: CareerSave): {
     return {
       nextCareer: hydrated,
       alreadySettled: true,
+      insufficientBudget: false,
+      shortfallM: 0,
       breakdown,
       deductedBudgetM: 0,
-      bailoutUsedM: 0,
     };
   }
 
-  const deductedBudgetM = Number(
-    Math.min(hydrated.transferBudget, breakdown.totalPayrollM).toFixed(1)
-  );
-  const bailoutUsedM = Number(
+  const shortfallM = Number(
     Math.max(0, breakdown.totalPayrollM - hydrated.transferBudget).toFixed(1)
   );
-  const nextBudget = Number(Math.max(0, hydrated.transferBudget - breakdown.totalPayrollM).toFixed(1));
+  if (hydrated.transferBudget < breakdown.totalPayrollM) {
+    return {
+      nextCareer: hydrated,
+      alreadySettled: false,
+      insufficientBudget: true,
+      shortfallM,
+      breakdown,
+      deductedBudgetM: 0,
+    };
+  }
+
+  const deductedBudgetM = Number(breakdown.totalPayrollM.toFixed(1));
+  const nextBudget = Number((hydrated.transferBudget - deductedBudgetM).toFixed(1));
   const nowIso = new Date().toISOString();
 
   const settledRecord: SeasonPayrollBreakdown = {
     ...breakdown,
-    ...(bailoutUsedM > 0 ? { bailoutUsedM } : {}),
     settledAt: nowIso,
   };
 
@@ -4475,10 +4497,8 @@ export function settleSeasonPayroll(career: CareerSave): {
       type: 'expense',
       category: 'payroll_settlement',
       title: `Quyết toán Quỹ lương Toàn CLB mùa ${hydrated.season}`,
-      detail: `Cầu thủ (${breakdown.squadCount} người) €${breakdown.squadSeasonWageM}M · HLV (${breakdown.managerName}) €${breakdown.managerAnnualSalaryM}M · Hậu cần €${breakdown.logisticsAndStaffM}M${
-        bailoutUsedM > 0 ? ` (BLĐ tạm ứng bù €${bailoutUsedM}M)` : ''
-      }`,
-      amountM: deductedBudgetM > 0 ? deductedBudgetM : breakdown.totalPayrollM,
+      detail: `Cầu thủ (${breakdown.squadCount} người) €${breakdown.squadSeasonWageM}M · HLV (${breakdown.managerName}) €${breakdown.managerAnnualSalaryM}M · Hậu cần €${breakdown.logisticsAndStaffM}M`,
+      amountM: deductedBudgetM,
       date: nowIso,
     }),
   ]);
@@ -4486,10 +4506,7 @@ export function settleSeasonPayroll(career: CareerSave): {
   const nextCareer: CareerSave = {
     ...hydrated,
     transferBudget: nextBudget,
-    boardConfidence:
-      bailoutUsedM > 0
-        ? Math.max(35, hydrated.boardConfidence - 5)
-        : Math.min(100, hydrated.boardConfidence + 2),
+    boardConfidence: Math.min(100, hydrated.boardConfidence + 2),
     settledPayrollSeason: hydrated.season,
     payrollHistory: nextPayrollHistory,
     financialLedger: nextLedger,
@@ -4498,9 +4515,10 @@ export function settleSeasonPayroll(career: CareerSave): {
   return {
     nextCareer,
     alreadySettled: false,
+    insufficientBudget: false,
+    shortfallM: 0,
     breakdown: settledRecord,
     deductedBudgetM,
-    bailoutUsedM,
   };
 }
 
@@ -4629,7 +4647,7 @@ export function createNextSeasonCareer(career: CareerSave): {
   const departedFreeAgents = afterLoanInSquad.filter((p) => p.contractUntil <= seasonStartYear);
   const retainedSquad = afterLoanInSquad.filter((p) => p.contractUntil > seasonStartYear);
 
-  // Player progression, aging & retirement (+1 year; Icons/UCL17 keep age/OVR immunity, normal contracts)
+  // Player progression, aging & retirement (+1 year for ALL players; no immortality)
   const activeMgr = getActiveCareerManager(hydrated);
   const mgrDevBonus = activeMgr && activeMgr.manManagement >= 93 ? 1 : 0;
   const intensityBonus = hydrated.trainingIntensity === 'intense' ? 1 : 0;
@@ -4640,32 +4658,16 @@ export function createNextSeasonCareer(career: CareerSave): {
   let nextSquad: Player[] = [];
   for (const p of retainedSquad) {
     const totsMoraleBonus = totsUserIds.has(p.id) ? 5 : 0;
-    const isImmortalLegend =
-      p.cardTier === 'icon' || p.clubId === 'icons-fc' || p.cardTier === 'ucl17';
-    if (isImmortalLegend) {
-      const { injury: _clearedInjury, ...cleanPlayer } = p;
-      nextSquad.push({
-        ...cleanPlayer,
-        yellowCardsSeason: 0,
-        suspendedMatches: 0,
-        fitness: 98,
-        morale: Math.min(100, Math.max(85, p.morale + 5 + mgrDevBonus * 2 + totsMoraleBonus)),
-        goals: 0,
-        assists: 0,
-        appearances: 0,
-      });
-      continue;
-    }
-
     const nextAge = p.age + 1;
-    // Roll retirement for aged non-immortal veterans (>= 36)
+
+    // Roll retirement for aged veterans (>= 36) across all players including ICON/UCL17
     let retireChance = 0;
     if (nextAge === 36) retireChance = 0.2;
     else if (nextAge === 37) retireChance = 0.42;
     else if (nextAge === 38) retireChance = 0.72;
     else if (nextAge >= 39) retireChance = 1.0;
     if (retireChance > 0 && (p.stars ?? 1) >= 5) {
-      retireChance = Math.min(0.85, retireChance * 0.6);
+      retireChance = Math.min(0.85, retireChance * 0.75);
     }
 
     if (retireChance > 0 && Math.random() < retireChance) {
@@ -4689,7 +4691,7 @@ export function createNextSeasonCareer(career: CareerSave): {
       delta = Math.min(p.potential - p.rating, 1 + intensityBonus + mgrDevBonus);
     } else if (nextAge <= 29 && p.rating < p.potential && Math.random() < 0.55 + mgrDevBonus * 0.15) {
       delta = 1;
-    } else if (nextAge >= 34 && p.rating > 70 && (p.stars ?? 1) < 5) {
+    } else if (nextAge >= 34 && p.rating > 70 && ((p.stars ?? 1) < 5 || Math.random() < 0.6)) {
       delta = -1;
     }
 
@@ -4698,7 +4700,12 @@ export function createNextSeasonCareer(career: CareerSave): {
       Math.max(0.1, p.marketValueM * (delta > 0 ? 1.12 : delta < 0 ? 0.85 : 1) * (totsUserIds.has(p.id) ? 1.05 : 1)).toFixed(2)
     );
 
-    const { injury: _clearedInjury, ...cleanPlayer } = p;
+    const {
+      injury: _clearedInjury,
+      wageSettledSeason: _clearedSettledSeason,
+      wageSettledMatchweek: _clearedSettledMw,
+      ...cleanPlayer
+    } = p;
     nextSquad.push({
       ...cleanPlayer,
       age: nextAge,
@@ -4731,7 +4738,12 @@ export function createNextSeasonCareer(career: CareerSave): {
       const maxCap = Math.min(99, Math.max(p.potential, p.rating + 2));
       const nextRating = Math.min(maxCap, p.rating + growth);
       const realDelta = Math.max(0, nextRating - p.rating);
-      const { injury: _clearedInjury, ...cleanP } = p;
+      const {
+        injury: _clearedInjury,
+        wageSettledSeason: _clearedSettledSeason,
+        wageSettledMatchweek: _clearedSettledMw,
+        ...cleanP
+      } = p;
       return {
         ...cleanP,
         age: p.age + 1,
@@ -4828,11 +4840,18 @@ export function createNextSeasonCareer(career: CareerSave): {
     contractUntil: p.contractUntil,
   }));
 
-  // Refresh free agents pool (include newly expired players who are non-immortal)
+  // Refresh free agents pool (unrecruited free agents do NOT age across seasons; departed players already aged +1 on exit)
   const squadIdSet = new Set(nextSquad.map((p) => p.id));
-  const existingFreePool = (hydrated.freeAgents ?? []).filter((p) => !squadIdSet.has(p.id));
+  const existingFreePool = (hydrated.freeAgents ?? [])
+    .filter((p) => !squadIdSet.has(p.id) && p.age < 40)
+    .map((p) => ({
+      ...p,
+      wageSettledSeason: undefined,
+      wageSettledMatchweek: undefined,
+    }));
   const newlyFreedPool = departedFreeAgents.map((p) => ({
     ...p,
+    age: p.age + 1,
     clubId: 'free-agent',
     marketValueM: 0,
     goals: 0,
@@ -4840,6 +4859,8 @@ export function createNextSeasonCareer(career: CareerSave): {
     appearances: 0,
     yellowCardsSeason: 0,
     suspendedMatches: 0,
+    wageSettledSeason: undefined,
+    wageSettledMatchweek: undefined,
   }));
   const combinedFree = [...newlyFreedPool, ...existingFreePool].slice(0, 32);
   const nextFreeAgents =
@@ -5278,9 +5299,9 @@ export function applyTrainingProgressOnMatch(params: {
       return { ...p, trainingXp: totalXp };
     }
 
-    const isImmortal =
+    const isLegendTier =
       p.cardTier === 'icon' || p.clubId === 'icons-fc' || p.cardTier === 'ucl17';
-    const attrCap = isImmortal ? 99 : Math.min(99, Math.max(p.potential + 3, p.rating + 2));
+    const attrCap = isLegendTier ? 99 : Math.min(99, Math.max(p.potential + 3, p.rating + 2));
 
     // Pick attribute from focus targets based on position relevance
     const candidates = mod.targetAttrs.filter((k) => {
@@ -5304,7 +5325,7 @@ export function applyTrainingProgressOnMatch(params: {
     const avgAttr = Math.round(
       (nextAttrs.pac + nextAttrs.sho + nextAttrs.pas + nextAttrs.dri + nextAttrs.def + nextAttrs.phy) / 6
     );
-    const ovrCap = isImmortal ? 99 : Math.min(99, Math.max(p.potential, p.rating));
+    const ovrCap = isLegendTier ? 99 : Math.min(99, Math.max(p.potential, p.rating));
     const canBumpOvr = p.rating < ovrCap && avgAttr >= p.rating && Math.random() < 0.45;
     const nextRating = canBumpOvr ? Math.min(ovrCap, p.rating + 1) : p.rating;
 
@@ -5461,7 +5482,16 @@ export function generateIncomingTransferOffer(
   );
   const buyer = buyers[Math.floor(Math.random() * buyers.length)] ?? CLUBS[0];
   const mult = 0.96 + Math.random() * 0.28;
-  const offerM = Number(Math.max(0.5, picked.marketValueM * mult).toFixed(2));
+  const hasCustomAsking =
+    picked.transferStatus === 'listed' &&
+    typeof picked.askingPriceM === 'number' &&
+    picked.askingPriceM > 0;
+  const rawOffer = hasCustomAsking
+    ? picked.askingPriceM! <= picked.marketValueM * 1.45
+      ? picked.askingPriceM! * (0.92 + Math.random() * 0.14)
+      : Math.min(picked.askingPriceM!, picked.marketValueM * (1.05 + Math.random() * 0.28))
+    : picked.marketValueM * mult;
+  const offerM = Number(Math.max(0.5, rawOffer).toFixed(2));
 
   return {
     id: `offer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,

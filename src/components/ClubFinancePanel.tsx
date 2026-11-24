@@ -24,7 +24,9 @@ import {
   getNextSeasonString,
   isCompetitionFinished,
 } from '../lib/careerEngine';
+import { getPlayerRemainingSeasonWageM } from '../lib/economyEngine';
 import { CareerSave, FinancialLedgerCategory, FinancialLedgerEntry } from '../types/game';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface ClubFinancePanelProps {
   career: CareerSave;
@@ -75,6 +77,14 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
   const [claimingRewards, setClaimingRewards] = useState(false);
   const [startingNext, setStartingNext] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const activeSeason = allSeasons.includes(selectedSeason) ? selectedSeason : career.season;
   const leagueFinished = isCompetitionFinished(career, 'league');
@@ -140,16 +150,32 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
   const shortfallM = Number(Math.max(0, currentPayroll.totalPayrollM - career.transferBudget).toFixed(1));
   const nextSeasonLabel = getNextSeasonString(career.season);
 
-  const handleSettle = async () => {
-    if (settlingPayroll || isPayrollSettled) return;
-    setSettlingPayroll(true);
-    setFeedback(null);
-    try {
-      const res = await onSettleSeasonPayroll();
-      setFeedback(res);
-    } finally {
-      setSettlingPayroll(false);
-    }
+  const currentYear = Number(career.season.slice(0, 4)) || 2026;
+  const expiringPlayersCount = career.squad.filter((p) => p.contractUntil <= currentYear + 1).length;
+
+  const handleSettle = () => {
+    if (settlingPayroll || isPayrollSettled || shortfallM > 0) return;
+    setPendingConfirm({
+      title: `Quyết toán Quỹ lương Mùa ${career.season}?`,
+      description: (
+        <p>
+          Hệ thống sẽ khấu trừ trực tiếp{' '}
+          <strong className="text-amber-300">-€{currentPayroll.totalPayrollM.toFixed(1)}M</strong> từ ngân sách CLB để tất toán toàn bộ lương cầu thủ, HLV trưởng và chi phí vận hành mùa {career.season}.
+        </p>
+      ),
+      confirmLabel: `Quyết toán (-€${currentPayroll.totalPayrollM.toFixed(1)}M)`,
+      tone: 'amber',
+      action: async () => {
+        setSettlingPayroll(true);
+        setFeedback(null);
+        try {
+          const res = await onSettleSeasonPayroll();
+          setFeedback(res);
+        } finally {
+          setSettlingPayroll(false);
+        }
+      },
+    });
   };
 
   const handleClaim = async () => {
@@ -164,14 +190,33 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
     }
   };
 
-  const handleNextSeason = async () => {
+  const handleNextSeason = () => {
     if (!onStartNextSeason || startingNext || !isPayrollSettled) return;
-    setStartingNext(true);
-    try {
-      await onStartNextSeason();
-    } finally {
-      setStartingNext(false);
-    }
+    setPendingConfirm({
+      title: `Khởi tranh Mùa giải mới ${nextSeasonLabel}?`,
+      description: (
+        <>
+          <p>
+            Toàn bộ cầu thủ CLB sẽ tăng thêm +1 tuổi, các hợp đồng cho mượn kết thúc và lịch thi đấu mùa {nextSeasonLabel} được tạo mới.
+          </p>
+          {expiringPlayersCount > 0 && (
+            <p className="text-rose-300 font-semibold">
+              Cảnh báo: Hiện còn {expiringPlayersCount} cầu thủ sắp hết hạn hợp đồng sẽ ra đi tự do (phí €0M) nếu bạn chưa gia hạn!
+            </p>
+          )}
+        </>
+      ),
+      confirmLabel: `Bước sang Mùa ${nextSeasonLabel}`,
+      tone: expiringPlayersCount > 0 ? 'amber' : 'emerald',
+      action: async () => {
+        setStartingNext(true);
+        try {
+          await onStartNextSeason();
+        } finally {
+          setStartingNext(false);
+        }
+      },
+    });
   };
 
   const formatEntryDate = (iso: string) => {
@@ -395,7 +440,9 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
             <div className="mt-2.5 rounded-xl bg-[#0B1117] border border-white/10 overflow-hidden">
               <div className="max-h-60 overflow-y-auto divide-y divide-white/5">
                 {sortedSquadByWage.map((p) => {
-                  const seasonShareM = Number(((p.wageK * 10) / 1000).toFixed(2));
+                  const fullSeasonM = Number(((p.wageK * 10) / 1000).toFixed(2));
+                  const remainingShareM = getPlayerRemainingSeasonWageM(p, career);
+                  const partialSettled = remainingShareM < fullSeasonM;
                   return (
                     <div
                       key={p.id}
@@ -412,7 +459,9 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
                       </div>
                       <div className="text-right shrink-0 font-mono-num tabular-nums">
                         <span className="text-slate-300 mr-2">€{p.wageK}K/tuần</span>
-                        <span className="font-bold text-amber-300">€{seasonShareM}M/mùa</span>
+                        <span className="font-bold text-amber-300">
+                          €{remainingShareM}M{partialSettled ? ' (còn lại)' : '/mùa'}
+                        </span>
                       </div>
                     </div>
                   );
@@ -437,17 +486,17 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
 
         {/* Settlement Action Area */}
         {!isPayrollSettled && leagueFinished && shortfallM > 0 && (
-          <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 p-3 text-xs text-amber-200 flex items-start gap-2">
-            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="rounded-xl bg-rose-500/12 border border-rose-500/40 p-3 text-xs text-rose-200 flex items-start gap-2">
+            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <div>
               <p className="font-bold">
-                Ngân sách hiện thiếu €{shortfallM.toFixed(1)}M để thanh toán đủ €
-                {currentPayroll.totalPayrollM.toFixed(1)}M.
+                Ngân sách hiện thiếu €{shortfallM.toFixed(1)}M để quyết toán đủ €
+                {currentPayroll.totalPayrollM.toFixed(1)}M — Không thể quyết toán lương!
               </p>
-              <p className="text-[11px] text-amber-200/85 mt-0.5">
+              <p className="text-[11px] text-rose-200/85 mt-0.5">
                 {!rewardBundle.alreadyClaimed
-                  ? `Bạn nên bấm "Nhận Thưởng Mùa Giải (+€${rewardBundle.totalPrizeM}M)" trước để đủ ngân sách quyết toán!`
-                  : 'Nếu quyết toán ngay, Ban Lãnh Đạo sẽ tạm ứng quỹ dự phòng bù phần thiếu (uy tín BHL -5%).'}
+                  ? `Bạn hãy bấm "Nhận Thưởng Mùa Giải (+€${rewardBundle.totalPrizeM}M)" trước để bù vào ngân sách.`
+                  : 'CLB không tự bù khoản thiếu: hãy bán bớt cầu thủ, ký nhà tài trợ hoặc kiếm thêm ngân sách trước khi quyết toán.'}
               </p>
             </div>
           </div>
@@ -533,15 +582,15 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
               )}
               <button
                 type="button"
-                disabled={settlingPayroll}
+                disabled={settlingPayroll || shortfallM > 0}
                 onClick={handleSettle}
-                className="flex-1 h-11 px-5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 disabled:opacity-60 whitespace-nowrap"
+                className="flex-1 h-11 px-5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap"
               >
                 <Coins className="w-4 h-4 shrink-0" />
                 {settlingPayroll
                   ? 'Đang thực hiện quyết toán...'
                   : shortfallM > 0
-                    ? `Quyết Toán Lương Toàn CLB (BHL Bù €${shortfallM}M)`
+                    ? `Không đủ ngân sách (Thiếu €${shortfallM.toFixed(1)}M)`
                     : `Quyết Toán Quỹ Lương Toàn CLB (-€${currentPayroll.totalPayrollM.toFixed(1)}M)`}
               </button>
             </>
@@ -781,9 +830,6 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
                     Cầu thủ ({rec.squadCount}): €{rec.squadSeasonWageM.toFixed(1)}M · HLV: €
                     {rec.managerAnnualSalaryM.toFixed(1)}M · Hậu cần: €
                     {rec.logisticsAndStaffM.toFixed(1)}M
-                    {rec.bailoutUsedM && rec.bailoutUsedM > 0
-                      ? ` · BHL bù €${rec.bailoutUsedM.toFixed(1)}M`
-                      : ''}
                   </p>
                 </div>
                 <span className="font-mono-num tabular-nums font-extrabold text-amber-400 shrink-0">
@@ -794,6 +840,26 @@ export const ClubFinancePanel: React.FC<ClubFinancePanelProps> = ({
           </div>
         </div>
       )}
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'amber'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 };

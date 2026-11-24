@@ -157,3 +157,52 @@ export function getBoardStatusSummary(
   };
 }
 
+export function getSeasonTotalRounds(career?: Pick<CareerSave, 'fixtures'> | null): number {
+  const maxMw = (career?.fixtures ?? []).reduce((m, f) => Math.max(m, f.matchweek || 0), 0);
+  return Math.max(38, maxMw);
+}
+
+export function getPlayerSeasonWageM(player: Player): number {
+  return Number((((player.wageK || 0) * 10) / 1000).toFixed(2));
+}
+
+export function getPlayerAccruedWageM(
+  player: Player,
+  career: Pick<CareerSave, 'season' | 'matchweek' | 'settledPayrollSeason' | 'fixtures'>
+): number {
+  if (career.settledPayrollSeason === career.season) return 0;
+  const totalRounds = getSeasonTotalRounds(career);
+  const settledFrom =
+    player.wageSettledSeason === career.season && typeof player.wageSettledMatchweek === 'number'
+      ? Math.max(0, Math.min(totalRounds, player.wageSettledMatchweek))
+      : 0;
+  const currentRound = Math.max(1, Math.min(totalRounds, career.matchweek || 1));
+  const unpaidRounds = Math.max(0, currentRound - settledFrom);
+  if (unpaidRounds === 0) return 0;
+  const seasonWageM = ((player.wageK || 0) * 10) / 1000;
+  if (seasonWageM <= 0) return 0;
+  return Number(Math.max(0.02, (seasonWageM * unpaidRounds) / totalRounds).toFixed(2));
+}
+
+export function getPlayerRemainingSeasonWageM(
+  player: Player,
+  career: Pick<CareerSave, 'season' | 'fixtures'>
+): number {
+  const totalRounds = getSeasonTotalRounds(career);
+  const settledFrom =
+    player.wageSettledSeason === career.season && typeof player.wageSettledMatchweek === 'number'
+      ? Math.max(0, Math.min(totalRounds, player.wageSettledMatchweek))
+      : 0;
+  const remainingRounds = Math.max(0, totalRounds - settledFrom);
+  if (remainingRounds === 0) return 0;
+  const seasonWageM = ((player.wageK || 0) * 10) / 1000;
+  return Number(((seasonWageM * remainingRounds) / totalRounds).toFixed(2));
+}
+
+export function getPlayerContractCompensationM(player: Player, currentYear: number): number {
+  const remainingYears = Math.max(1, (player.contractUntil || currentYear + 1) - currentYear);
+  const annualWageM = ((player.wageK || 20) * 10) / 1000;
+  const raw = remainingYears * annualWageM * 0.45 + Math.max(0, player.marketValueM) * 0.08;
+  return Number(Math.max(0.15, raw).toFixed(2));
+}
+

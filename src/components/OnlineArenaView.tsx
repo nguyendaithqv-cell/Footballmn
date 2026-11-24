@@ -39,6 +39,7 @@ import {
 } from '../types/game';
 import { ClubCrest } from './ClubBadgeAndAvatar';
 import { MatchDetailModal } from './MatchDetailModal';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface OnlineArenaViewProps {
   currentUid: string;
@@ -117,6 +118,14 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
     summary: MatchResultSummary;
     rankedResult: RankedOutcomeResult;
   } | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const userRankCfg = getRankConfig(userArena.rankTier);
   const userClub = CLUBS.find((c) => c.id === userArena.clubId) ?? CLUBS[0];
@@ -310,16 +319,30 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
     }
   };
 
-  const handleStartTourney = async (size: 8 | 16) => {
+  const handleStartTourney = (size: 8 | 16) => {
     if (busyKey) return;
-    setBusyKey(`start-tour-${size}`);
-    setFeedback(null);
-    try {
-      const res = await onStartTournament(size);
-      setFeedback({ ok: res.ok, text: res.message });
-    } finally {
-      setBusyKey(null);
-    }
+    const fee = getOnlineTournamentEntryFeeM(size);
+    setPendingConfirm({
+      title: `Đăng ký Giải Online ${size} HLV?`,
+      description: (
+        <p>
+          Khấu trừ lệ phí tham dự{' '}
+          <strong className="text-amber-300">-€{fee}M</strong> từ ngân sách CLB để khởi tạo nhánh đấu {size === 8 ? '8 đội (3 vòng)' : '16 đội (4 vòng)'}.
+        </p>
+      ),
+      confirmLabel: `Tham gia (-€${fee}M)`,
+      tone: 'amber',
+      action: async () => {
+        setBusyKey(`start-tour-${size}`);
+        setFeedback(null);
+        try {
+          const res = await onStartTournament(size);
+          setFeedback({ ok: res.ok, text: res.message });
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
   const handlePlayTourneyRound = async () => {
@@ -1500,7 +1523,21 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
                         <button
                           type="button"
                           disabled={Boolean(busyKey)}
-                          onClick={() => onRemoveFriendship(friendship.id)}
+                          onClick={() =>
+                            setPendingConfirm({
+                              title: `Xóa ${peer.managerName} khỏi danh sách bạn bè?`,
+                              description: (
+                                <p>
+                                  Bạn sẽ hủy kết bạn với HLV <strong className="text-white">{peer.managerName}</strong> và cần gửi lời mời kết bạn lại nếu muốn giao hữu sau này.
+                                </p>
+                              ),
+                              confirmLabel: 'Xóa bạn bè',
+                              tone: 'danger',
+                              action: async () => {
+                                await onRemoveFriendship(friendship.id);
+                              },
+                            })
+                          }
                           title="Xóa bạn"
                           className="h-9 w-9 rounded-lg bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-300 flex items-center justify-center"
                         >
@@ -1528,7 +1565,21 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
                     </span>
                     <button
                       type="button"
-                      onClick={() => onRemoveFriendship(req.id)}
+                      onClick={() =>
+                        setPendingConfirm({
+                          title: `Hủy lời mời kết bạn đã gửi?`,
+                          description: (
+                            <p>
+                              Thu hồi lời mời kết bạn đang gửi tới <strong className="text-white">{req.recipientName}</strong>.
+                            </p>
+                          ),
+                          confirmLabel: 'Hủy lời mời',
+                          tone: 'amber',
+                          action: async () => {
+                            await onRemoveFriendship(req.id);
+                          },
+                        })
+                      }
                       className="text-slate-400 hover:text-red-300 text-[11px] font-semibold"
                     >
                       Hủy lời mời
@@ -1649,6 +1700,27 @@ export const OnlineArenaView: React.FC<OnlineArenaViewProps> = ({
         match={detailMatch}
         userClubId={userArena.clubId}
         onClose={() => setDetailMatch(null)}
+      />
+
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'amber'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
       />
     </div>
   );

@@ -27,6 +27,7 @@ import {
 } from '../lib/careerEngine';
 import { CareerSave, Club, Player } from '../types/game';
 import { ClubCrest, PlayerAvatar } from './ClubBadgeAndAvatar';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface SeasonAwardsShowcaseProps {
   career: CareerSave;
@@ -56,6 +57,7 @@ export const SeasonAwardsShowcase: React.FC<SeasonAwardsShowcaseProps> = ({
 }) => {
   const [claimingRewards, setClaimingRewards] = useState(false);
   const [startingNextSeason, setStartingNextSeason] = useState(false);
+  const [confirmNextSeasonOpen, setConfirmNextSeasonOpen] = useState(false);
   const [claimFeedback, setClaimFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   const playerLookup = useMemo(() => {
@@ -123,11 +125,20 @@ export const SeasonAwardsShowcase: React.FC<SeasonAwardsShowcaseProps> = ({
     }
   };
 
-  const handleNextSeasonClick = async () => {
+  const currentYear = Number(career.season.slice(0, 4)) || 2026;
+  const expiringCount = career.squad.filter((p) => p.contractUntil <= currentYear + 1).length;
+
+  const handleNextSeasonClick = () => {
+    if (startingNextSeason || !isPayrollSettled) return;
+    setConfirmNextSeasonOpen(true);
+  };
+
+  const executeStartNextSeason = async () => {
     if (startingNextSeason) return;
     setStartingNextSeason(true);
     try {
       await onStartNextSeason();
+      setConfirmNextSeasonOpen(false);
     } finally {
       setStartingNextSeason(false);
     }
@@ -823,6 +834,27 @@ export const SeasonAwardsShowcase: React.FC<SeasonAwardsShowcaseProps> = ({
           Giao hữu ngay
         </button>
       </div>
+      <ConfirmActionModal
+        open={confirmNextSeasonOpen}
+        title={`Khởi tranh Mùa giải ${nextSeasonLabel}?`}
+        description={
+          <>
+            <p>
+              Bước sang mùa {nextSeasonLabel} sẽ tổng kết mùa {career.season}, tăng +1 tuổi cho các cầu thủ thuộc CLB và khởi tạo lịch thi đấu 20 đội mới.
+            </p>
+            {expiringCount > 0 && (
+              <p className="text-rose-300 font-semibold">
+                Lưu ý: Có {expiringCount} cầu thủ sắp hết hạn hợp đồng sẽ ra đi tự do nếu bạn chưa gia hạn!
+              </p>
+            )}
+          </>
+        }
+        confirmLabel={`Khởi tranh Mùa ${nextSeasonLabel}`}
+        tone={expiringCount > 0 ? 'amber' : 'emerald'}
+        busy={startingNextSeason}
+        onConfirm={executeStartNextSeason}
+        onCancel={() => setConfirmNextSeasonOpen(false)}
+      />
     </div>
   );
 };

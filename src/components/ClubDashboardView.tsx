@@ -60,6 +60,7 @@ import { ClubFinancePanel } from './ClubFinancePanel';
 import { ClubRecordsPanel } from './ClubRecordsPanel';
 import { YouthAcademyPanel } from './YouthAcademyPanel';
 import { ClubEconomyManagementPanel } from './ClubEconomyManagementPanel';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface ClubDashboardViewProps {
   profile: UserProfile;
@@ -171,6 +172,14 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
   const [managerActionLoading, setManagerActionLoading] = useState(false);
   const [managerFeedback, setManagerFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [mgrExtendYears, setMgrExtendYears] = useState<1 | 2 | 3>(2);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   // Trophy Museum & Season Archive modal state
   const [showTrophyMuseum, setShowTrophyMuseum] = useState(false);
@@ -412,14 +421,33 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                       <button
                         type="button"
                         disabled={startingSeason || career.settledPayrollSeason !== career.season}
-                        onClick={async () => {
-                          setStartingSeason(true);
-                          try {
-                            await onStartNextSeason();
-                          } finally {
-                            setStartingSeason(false);
-                          }
-                        }}
+                        onClick={() =>
+                          setPendingConfirm({
+                            title: `Bước sang Mùa giải ${getNextSeasonString(career.season)}?`,
+                            description: (
+                              <>
+                                <p>
+                                  Toàn bộ cầu thủ trong biên chế CLB sẽ tăng +1 tuổi, kết thúc hợp đồng cho mượn và khởi tạo lịch thi đấu mùa mới.
+                                </p>
+                                {expiringContracts.length > 0 && (
+                                  <p className="text-rose-300 font-semibold">
+                                    Cảnh báo: Còn {expiringContracts.length} cầu thủ hết hạn hợp đồng sẽ rời CLB tự do!
+                                  </p>
+                                )}
+                              </>
+                            ),
+                            confirmLabel: `Sang mùa ${getNextSeasonString(career.season)}`,
+                            tone: expiringContracts.length > 0 ? 'amber' : 'emerald',
+                            action: async () => {
+                              setStartingSeason(true);
+                              try {
+                                await onStartNextSeason();
+                              } finally {
+                                setStartingSeason(false);
+                              }
+                            },
+                          })
+                        }
                         className={`h-10 px-3.5 rounded-xl font-bold text-xs flex items-center gap-1.5 ${
                           career.settledPayrollSeason === career.season
                             ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 disabled:opacity-60'
@@ -1081,16 +1109,29 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                         <button
                           type="button"
                           disabled={recoveringTarget !== null || career.transferBudget < totalInjuryCostM}
-                          onClick={async () => {
-                            setRecoveringTarget('all-injuries');
-                            setRecoveryFeedback(null);
-                            try {
-                              const res = await onTreatAllInjuries();
-                              setRecoveryFeedback({ ok: res.ok, text: res.message });
-                            } finally {
-                              setRecoveringTarget(null);
-                            }
-                          }}
+                          onClick={() =>
+                            setPendingConfirm({
+                              title: `Điều trị dứt điểm toàn bộ ${injuredPlayers.length} ca chấn thương?`,
+                              description: (
+                                <p>
+                                  Chi phí y tế trừ ngay:{' '}
+                                  <strong className="text-rose-300">-€{totalInjuryCostM}M</strong> để toàn bộ cầu thủ chấn thương bình phục 100% và sẵn sàng ra sân.
+                                </p>
+                              ),
+                              confirmLabel: `Điều trị tất cả (-€${totalInjuryCostM}M)`,
+                              tone: 'amber',
+                              action: async () => {
+                                setRecoveringTarget('all-injuries');
+                                setRecoveryFeedback(null);
+                                try {
+                                  const res = await onTreatAllInjuries();
+                                  setRecoveryFeedback({ ok: res.ok, text: res.message });
+                                } finally {
+                                  setRecoveringTarget(null);
+                                }
+                              },
+                            })
+                          }
                           className="w-full h-11 rounded-xl bg-red-500 hover:bg-red-400 text-white font-bold text-xs flex items-center justify-center gap-2 disabled:opacity-50"
                         >
                           <Stethoscope className="w-4 h-4" />
@@ -1208,16 +1249,28 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                       allFull ||
                       career.transferBudget < squadCostM
                     }
-                    onClick={async () => {
-                      setRecoveringTarget('squad');
-                      setRecoveryFeedback(null);
-                      try {
-                        const res = await onRecoverSquadFitness();
-                        setRecoveryFeedback({ ok: res.ok, text: res.message });
-                      } finally {
-                        setRecoveringTarget(null);
-                      }
-                    }}
+                    onClick={() =>
+                      setPendingConfirm({
+                        title: `Hồi phục thể lực toàn đội về 100%?`,
+                        description: (
+                          <p>
+                            Khấu trừ <strong className="text-emerald-300">-€{squadCostM}M</strong> từ ngân sách CLB để vật lý trị liệu toàn bộ đội hình về 100% thể lực.
+                          </p>
+                        ),
+                        confirmLabel: `Hồi phục toàn đội (-€${squadCostM}M)`,
+                        tone: 'emerald',
+                        action: async () => {
+                          setRecoveringTarget('squad');
+                          setRecoveryFeedback(null);
+                          try {
+                            const res = await onRecoverSquadFitness();
+                            setRecoveryFeedback({ ok: res.ok, text: res.message });
+                          } finally {
+                            setRecoveringTarget(null);
+                          }
+                        },
+                      })
+                    }
                     className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     <HeartPulse className="w-4 h-4" />
@@ -1559,16 +1612,32 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                           <button
                             type="button"
                             disabled={managerActionLoading || Math.abs(salaryDiffM) < 0.05}
-                            onClick={async () => {
-                              setManagerActionLoading(true);
-                              setManagerFeedback(null);
-                              try {
-                                const res = await onAdjustManagerSalary(draftManagerSalaryM);
-                                setManagerFeedback({ ok: res.ok, text: res.message });
-                              } finally {
-                                setManagerActionLoading(false);
-                              }
-                            }}
+                            onClick={() =>
+                              setPendingConfirm({
+                                title: `Thay đổi mức lương HLV ${activeManager.name}?`,
+                                description: (
+                                  <p>
+                                    Điều chỉnh lương từ €{activeManagerSalaryM.toFixed(1)}M/năm thành{' '}
+                                    <strong className="text-amber-300">€{draftManagerSalaryM.toFixed(1)}M/năm</strong>.
+                                    {salaryDiffM < 0
+                                      ? ' Lưu ý: giảm lương sâu có thể ảnh hưởng uy tín và tinh thần HLV.'
+                                      : ''}
+                                  </p>
+                                ),
+                                confirmLabel: `Áp dụng €${draftManagerSalaryM.toFixed(1)}M/năm`,
+                                tone: salaryDiffM < 0 ? 'amber' : 'emerald',
+                                action: async () => {
+                                  setManagerActionLoading(true);
+                                  setManagerFeedback(null);
+                                  try {
+                                    const res = await onAdjustManagerSalary(draftManagerSalaryM);
+                                    setManagerFeedback({ ok: res.ok, text: res.message });
+                                  } finally {
+                                    setManagerActionLoading(false);
+                                  }
+                                },
+                              })
+                            }
                             className="h-9 px-3.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold shrink-0 disabled:opacity-45"
                           >
                             {managerActionLoading ? 'Đang lưu...' : 'Lưu lương mới'}
@@ -1632,16 +1701,28 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                               overMaxExtend ||
                               career.transferBudget < extendFeeM
                             }
-                            onClick={async () => {
-                              setManagerActionLoading(true);
-                              setManagerFeedback(null);
-                              try {
-                                const res = await onExtendManagerContract(mgrExtendYears);
-                                setManagerFeedback({ ok: res.ok, text: res.message });
-                              } finally {
-                                setManagerActionLoading(false);
-                              }
-                            }}
+                            onClick={() =>
+                              setPendingConfirm({
+                                title: `Gia hạn hợp đồng HLV ${activeManager.name}?`,
+                                description: (
+                                  <p>
+                                    Kéo dài hợp đồng thêm +{mgrExtendYears} năm đến <strong className="text-white">{nextExtendUntil}</strong>. Phí lót tay trừ ngay: <strong className="text-amber-300">-€{extendFeeM}M</strong>.
+                                  </p>
+                                ),
+                                confirmLabel: `Gia hạn +${mgrExtendYears} năm (-€${extendFeeM}M)`,
+                                tone: 'emerald',
+                                action: async () => {
+                                  setManagerActionLoading(true);
+                                  setManagerFeedback(null);
+                                  try {
+                                    const res = await onExtendManagerContract(mgrExtendYears);
+                                    setManagerFeedback({ ok: res.ok, text: res.message });
+                                  } finally {
+                                    setManagerActionLoading(false);
+                                  }
+                                },
+                              })
+                            }
                             className="h-9 px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold shrink-0 disabled:opacity-45"
                           >
                             {career.transferBudget < extendFeeM
@@ -2194,6 +2275,26 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
           </div>
         );
       })()}
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'emerald'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 };

@@ -37,6 +37,7 @@ import {
 } from '../types/game';
 import { applyMarketOverrides } from '../lib/careerEngine';
 import { ClubCrest, PlayerAvatar } from './ClubBadgeAndAvatar';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface InventoryViewProps {
   career: CareerSave;
@@ -86,6 +87,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [revealResult, setRevealResult] = useState<PackOpenResult | null>(null);
   const [showBoosterPicker, setShowBoosterPicker] = useState(false);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -216,60 +225,137 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  const handleBuyPackAction = async (packTier: PackTier) => {
-    setBusyKey(`buy-${packTier}`);
-    setFeedback(null);
-    try {
-      const res = await onBuyPack(packTier);
-      setFeedback({ ok: res.ok, text: res.message });
-    } finally {
-      setBusyKey(null);
-    }
+  const handleBuyPackAction = (packTier: PackTier) => {
+    const pack = PACK_CATALOG.find((p) => p.id === packTier);
+    if (!pack) return;
+    setPendingConfirm({
+      title: `Mua ${pack.name}?`,
+      description: (
+        <p>
+          Ngân sách CLB sẽ trừ <strong className="text-amber-300">-€{pack.buyPriceM}M</strong> để thêm 1 {pack.name} vào kho (giới hạn 1 gói/loại mỗi ngày).
+        </p>
+      ),
+      confirmLabel: `Mua gói (-€${pack.buyPriceM}M)`,
+      tone: 'amber',
+      action: async () => {
+        setBusyKey(`buy-${packTier}`);
+        setFeedback(null);
+        try {
+          const res = await onBuyPack(packTier);
+          setFeedback({ ok: res.ok, text: res.message });
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
-  const handleUpgradeAction = async (playerId: string) => {
-    setBusyKey(`up-${playerId}`);
-    setFeedback(null);
-    try {
-      const res = await onUpgradePlayerStar(playerId);
-      setFeedback({ ok: res.ok, text: res.message });
-    } finally {
-      setBusyKey(null);
-    }
+  const handleUpgradeAction = (playerId: string) => {
+    const p = playerLookup.get(playerId);
+    const plan = p ? getStarUpgradePlan(p, inventory, career.transferBudget) : null;
+    setPendingConfirm({
+      title: p ? `Nâng sao ${p.shortName} lên ${plan?.nextStars ?? ''}★?` : 'Xác nhận nâng sao?',
+      description: p && plan ? (
+        <p>
+          Tiêu hao <strong className="text-white">{plan.cardsRequired} thẻ trùng</strong>,{' '}
+          <strong className="text-amber-300">{plan.shardsRequired} Mảnh Ngôi Sao</strong> và{' '}
+          <strong className="text-emerald-300">-€{plan.feeM}M</strong> (OVR {p.rating} → {plan.previewRating}).
+        </p>
+      ) : (
+        <p>Xác nhận tiêu hao thẻ trùng, Mảnh và phí ngân sách để nâng sao cầu thủ này.</p>
+      ),
+      confirmLabel: 'Xác nhận Nâng sao',
+      tone: 'amber',
+      action: async () => {
+        setBusyKey(`up-${playerId}`);
+        setFeedback(null);
+        try {
+          const res = await onUpgradePlayerStar(playerId);
+          setFeedback({ ok: res.ok, text: res.message });
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
-  const handleRecruitAction = async (playerId: string) => {
-    setBusyKey(`rec-${playerId}`);
-    setFeedback(null);
-    try {
-      const res = await onRecruitFromCard(playerId);
-      setFeedback({ ok: res.ok, text: res.message });
-    } finally {
-      setBusyKey(null);
-    }
+  const handleRecruitAction = (playerId: string) => {
+    const p = playerLookup.get(playerId);
+    const feeM = p?.marketValueM ?? 0;
+    setPendingConfirm({
+      title: p ? `Chiêu mộ ${p.name} từ Thẻ?` : 'Chiêu mộ cầu thủ từ Thẻ?',
+      description: p ? (
+        <p>
+          Chiêu mộ lần đầu từ Thẻ vào Đội 1 cần chi trả đúng giá thị trường{' '}
+          <strong className="text-emerald-300">-€{feeM}M</strong> (OVR {p.rating} · {p.position} · Lương €{p.wageK}K/tuần) và dùng 1 thẻ cầu thủ.
+        </p>
+      ) : (
+        <p>Xác nhận chiêu mộ cầu thủ này vào đội hình theo giá thị trường.</p>
+      ),
+      confirmLabel: `Chiêu mộ (-€${feeM}M)`,
+      tone: 'emerald',
+      action: async () => {
+        setBusyKey(`rec-${playerId}`);
+        setFeedback(null);
+        try {
+          const res = await onRecruitFromCard(playerId);
+          setFeedback({ ok: res.ok, text: res.message });
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
-  const handleDismantleAction = async (playerId: string) => {
-    setBusyKey(`dis-${playerId}`);
-    setFeedback(null);
-    try {
-      const res = await onDismantleCard(playerId, 1);
-      setFeedback({ ok: res.ok, text: res.message });
-    } finally {
-      setBusyKey(null);
-    }
+  const handleDismantleAction = (playerId: string) => {
+    const p = playerLookup.get(playerId);
+    const shards = p ? getCardDismantleShards(p.rating, p.cardTier) : 0;
+    setPendingConfirm({
+      title: p ? `Tách 1 thẻ ${p.shortName}?` : 'Tách 1 thẻ cầu thủ?',
+      description: (
+        <p>
+          Thẻ cầu thủ sẽ bị <strong className="text-rose-300">tiêu hủy vĩnh viễn</strong> để đổi lấy{' '}
+          <strong className="text-amber-300">+{shards} Mảnh Ngôi Sao</strong>.
+        </p>
+      ),
+      confirmLabel: `Tách thẻ (+${shards} Mảnh)`,
+      tone: 'danger',
+      action: async () => {
+        setBusyKey(`dis-${playerId}`);
+        setFeedback(null);
+        try {
+          const res = await onDismantleCard(playerId, 1);
+          setFeedback({ ok: res.ok, text: res.message });
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
-  const handleBulkDismantleAction = async () => {
+  const handleBulkDismantleAction = () => {
     if (!onBulkDismantleCards) return;
-    setBusyKey('bulk-dis');
-    setFeedback(null);
-    try {
-      const res = await onBulkDismantleCards();
-      setFeedback({ ok: res.ok, text: res.message });
-    } finally {
-      setBusyKey(null);
-    }
+    setPendingConfirm({
+      title: `Tách nhanh ${quickDismantlePlan.totalCards} thẻ dư thừa?`,
+      description: (
+        <p>
+          Toàn bộ <strong className="text-white">{quickDismantlePlan.totalCards} thẻ dư an toàn</strong> (cầu thủ đã 7★ hoặc thẻ thường ngoài đội hình) sẽ bị tách vĩnh viễn để nhận{' '}
+          <strong className="text-amber-300">+{quickDismantlePlan.totalShards} Mảnh Ngôi Sao</strong>.
+        </p>
+      ),
+      confirmLabel: `Tách tất cả (+${quickDismantlePlan.totalShards} Mảnh)`,
+      tone: 'danger',
+      action: async () => {
+        setBusyKey('bulk-dis');
+        setFeedback(null);
+        try {
+          const res = await onBulkDismantleCards();
+          setFeedback({ ok: res.ok, text: res.message });
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
   const handleUseBoosterAction = async (playerId: string) => {
@@ -645,6 +731,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         </span>
                         <p className="text-[10px] text-slate-400 mt-1">
                           Bậc {upgradeTier.label}
+                          {!inSquad ? ` · Giá €${player.marketValueM}M` : ''}
                         </p>
                       </div>
                     </div>
@@ -703,12 +790,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       ) : (
                         <button
                           type="button"
-                          disabled={career.squad.length >= 45 || busyKey === `rec-${player.id}`}
+                          disabled={
+                            career.squad.length >= 45 ||
+                            career.transferBudget < player.marketValueM ||
+                            busyKey === `rec-${player.id}`
+                          }
                           onClick={() => handleRecruitAction(player.id)}
                           className="h-10 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-45"
                         >
                           <UserPlus className="w-3.5 h-3.5" />
-                          {career.squad.length >= 45 ? 'Đội đầy (45)' : 'Chiêu mộ ngay'}
+                          {career.squad.length >= 45
+                            ? 'Đội đầy (45)'
+                            : career.transferBudget < player.marketValueM
+                              ? `Thiếu €${player.marketValueM}M`
+                              : `Chiêu mộ (-€${player.marketValueM}M)`}
                         </button>
                       )}
 
@@ -740,7 +835,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </h3>
             <p className="text-xs text-slate-400 leading-relaxed">
               Yêu cầu <strong className="text-white">đủ cả Thẻ Trùng Lặp</strong> của chính cầu thủ đó{' '}
-              <strong className="text-amber-300">LẪN Mảnh Ngôi Sao</strong> theo bậc hiếm (Tiêu chuẩn / Tinh anh / Siêu sao / Huyền thoại). Cống hiến ≥20 trận được giảm 20% Mảnh; mốc <strong className="text-sky-300">3★ giảm hao thể lực</strong>, <strong className="text-amber-300">5★ miễn lão hóa</strong> và <strong className="text-amber-200">7★ Đỉnh cao Huyền thoại</strong>.
+              <strong className="text-amber-300">LẪN Mảnh Ngôi Sao</strong> theo bậc hiếm (Tiêu chuẩn / Tinh anh / Siêu sao / Huyền thoại). Cống hiến ≥20 trận được giảm 20% Mảnh; mốc <strong className="text-sky-300">3★ giảm hao thể lực</strong>, <strong className="text-amber-300">5★ tối ưu phong độ đỉnh cao</strong> và <strong className="text-amber-200">7★ Đỉnh cao Huyền thoại</strong>.
             </p>
           </div>
 
@@ -801,7 +896,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
                   {plan.isMax ? (
                     <div className="rounded-xl bg-amber-500/10 border border-amber-400/30 px-3 py-2 text-xs font-bold text-amber-300 text-center">
-                      7★ Biểu tượng CLB · Đỉnh cao Huyền thoại &amp; Miễn lão hóa
+                      7★ Biểu tượng CLB · Đỉnh cao Huyền thoại
                     </div>
                   ) : (
                     <>
@@ -1121,6 +1216,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           </div>
         </div>
       )}
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'amber'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 };

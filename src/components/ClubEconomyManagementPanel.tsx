@@ -29,6 +29,7 @@ import {
 } from '../lib/economyEngine';
 import { CareerSave, Player } from '../types/game';
 import { ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface ClubEconomyManagementPanelProps {
   career: CareerSave;
@@ -49,6 +50,14 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [contractYearsByPlayer, setContractYearsByPlayer] = useState<Record<string, 1 | 2 | 3 | 4>>({});
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const boardStatus = useMemo(
     () => getBoardStatusSummary(career.boardConfidence, career.fanSupport),
     [career.boardConfidence, career.fanSupport]
@@ -205,7 +214,19 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                     <button
                       type="button"
                       disabled={busyKey !== null || isSelected}
-                      onClick={() => runAction(`sponsor-${sponsor.id}`, () => onSelectSponsor(sponsor.id))}
+                      onClick={() =>
+                        setPendingConfirm({
+                          title: `Ký hợp đồng tài trợ ${sponsor.name}?`,
+                          description: (
+                            <p>
+                              Nhận lót tay <strong className="text-emerald-300">+€{sponsor.upfrontM}M</strong> và thưởng mỗi trận <strong className="text-sky-300">+€{sponsor.matchBonusM}M</strong> cho mùa giải {career.season}.
+                            </p>
+                          ),
+                          confirmLabel: `Ký hợp đồng (+€${sponsor.upfrontM}M)`,
+                          tone: 'emerald',
+                          action: () => runAction(`sponsor-${sponsor.id}`, () => onSelectSponsor(sponsor.id)),
+                        })
+                      }
                       className={`w-full h-11 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${
                         isSelected
                           ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
@@ -252,7 +273,20 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
               <button
                 type="button"
                 disabled={busyKey !== null || career.transferBudget < getStadiumUpgradeCostM(facilities.stadiumLevel as 1 | 2)}
-                onClick={() => runAction('stadium-up', () => onUpgradeFacility('stadium'))}
+                onClick={() => {
+                  const cost = getStadiumUpgradeCostM(facilities.stadiumLevel as 1 | 2);
+                  setPendingConfirm({
+                    title: `Nâng cấp Sân vận động lên Cấp ${facilities.stadiumLevel + 1}?`,
+                    description: (
+                      <p>
+                        Chi phí đầu tư: <strong className="text-emerald-300">-€{cost}M</strong> từ ngân sách chuyển nhượng để tăng doanh thu vé sân nhà vĩnh viễn.
+                      </p>
+                    ),
+                    confirmLabel: `Nâng cấp (-€${cost}M)`,
+                    tone: 'emerald',
+                    action: () => runAction('stadium-up', () => onUpgradeFacility('stadium')),
+                  });
+                }}
                 className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 <ArrowUpRight className="w-4 h-4" />
@@ -298,7 +332,20 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
               <button
                 type="button"
                 disabled={busyKey !== null || career.transferBudget < getMedicalUpgradeCostM(facilities.medicalLevel as 1 | 2)}
-                onClick={() => runAction('medical-up', () => onUpgradeFacility('medical'))}
+                onClick={() => {
+                  const cost = getMedicalUpgradeCostM(facilities.medicalLevel as 1 | 2);
+                  setPendingConfirm({
+                    title: `Nâng cấp Trung tâm Y tế lên Cấp ${facilities.medicalLevel + 1}?`,
+                    description: (
+                      <p>
+                        Chi phí đầu tư: <strong className="text-sky-300">-€{cost}M</strong> để giảm viện phí, giảm rủi ro chấn thương và hồi phục thể lực nhanh hơn.
+                      </p>
+                    ),
+                    confirmLabel: `Nâng cấp (-€${cost}M)`,
+                    tone: 'emerald',
+                    action: () => runAction('medical-up', () => onUpgradeFacility('medical')),
+                  });
+                }}
                 className="w-full h-11 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 <ArrowUpRight className="w-4 h-4" />
@@ -361,7 +408,19 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                             type="button"
                             disabled={busyKey !== null || overCap || career.transferBudget < feeM}
                             onClick={() =>
-                              runAction(`mgr-ext-${yrs}`, () => onExtendManagerContract(yrs))
+                              setPendingConfirm({
+                                title: `Gia hạn hợp đồng HLV ${activeMgr.name} (+${yrs} năm)?`,
+                                description: (
+                                  <p>
+                                    Kéo dài hợp đồng HLV trưởng đến năm{' '}
+                                    <strong className="text-white">{Math.max(mgrUntil, currentYear) + yrs}</strong> với phí lót tay{' '}
+                                    <strong className="text-emerald-300">-€{feeM}M</strong>.
+                                  </p>
+                                ),
+                                confirmLabel: `Gia hạn +${yrs} năm (-€${feeM}M)`,
+                                tone: 'emerald',
+                                action: () => runAction(`mgr-ext-${yrs}`, () => onExtendManagerContract(yrs)),
+                              })
                             }
                             className="h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs disabled:opacity-45"
                           >
@@ -462,7 +521,19 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
                             type="button"
                             disabled={busyKey !== null || career.transferBudget < renewalInfo.bonusM}
                             onClick={() =>
-                              runAction(`contract-${p.id}`, () => onExtendContract(p.id, selectedYears))
+                              setPendingConfirm({
+                                title: `Gia hạn hợp đồng ${p.name} (+${renewalInfo.targetYears} năm)?`,
+                                description: (
+                                  <p>
+                                    Kéo dài hợp đồng đến <strong className="text-white">{nextExpiry}</strong>, lương tăng thêm{' '}
+                                    <strong className="text-amber-300">+€{renewalInfo.wageIncreaseK}K/tuần</strong>. Phí lót tay trừ ngay: <strong className="text-emerald-300">-€{renewalInfo.bonusM}M</strong>.
+                                  </p>
+                                ),
+                                confirmLabel: `Gia hạn +${renewalInfo.targetYears} năm (-€${renewalInfo.bonusM}M)`,
+                                tone: 'emerald',
+                                action: () =>
+                                  runAction(`contract-${p.id}`, () => onExtendContract(p.id, selectedYears)),
+                              })
                             }
                             className="h-9 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shrink-0 disabled:opacity-50"
                           >
@@ -481,6 +552,27 @@ export const ClubEconomyManagementPanel: React.FC<ClubEconomyManagementPanelProp
           </div>
         </div>
       )}
+
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'emerald'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 };

@@ -18,6 +18,7 @@ import {
 } from '../lib/legacyAcademyEngine';
 import { CareerSave, Player, YouthProspect } from '../types/game';
 import { PlayerAvatar } from './ClubBadgeAndAvatar';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface YouthAcademyPanelProps {
   career: CareerSave;
@@ -89,6 +90,14 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [posFilter, setPosFilter] = useState<'all' | 'GK' | 'DEF' | 'MID' | 'ATK'>('all');
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: 'emerald' | 'amber' | 'danger';
+    action: () => Promise<void>;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const club = useMemo(
     () => CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0],
@@ -150,7 +159,19 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
                 academyFull ||
                 career.transferBudget < extraScoutCostM
               }
-              onClick={() => runAction('extra-scout', onExtraScout)}
+              onClick={() =>
+                setPendingConfirm({
+                  title: `Tuyển trạch Đặc biệt Học viện?`,
+                  description: (
+                    <p>
+                      Chi <strong className="text-sky-300">-€{extraScoutCostM}M</strong> để tìm ngay 1 tài năng trẻ gia nhập Học viện (giới hạn 1 lần mỗi mùa giải).
+                    </p>
+                  ),
+                  confirmLabel: `Tuyển trạch (-€${extraScoutCostM}M)`,
+                  tone: 'emerald',
+                  action: () => runAction('extra-scout', onExtraScout),
+                })
+              }
               className="h-10 px-4 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-sky-200 font-semibold text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50"
             >
               <Search className="w-3.5 h-3.5" />
@@ -165,7 +186,19 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
               <button
                 type="button"
                 disabled={busyKey !== null || career.transferBudget < upgradeCostM}
-                onClick={() => runAction('upgrade-academy', onUpgradeAcademy)}
+                onClick={() =>
+                  setPendingConfirm({
+                    title: `Nâng cấp Học viện lên Cấp ${academy.level + 1}?`,
+                    description: (
+                      <p>
+                        Đầu tư <strong className="text-emerald-300">-€{upgradeCostM}M</strong> từ ngân sách CLB để nâng cấp chất lượng ngọc thô đầu vào và tốc độ tích lũy XP.
+                      </p>
+                    ),
+                    confirmLabel: `Nâng cấp (-€${upgradeCostM}M)`,
+                    tone: 'emerald',
+                    action: () => runAction('upgrade-academy', onUpgradeAcademy),
+                  })
+                }
                 className="h-10 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50"
               >
                 <ArrowUpRight className="w-4 h-4" />
@@ -269,7 +302,19 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
             <button
               type="button"
               disabled={busyKey !== null || career.transferBudget < extraScoutCostM}
-              onClick={() => runAction('extra-scout', onExtraScout)}
+              onClick={() =>
+                setPendingConfirm({
+                  title: `Tuyển trạch Đặc biệt Học viện?`,
+                  description: (
+                    <p>
+                      Chi <strong className="text-sky-300">-€{extraScoutCostM}M</strong> để tìm ngay 1 tài năng trẻ gia nhập Học viện.
+                    </p>
+                  ),
+                  confirmLabel: `Tuyển trạch (-€${extraScoutCostM}M)`,
+                  tone: 'emerald',
+                  action: () => runAction('extra-scout', onExtraScout),
+                })
+              }
               className="h-10 px-4 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 disabled:opacity-50"
             >
               <Search className="w-3.5 h-3.5" />
@@ -379,7 +424,18 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
                       career.transferBudget < trainCostM
                     }
                     onClick={() =>
-                      runAction(`train-${prospect.id}`, () => onTrainProspect(prospect.id))
+                      setPendingConfirm({
+                        title: `Tập riêng cho học viên ${prospect.shortName}?`,
+                        description: (
+                          <p>
+                            Chi phí giáo án đặc biệt: <strong className="text-sky-300">-€{trainCostM}M</strong> để tăng nhanh điểm phát triển OVR tại Học viện.
+                          </p>
+                        ),
+                        confirmLabel: `Tập riêng (-€${trainCostM}M)`,
+                        tone: 'emerald',
+                        action: () =>
+                          runAction(`train-${prospect.id}`, () => onTrainProspect(prospect.id)),
+                      })
                     }
                     className="h-10 px-3 rounded-xl bg-[#0B1117] hover:bg-white/5 border border-white/15 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-45"
                   >
@@ -393,7 +449,18 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
                     type="button"
                     disabled={busyKey !== null || squadFull}
                     onClick={() =>
-                      runAction(`promote-${prospect.id}`, () => onPromoteProspect(prospect.id))
+                      setPendingConfirm({
+                        title: `Đôn ${prospect.name} lên Đội 1?`,
+                        description: (
+                          <p>
+                            {prospect.name} ({prospect.position} · OVR {prospect.rating}, POT {prospect.potential}) sẽ ký hợp đồng chuyên nghiệp gia nhập Đội 1 (hưởng lương tuần &amp; chiếm 1/40 suất đăng ký).
+                          </p>
+                        ),
+                        confirmLabel: 'Xác nhận đôn lên Đội 1',
+                        tone: 'emerald',
+                        action: () =>
+                          runAction(`promote-${prospect.id}`, () => onPromoteProspect(prospect.id)),
+                      })
                     }
                     className="h-10 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-45"
                   >
@@ -405,7 +472,18 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
                     type="button"
                     disabled={busyKey !== null}
                     onClick={() =>
-                      runAction(`release-${prospect.id}`, () => onReleaseProspect(prospect.id))
+                      setPendingConfirm({
+                        title: `Bán đào tạo học viên ${prospect.name}?`,
+                        description: (
+                          <p>
+                            Chuyển nhượng sớm học viên (OVR {prospect.rating} / POT {prospect.potential}) khỏi Học viện để thu về <strong className="text-amber-300">+€{releaseFeeM.toFixed(2)}M</strong>. Hành động này không thể hoàn tác!
+                          </p>
+                        ),
+                        confirmLabel: `Bán đào tạo (+€${releaseFeeM.toFixed(2)}M)`,
+                        tone: 'amber',
+                        action: () =>
+                          runAction(`release-${prospect.id}`, () => onReleaseProspect(prospect.id)),
+                      })
                     }
                     className="h-10 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-200 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-45"
                   >
@@ -418,6 +496,27 @@ export const YouthAcademyPanel: React.FC<YouthAcademyPanelProps> = ({
           })}
         </div>
       )}
+
+      <ConfirmActionModal
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        tone={pendingConfirm?.tone ?? 'emerald'}
+        busy={confirmBusy}
+        onConfirm={async () => {
+          if (!pendingConfirm) return;
+          const fn = pendingConfirm.action;
+          setConfirmBusy(true);
+          try {
+            await fn();
+            setPendingConfirm(null);
+          } finally {
+            setConfirmBusy(false);
+          }
+        }}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 };

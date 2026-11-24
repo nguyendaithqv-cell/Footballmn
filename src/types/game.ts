@@ -72,6 +72,9 @@ export interface Player {
   trainingXp?: number;
   injury?: PlayerInjury;
   transferStatus: 'available' | 'listed' | 'untouchable' | 'loan';
+  askingPriceM?: number;
+  wageSettledSeason?: string;
+  wageSettledMatchweek?: number;
   role?: PlayerRole;
   isYouthGraduate?: boolean;
   graduatedSeason?: string;
