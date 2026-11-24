@@ -1,5 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Brain, Check, HeartPulse, RefreshCw, Sparkles, Target } from 'lucide-react';
+import {
+  AlertTriangle,
+  Brain,
+  Check,
+  Copy,
+  Edit3,
+  HeartPulse,
+  RefreshCw,
+  Shuffle,
+  Sparkles,
+  Target,
+} from 'lucide-react';
 import {
   CLUBS,
   FORMATION_TEMPLATES,
@@ -8,10 +19,15 @@ import {
 } from '../data/footballDatabase';
 import {
   buildAutoLineupSlots,
+  buildRotationLineupSlots,
   calculateTacticalProfile,
+  DEFAULT_TACTIC_PRESET_LABELS,
+  ensureTacticPresets,
   getActiveCareerManager,
   getManagerImpactSummary,
   isPlayerInjured,
+  isPlayerSuspended,
+  isPlayerUnavailable,
   repairTacticsAfterSquadChange,
 } from '../lib/careerEngine';
 import {
@@ -20,13 +36,17 @@ import {
   Mentality,
   Player,
   PlayerRole,
+  TacticPreset,
   TacticSettings,
+  TacticSlotKey,
 } from '../types/game';
 import { PlayerAvatar } from './ClubBadgeAndAvatar';
 
 interface TacticsViewProps {
   career: CareerSave;
   onUpdateTactics: (nextTactics: TacticSettings) => void;
+  onSwitchTacticSlot: (slot: TacticSlotKey) => void;
+  onUpdatePresetMeta?: (slot: TacticSlotKey, nextPreset: TacticPreset) => void;
   onSelectPlayer: (player: Player) => void;
 }
 
@@ -42,6 +62,8 @@ const MENTALITIES: { id: Mentality; label: string }[] = [
 export const TacticsView: React.FC<TacticsViewProps> = ({
   career,
   onUpdateTactics,
+  onSwitchTacticSlot,
+  onUpdatePresetMeta,
   onSelectPlayer,
 }) => {
   const [selectedSlotIdx, setSelectedSlotIdx] = useState<number | null>(null);
@@ -51,6 +73,14 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
   const [scoutReport, setScoutReport] = useState<string | null>(null);
   const [scouting, setScouting] = useState(false);
   const [tacticNotice, setTacticNotice] = useState<string | null>(null);
+  const [editingPresetName, setEditingPresetName] = useState(false);
+  const [presetNameDraft, setPresetNameDraft] = useState('');
+
+  const activeSlotKey: TacticSlotKey = career.activeTacticSlot ?? 'A';
+  const tacticPresets = useMemo(
+    () => ensureTacticPresets(career.tactics, career.squad, career.tacticPresets),
+    [career.tactics, career.squad, career.tacticPresets]
+  );
 
   const club = CLUBS.find((c) => c.id === career.clubId) ?? CLUBS[0];
   const playerMap = useMemo(() => new Map(career.squad.map((p) => [p.id, p])), [career.squad]);
@@ -252,6 +282,47 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
     const penSync = syncPenaltyTakersForSlots(autoSlots, career.tactics);
     onUpdateTactics({ ...career.tactics, slots: autoSlots, ...penSync });
     setSelectedSlotIdx(null);
+    setTacticNotice(`Đã tối ưu 11 cầu thủ mạnh nhất cho Đội hình ${activeSlotKey}.`);
+  };
+
+  const handleRotationPick = () => {
+    const primarySlots = tacticPresets.A.tactics.slots;
+    const rotSlots = buildRotationLineupSlots(
+      career.tactics.formation,
+      career.squad,
+      activeSlotKey === 'A' ? [] : primarySlots
+    );
+    const penSync = syncPenaltyTakersForSlots(rotSlots, career.tactics);
+    onUpdateTactics({ ...career.tactics, slots: rotSlots, ...penSync });
+    setSelectedSlotIdx(null);
+    setTacticNotice(`Đã xếp đội hình xoay tua ưu tiên cầu thủ sung sức cho Đội hình ${activeSlotKey}.`);
+  };
+
+  const handleCopyFromPrimary = () => {
+    if (activeSlotKey === 'A') return;
+    const cloned = {
+      ...tacticPresets.A.tactics,
+      slots: tacticPresets.A.tactics.slots.map((s) => ({ ...s })),
+      penaltyTakerIds: tacticPresets.A.tactics.penaltyTakerIds
+        ? [...tacticPresets.A.tactics.penaltyTakerIds]
+        : undefined,
+    };
+    onUpdateTactics(cloned);
+    setSelectedSlotIdx(null);
+    setTacticNotice(`Đã sao chép sơ đồ & nhân sự từ Đội hình A sang Đội hình ${activeSlotKey}.`);
+  };
+
+  const handleSavePresetLabel = () => {
+    const trimmed = presetNameDraft.trim();
+    const cur = tacticPresets[activeSlotKey];
+    const nextLabel = trimmed || DEFAULT_TACTIC_PRESET_LABELS[activeSlotKey];
+    onUpdatePresetMeta?.(activeSlotKey, {
+      ...cur,
+      label: nextLabel,
+      tactics: career.tactics,
+    });
+    setEditingPresetName(false);
+    setTacticNotice(`Đã đổi tên Đội hình ${activeSlotKey} thành "${nextLabel}".`);
   };
 
   const handleTapPitchSlot = (slotIdx: number) => {
@@ -280,9 +351,11 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
       if (bp) onSelectPlayer(bp);
       return;
     }
-    if (bp && isPlayerInjured(bp)) {
+    if (bp && isPlayerUnavailable(bp)) {
       setTacticNotice(
-        `${bp.shortName} đang chấn thương (còn ${bp.injury?.matchesRemaining ?? 1} trận) — không thể đưa vào đội hình ra sân.`
+        isPlayerSuspended(bp)
+          ? `${bp.shortName} đang bị treo giò (${bp.suspendedMatches ?? 1} trận) — không thể đưa vào đội hình ra sân.`
+          : `${bp.shortName} đang chấn thương (còn ${bp.injury?.matchesRemaining ?? 1} trận) — không thể đưa vào đội hình ra sân.`
       );
       return;
     }
@@ -339,6 +412,134 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
     <div className="space-y-5 lg:grid lg:grid-cols-12 lg:gap-6 lg:space-y-0">
       {/* Left/Top: Vertical Interactive Pitch */}
       <div className="lg:col-span-6 space-y-3">
+        {/* 3 Preset Squads Bar (A / B / C) */}
+        <div className="rounded-2xl bg-[#121B24] border border-white/10 p-3 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+              3 Đội hình cài đặt sẵn (Đang dùng: {activeSlotKey})
+            </span>
+            <div className="flex items-center gap-1.5">
+              {activeSlotKey !== 'A' && (
+                <button
+                  type="button"
+                  onClick={handleCopyFromPrimary}
+                  className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-[11px] font-semibold text-slate-200 flex items-center gap-1"
+                  title="Sao chép toàn bộ nhân sự và sơ đồ từ Đội hình A"
+                >
+                  <Copy className="w-3 h-3 text-sky-400" />
+                  Chép từ A
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleRotationPick}
+                className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-[11px] font-semibold text-amber-300 flex items-center gap-1"
+                title="Tự chọn đội hình xoay tua ưu tiên cầu thủ sung sức"
+              >
+                <Shuffle className="w-3 h-3" />
+                Xoay tua
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPresetNameDraft(tacticPresets[activeSlotKey].label);
+                  setEditingPresetName((v) => !v);
+                }}
+                className="h-7 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-[11px] font-semibold text-slate-300 flex items-center gap-1"
+                title="Đổi tên gợi nhớ cho đội hình hiện tại"
+              >
+                <Edit3 className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+
+          {editingPresetName && (
+            <div className="flex items-center gap-2 pt-0.5">
+              <input
+                type="text"
+                maxLength={28}
+                value={presetNameDraft}
+                onChange={(e) => setPresetNameDraft(e.target.value)}
+                placeholder={`Tên Đội hình ${activeSlotKey}...`}
+                className="flex-1 h-8 px-2.5 rounded-lg bg-[#0B1117] border border-emerald-500/40 text-xs text-white focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={handleSavePresetLabel}
+                className="h-8 px-3 rounded-lg bg-emerald-500 text-slate-950 text-xs font-bold"
+              >
+                Lưu tên
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-3 gap-2">
+            {(['A', 'B', 'C'] as const).map((slotKey) => {
+              const preset = slotKey === activeSlotKey
+                ? { ...tacticPresets[slotKey], tactics: career.tactics }
+                : tacticPresets[slotKey];
+              const isSelected = slotKey === activeSlotKey;
+              const presetPlayers = preset.tactics.slots
+                .map((s) => playerMap.get(s.playerId))
+                .filter((p): p is Player => Boolean(p));
+              const avgFit =
+                presetPlayers.length > 0
+                  ? Math.round(
+                      presetPlayers.reduce((sum, p) => sum + p.fitness, 0) / presetPlayers.length
+                    )
+                  : 100;
+              const unavailCount = presetPlayers.filter((p) => isPlayerUnavailable(p)).length;
+
+              return (
+                <button
+                  key={slotKey}
+                  type="button"
+                  onClick={() => {
+                    if (!isSelected) {
+                      setSelectedSlotIdx(null);
+                      setEditingPresetName(false);
+                      onSwitchTacticSlot(slotKey);
+                    }
+                  }}
+                  className={`rounded-xl p-2.5 border text-left transition-all ${
+                    isSelected
+                      ? 'bg-emerald-500/15 border-emerald-400 shadow-sm shadow-emerald-500/10'
+                      : 'bg-[#0B1117] border-white/10 hover:border-white/25'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span
+                      className={`px-1.5 py-0.5 rounded font-mono-num text-[10px] font-extrabold ${
+                        isSelected
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {slotKey}
+                    </span>
+                    <span className="font-mono-num text-[10px] font-bold text-slate-300">
+                      {preset.tactics.formation}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-bold text-white truncate mt-1.5">
+                    {preset.label}
+                  </p>
+                  <div className="flex items-center justify-between gap-1 mt-1 text-[10px]">
+                    <span className={`font-mono-num font-semibold ${getFitnessTextClass(avgFit)}`}>
+                      TL {avgFit}%
+                    </span>
+                    {unavailCount > 0 ? (
+                      <span className="text-rose-400 font-bold">⚠ {unavailCount} vắng</span>
+                    ) : (
+                      <span className="text-slate-500">Sẵn sàng</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Formation & Auto-Pick Bar */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
@@ -368,24 +569,36 @@ export const TacticsView: React.FC<TacticsViewProps> = ({
           </button>
         </div>
 
-        {injuredStarters.length > 0 && (
-          <div className="rounded-2xl bg-red-500/15 border border-red-500/40 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-red-200 flex items-center gap-1.5">
-              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-              Có {injuredStarters.length} cầu thủ đá chính đang chấn thương ({injuredStarters.map((p) => p.shortName).join(', ')}).
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                onUpdateTactics(repairTacticsAfterSquadChange(career.tactics, career.squad));
-                setTacticNotice(null);
-              }}
-              className="h-8 px-3 rounded-lg bg-red-500 hover:bg-red-400 text-slate-950 font-bold text-[11px] shrink-0"
-            >
-              Tự động thay cầu thủ khỏe mạnh
-            </button>
-          </div>
-        )}
+        {(() => {
+          const unavailableStarters = startingXIPlayers.filter((p) => isPlayerUnavailable(p));
+          if (unavailableStarters.length === 0) return null;
+          return (
+            <div className="rounded-2xl bg-red-500/15 border border-red-500/40 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-red-200 flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                Đội hình {activeSlotKey} có {unavailableStarters.length} cầu thủ đang vắng mặt (
+                {unavailableStarters
+                  .map((p) =>
+                    isPlayerSuspended(p)
+                      ? `${p.shortName} - Treo giò`
+                      : `${p.shortName} - Chấn thương`
+                  )
+                  .join(', ')}
+                ).
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateTactics(repairTacticsAfterSquadChange(career.tactics, career.squad));
+                  setTacticNotice(null);
+                }}
+                className="h-8 px-3 rounded-lg bg-red-500 hover:bg-red-400 text-slate-950 font-bold text-[11px] shrink-0"
+              >
+                Tự động thay cầu thủ khỏe mạnh
+              </button>
+            </div>
+          );
+        })()}
 
         {tacticNotice && (
           <div className="rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs font-semibold text-amber-200 flex items-center justify-between gap-2">

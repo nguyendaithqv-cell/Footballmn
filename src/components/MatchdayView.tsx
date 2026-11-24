@@ -19,9 +19,11 @@ import {
   buildEffectiveDatabasePlayers,
   buildMatchSummaryFromStored,
   ensureMatchResultRatings,
+  ensureTacticPresets,
   getActiveCareerManager,
   isCompetitionFinished,
   isPlayerInjured,
+  isPlayerUnavailable,
   resimulateMatchFromMinute,
   resolveCompetitionAwards,
   simulateMatchFull,
@@ -39,6 +41,7 @@ import {
   Mentality,
   Player,
   TacticSlot,
+  TacticSlotKey,
 } from '../types/game';
 import { ClubCrest, ManagerAvatar, PlayerAvatar } from './ClubBadgeAndAvatar';
 import { CompetitionStatsPanel } from './CompetitionStatsPanel';
@@ -60,6 +63,9 @@ interface MatchdayViewProps {
   onStartNextSeason: () => Promise<void>;
   onOpenFinancePayroll?: () => void;
   onQuickMentality: (mentality: Mentality) => void;
+  onSelectTacticSlot?: (slot: TacticSlotKey) => void;
+  onPrepareBeforeMatch?: () => Promise<CareerSave>;
+  onToggleSoundSetting?: (enabled: boolean) => void;
   pauseLiveMatchExternal?: boolean;
   onLiveMatchGuardChange?: (
     active: boolean,
@@ -117,6 +123,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   onStartNextSeason,
   onOpenFinancePayroll,
   onQuickMentality,
+  onSelectTacticSlot,
+  onPrepareBeforeMatch,
+  onToggleSoundSetting,
   pauseLiveMatchExternal = false,
   onLiveMatchGuardChange,
   forceFinishLiveMatchRef,
@@ -151,7 +160,7 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   // Live 2D match simulator state
   const [isLive, setIsLive] = useState(false);
   const [minute, setMinute] = useState(0);
-  const [speed, setSpeed] = useState<1 | 2 | 4>(2);
+  const [speed, setSpeed] = useState<1 | 2 | 4>(() => career.settings?.defaultLiveSpeed ?? 2);
   const [liveResult, setLiveResult] = useState<MatchResultSummary | null>(null);
   const [simContext, setSimContext] = useState<ActiveSimContext | null>(null);
   const [savingMatch, setSavingMatch] = useState(false);
@@ -162,12 +171,29 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
     run: () => void;
   } | null>(null);
 
-  // Sound effects state & triggers
-  const [soundOn, setSoundOn] = useState(() => isSoundEnabled());
+  // Sound effects state & triggers (synced with GameSettings modal)
+  const [soundOn, setSoundOn] = useState(() =>
+    career.settings ? career.settings.soundEnabled : isSoundEnabled()
+  );
+
+  useEffect(() => {
+    if (career.settings) {
+      setSoundOn(career.settings.soundEnabled);
+      setSoundEnabled(career.settings.soundEnabled);
+    }
+  }, [career.settings]);
+
+  useEffect(() => {
+    if (!isLive && career.settings?.defaultLiveSpeed) {
+      setSpeed(career.settings.defaultLiveSpeed);
+    }
+  }, [isLive, career.settings?.defaultLiveSpeed]);
+
   const toggleSound = () => {
     const next = !soundOn;
     setSoundOn(next);
     setSoundEnabled(next);
+    onToggleSoundSetting?.(next);
   };
 
   useEffect(() => {
@@ -432,17 +458,18 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
   ) => {
     finalizedMatchIdRef.current = null;
     matchEndTriggeredRef.current = null;
+    const preparedCareer = onPrepareBeforeMatch ? await onPrepareBeforeMatch() : career;
     const simulated = simulateMatchFull(
       homeId,
       awayId,
-      career.matchweek,
-      career.clubId,
-      career.tactics,
-      career.squad,
+      preparedCareer.matchweek,
+      preparedCareer.clubId,
+      preparedCareer.tactics,
+      preparedCareer.squad,
       effectiveAllPlayers,
       { ...options, userManager: activeUserManager }
     );
-    const initialMatchSlots = career.tactics.slots.map((s) => ({ ...s }));
+    const initialMatchSlots = preparedCareer.tactics.slots.map((s) => ({ ...s }));
     const initialParticipated = initialMatchSlots.map((s) => s.playerId).filter(Boolean);
     setSimContext(context);
     if (instant) {
@@ -453,8 +480,9 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
       setInspectedMatch(simulated);
     } else {
       setIsPaused(false);
+      setSpeed(preparedCareer.settings?.defaultLiveSpeed ?? 2);
       setMatchSlots(initialMatchSlots);
-      setLiveFormation(career.tactics.formation);
+      setLiveFormation(preparedCareer.tactics.formation);
       setSubsMade(0);
       setSubbedOutIds([]);
       setSubbedInMinutes({});
@@ -1560,6 +1588,90 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           );
         })()}
 
+        {(() => {
+          const activeSlot: TacticSlotKey = career.activeTacticSlot ?? 'A';
+          const presets = ensureTacticPresets(career.tactics, career.squad, career.tacticPresets);
+          const squadMap = new Map(career.squad.map((p) => [p.id, p]));
+          return (
+            <div className="rounded-xl bg-[#0B1117] border border-white/10 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="font-bold text-emerald-400">
+                  Chọn nhanh Đội hình ra sân ({activeSlot})
+                </span>
+                <span className="text-slate-400 font-mono-num">
+                  {presets[activeSlot].tactics.formation} · {presets[activeSlot].tactics.mentality}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {(['A', 'B', 'C'] as const).map((slotKey) => {
+                  const preset =
+                    slotKey === activeSlot
+                      ? { ...presets[slotKey], tactics: career.tactics }
+                      : presets[slotKey];
+                  const xiPlayers = preset.tactics.slots
+                    .map((s) => squadMap.get(s.playerId))
+                    .filter((p): p is Player => Boolean(p));
+                  const avgFit =
+                    xiPlayers.length > 0
+                      ? Math.round(
+                          xiPlayers.reduce((sum, p) => sum + p.fitness, 0) / xiPlayers.length
+                        )
+                      : 100;
+                  const unavail = xiPlayers.filter((p) => isPlayerUnavailable(p)).length;
+                  const isCur = slotKey === activeSlot;
+                  return (
+                    <button
+                      key={slotKey}
+                      type="button"
+                      disabled={!onSelectTacticSlot}
+                      onClick={() => onSelectTacticSlot?.(slotKey)}
+                      className={`rounded-lg px-2.5 py-2 border text-left transition-colors ${
+                        isCur
+                          ? 'bg-emerald-500/15 border-emerald-400'
+                          : 'bg-[#121B24] border-white/10 hover:border-white/25'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span
+                          className={`px-1.5 py-0.5 rounded font-mono-num text-[10px] font-extrabold ${
+                            isCur
+                              ? 'bg-emerald-500 text-slate-950'
+                              : 'bg-slate-800 text-slate-300'
+                          }`}
+                        >
+                          {slotKey}
+                        </span>
+                        <span className="font-mono-num text-[10px] font-bold text-slate-300">
+                          {preset.tactics.formation}
+                        </span>
+                      </div>
+                      <p className="text-[11px] font-semibold text-white truncate mt-1">
+                        {preset.label}
+                      </p>
+                      <div className="flex items-center justify-between text-[10px] mt-0.5">
+                        <span
+                          className={`font-mono-num font-bold ${
+                            avgFit < 75
+                              ? 'text-rose-400'
+                              : avgFit < 85
+                                ? 'text-amber-400'
+                                : 'text-emerald-400'
+                          }`}
+                        >
+                          TL {avgFit}%
+                        </span>
+                        {unavail > 0 && (
+                          <span className="text-rose-400 font-bold">⚠ {unavail}</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1573,13 +1685,17 @@ export const MatchdayView: React.FC<MatchdayViewProps> = ({
           <button
             type="button"
             disabled={savingMatch}
-            onClick={() =>
+            onClick={() => {
+              if (career.settings?.confirmMode === 'fast') {
+                onQuickSim();
+                return;
+              }
               setPendingQuickSim({
                 title: `${hClub.shortName} vs ${aClub.shortName}`,
                 subtitle: `${title} · ${subtitle}`,
                 run: onQuickSim,
-              })
-            }
+              });
+            }}
             className="h-12 px-4 rounded-xl bg-[#0B1117] hover:bg-slate-800 border border-white/15 text-slate-200 font-semibold text-xs flex items-center gap-1.5 disabled:opacity-50"
           >
             <FastForward className="w-4 h-4 text-amber-400" />

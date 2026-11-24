@@ -164,6 +164,33 @@ export interface TacticSettings {
   penaltyTakerIds?: string[];
 }
 
+export type TacticSlotKey = 'A' | 'B' | 'C';
+
+export interface TacticPreset {
+  id: TacticSlotKey;
+  label: string;
+  tactics: TacticSettings;
+}
+
+export type AutoRecoverThreshold = 75 | 80 | 85;
+export type AutoRecoverScope = 'starters' | 'squad';
+export type AutoRecoverSource = 'booster_then_budget' | 'booster_only' | 'budget_only';
+export type ConfirmMode = 'strict' | 'fast';
+
+export interface GameSettings {
+  soundEnabled: boolean;
+  autoRenewContracts: boolean;
+  autoRenewManagerContract: boolean;
+  autoRecoverStamina: boolean;
+  autoRecoverThreshold: AutoRecoverThreshold;
+  autoRecoverScope: AutoRecoverScope;
+  autoRecoverSource: AutoRecoverSource;
+  autoTreatMinorInjuries: boolean;
+  autoReplaceUnavailableStarters: boolean;
+  defaultLiveSpeed: 1 | 2 | 4;
+  confirmMode: ConfirmMode;
+}
+
 export interface LeagueStanding {
   clubId: string;
   clubName: string;
@@ -861,6 +888,9 @@ export interface CareerSave {
   trainingFocus: 'Tactical' | 'Attacking' | 'Defending' | 'Physical' | 'Recovery';
   trainingIntensity: 'light' | 'balanced' | 'intense';
   tactics: TacticSettings;
+  activeTacticSlot?: TacticSlotKey;
+  tacticPresets?: Partial<Record<TacticSlotKey, TacticPreset>>;
+  settings?: GameSettings;
   squad: Player[];
   standings: LeagueStanding[];
   fixtures: Fixture[];

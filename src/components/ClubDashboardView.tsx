@@ -1109,7 +1109,21 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                         <button
                           type="button"
                           disabled={recoveringTarget !== null || career.transferBudget < totalInjuryCostM}
-                          onClick={() =>
+                          onClick={async () => {
+                            const run = async () => {
+                              setRecoveringTarget('all-injuries');
+                              setRecoveryFeedback(null);
+                              try {
+                                const res = await onTreatAllInjuries();
+                                setRecoveryFeedback({ ok: res.ok, text: res.message });
+                              } finally {
+                                setRecoveringTarget(null);
+                              }
+                            };
+                            if (career.settings?.confirmMode === 'fast') {
+                              await run();
+                              return;
+                            }
                             setPendingConfirm({
                               title: `Điều trị dứt điểm toàn bộ ${injuredPlayers.length} ca chấn thương?`,
                               description: (
@@ -1120,18 +1134,9 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                               ),
                               confirmLabel: `Điều trị tất cả (-€${totalInjuryCostM}M)`,
                               tone: 'amber',
-                              action: async () => {
-                                setRecoveringTarget('all-injuries');
-                                setRecoveryFeedback(null);
-                                try {
-                                  const res = await onTreatAllInjuries();
-                                  setRecoveryFeedback({ ok: res.ok, text: res.message });
-                                } finally {
-                                  setRecoveringTarget(null);
-                                }
-                              },
-                            })
-                          }
+                              action: run,
+                            });
+                          }}
                           className="w-full h-11 rounded-xl bg-red-500 hover:bg-red-400 text-white font-bold text-xs flex items-center justify-center gap-2 disabled:opacity-50"
                         >
                           <Stethoscope className="w-4 h-4" />
@@ -1249,7 +1254,21 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                       allFull ||
                       career.transferBudget < squadCostM
                     }
-                    onClick={() =>
+                    onClick={async () => {
+                      const run = async () => {
+                        setRecoveringTarget('squad');
+                        setRecoveryFeedback(null);
+                        try {
+                          const res = await onRecoverSquadFitness();
+                          setRecoveryFeedback({ ok: res.ok, text: res.message });
+                        } finally {
+                          setRecoveringTarget(null);
+                        }
+                      };
+                      if (career.settings?.confirmMode === 'fast') {
+                        await run();
+                        return;
+                      }
                       setPendingConfirm({
                         title: `Hồi phục thể lực toàn đội về 100%?`,
                         description: (
@@ -1259,18 +1278,9 @@ export const ClubDashboardView: React.FC<ClubDashboardViewProps> = ({
                         ),
                         confirmLabel: `Hồi phục toàn đội (-€${squadCostM}M)`,
                         tone: 'emerald',
-                        action: async () => {
-                          setRecoveringTarget('squad');
-                          setRecoveryFeedback(null);
-                          try {
-                            const res = await onRecoverSquadFitness();
-                            setRecoveryFeedback({ ok: res.ok, text: res.message });
-                          } finally {
-                            setRecoveringTarget(null);
-                          }
-                        },
-                      })
-                    }
+                        action: run,
+                      });
+                    }}
                     className="w-full h-12 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     <HeartPulse className="w-4 h-4" />

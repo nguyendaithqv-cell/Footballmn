@@ -7,6 +7,7 @@ import {
   LogOut,
   PackageOpen,
   Play,
+  Settings,
   ShieldCheck,
   Sliders,
   Swords,
@@ -17,22 +18,28 @@ import { AuthOnboarding } from './components/AuthOnboarding';
 import { ClubCrest } from './components/ClubBadgeAndAvatar';
 import { ClubDashboardView } from './components/ClubDashboardView';
 import { ConfirmActionModal } from './components/ConfirmActionModal';
+import { GameSettingsModal } from './components/GameSettingsModal';
 import { PlayerDetailSheet } from './components/PlayerDetailSheet';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { TacticsView } from './components/TacticsView';
 import { CLUBS, getIconShardCost, INITIAL_PLAYERS, REAL_MANAGERS } from './data/footballDatabase';
 import {
   appendLedgerEntries,
+  applyAutoRenewContractsBeforeRollover,
   applyCupMatchResults,
   applyMarketOverrides,
   applyMatchToStandings,
+  applyPreMatchAutomation,
   buildAutoLineupSlots,
   claimSeasonEndRewards,
+  cloneTacticSettings,
   createInitialCareer,
   createLedgerEntry,
   createNextSeasonCareer,
   ensureCareerCompetitions,
   ensureFreeAgentsPool,
+  ensureGameSettings,
+  ensureTacticPresets,
   finalizeFinishedCompetitionAwards,
   generateIncomingTransferOffer,
   getActiveCareerManager,
@@ -54,6 +61,7 @@ import {
   isCompetitionFinished,
   isPlayerInjured,
   mergeMatchResultsIntoLeaderboard,
+  repairCareerTacticPresets,
   repairTacticsAfterSquadChange,
   rollMatchInjuriesAndTickRecovery,
   settleSeasonPayroll,
@@ -152,6 +160,7 @@ import {
   RankedOutcomeResult,
   simulateOnlineMatch,
 } from './lib/onlineArenaEngine';
+import { isSoundEnabled, setSoundEnabled } from './lib/soundFx';
 import {
   ArenaChallenge,
   ArenaProfile,
@@ -160,6 +169,7 @@ import {
   ClubNotificationItem,
   FormationId,
   Friendship,
+  GameSettings,
   MarketOverride,
   MatchResultSummary,
   Mentality,
@@ -169,7 +179,9 @@ import {
   PackTier,
   Player,
   PushNotificationItem,
+  TacticPreset,
   TacticSettings,
+  TacticSlotKey,
   TrophyItem,
   UserProfile,
 } from './types/game';
@@ -274,6 +286,7 @@ export default function App() {
     getPushPermission()
   );
   const [showNotifDrawer, setShowNotifDrawer] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [notifFilter, setNotifFilter] = useState<'all' | 'club' | 'system'>('all');
   const [liveToast, setLiveToast] = useState<{ title: string; body: string; tag?: string } | null>(
     null
@@ -285,6 +298,7 @@ export default function App() {
   const arenaLoadedRef = useRef(false);
   const lastSyncedArenaSigRef = useRef('');
   const prevCareerRef = useRef<CareerSave | null>(null);
+  const latestCareerRef = useRef<CareerSave | null>(null);
 
   const isAdmin = useMemo(() => {
     if (!localUser) return false;
@@ -296,6 +310,16 @@ export default function App() {
     [career]
   );
 
+  useEffect(() => {
+    latestCareerRef.current = hydratedCareer;
+  }, [hydratedCareer]);
+
+  useEffect(() => {
+    if (hydratedCareer?.settings) {
+      setSoundEnabled(hydratedCareer.settings.soundEnabled);
+    }
+  }, [hydratedCareer?.settings]);
+
   // 1. Local Auth State Listener
   useEffect(() => {
     const unsub = subscribeLocalAuth(async (user) => {
@@ -304,6 +328,7 @@ export default function App() {
         setProfile(null);
         setCareer(null);
         prevCareerRef.current = null;
+        latestCareerRef.current = null;
         setClubNotifications([]);
         setNotifications([]);
         setCloudArenaProfiles([]);
@@ -356,6 +381,7 @@ export default function App() {
 
         if (savedCareer) {
           prevCareerRef.current = savedCareer;
+          latestCareerRef.current = ensureCareerCompetitions(savedCareer);
           setCareer(savedCareer);
         }
         setNews(newsList);
@@ -524,6 +550,7 @@ export default function App() {
           uid
         );
         prevCareerRef.current = initialCareer;
+        latestCareerRef.current = ensureCareerCompetitions(initialCareer);
         setCareer(initialCareer);
         setProfile(newProfile);
         setNeedsProfile(false);
@@ -537,12 +564,17 @@ export default function App() {
   const saveCareerCloud = useCallback(
     async (nextCareer: CareerSave) => {
       if (!localUser) return;
+      if (tacticsSaveTimerRef.current) {
+        window.clearTimeout(tacticsSaveTimerRef.current);
+        tacticsSaveTimerRef.current = null;
+      }
       const normalizedCareer: CareerSave = {
         ...nextCareer,
         uid: localUser.uid,
         ...(nextCareer.inventory ? { inventory: normalizeInventory(nextCareer.inventory) } : {}),
       };
       prevCareerRef.current = normalizedCareer;
+      latestCareerRef.current = ensureCareerCompetitions(normalizedCareer);
       setCareer(normalizedCareer);
       try {
         await putLocalCareer(normalizedCareer);
@@ -555,18 +587,39 @@ export default function App() {
 
   const handleUpdateTactics = useCallback(
     (nextTactics: TacticSettings) => {
-      if (!hydratedCareer) return;
-      const updatedCareer: CareerSave = { ...hydratedCareer, tactics: nextTactics };
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer) return;
+      const activeSlot: TacticSlotKey = baseCareer.activeTacticSlot ?? 'A';
+      const presets = ensureTacticPresets(
+        baseCareer.tactics,
+        baseCareer.squad,
+        baseCareer.tacticPresets
+      );
+      const nextPresets: Record<TacticSlotKey, TacticPreset> = {
+        ...presets,
+        [activeSlot]: {
+          ...presets[activeSlot],
+          tactics: cloneTacticSettings(nextTactics),
+        },
+      };
+      const updatedCareer: CareerSave = {
+        ...baseCareer,
+        tactics: nextTactics,
+        activeTacticSlot: activeSlot,
+        tacticPresets: nextPresets,
+      };
+      latestCareerRef.current = ensureCareerCompetitions(updatedCareer);
       setCareer(updatedCareer);
       if (tacticsSaveTimerRef.current) window.clearTimeout(tacticsSaveTimerRef.current);
       tacticsSaveTimerRef.current = window.setTimeout(() => {
+        tacticsSaveTimerRef.current = null;
         void saveCareerCloud(updatedCareer);
       }, 850);
       if (tacticsNotifTimerRef.current) window.clearTimeout(tacticsNotifTimerRef.current);
       tacticsNotifTimerRef.current = window.setTimeout(() => {
         void pushClubNotification(
           'tactics',
-          `Cập nhật chiến thuật (${nextTactics.formation})`,
+          `Cập nhật Đội hình ${activeSlot} (${nextTactics.formation})`,
           `Áp dụng sơ đồ ${nextTactics.formation}, tâm lý ${nextTactics.mentality}, pressing mức ${nextTactics.pressingIntensity}/5.`
         );
       }, 1800);
@@ -574,12 +627,146 @@ export default function App() {
     [hydratedCareer, saveCareerCloud, pushClubNotification]
   );
 
+  const handleSwitchTacticSlot = useCallback(
+    (slot: TacticSlotKey) => {
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer) return;
+      const curSlot: TacticSlotKey = baseCareer.activeTacticSlot ?? 'A';
+      const presets = ensureTacticPresets(
+        baseCareer.tactics,
+        baseCareer.squad,
+        baseCareer.tacticPresets
+      );
+      const savedCurrentPresets: Record<TacticSlotKey, TacticPreset> = {
+        ...presets,
+        [curSlot]: {
+          ...presets[curSlot],
+          tactics: repairTacticsAfterSquadChange(
+            cloneTacticSettings(baseCareer.tactics),
+            baseCareer.squad
+          ),
+        },
+      };
+      const targetTactics = repairTacticsAfterSquadChange(
+        cloneTacticSettings(savedCurrentPresets[slot].tactics),
+        baseCareer.squad
+      );
+      savedCurrentPresets[slot] = {
+        ...savedCurrentPresets[slot],
+        tactics: targetTactics,
+      };
+      const nextCareer: CareerSave = {
+        ...baseCareer,
+        activeTacticSlot: slot,
+        tactics: targetTactics,
+        tacticPresets: savedCurrentPresets,
+      };
+      void saveCareerCloud(nextCareer);
+      void pushClubNotification(
+        'tactics',
+        `Chọn Đội hình ${slot} · ${savedCurrentPresets[slot].label}`,
+        `Đã chuyển sang sơ đồ ${targetTactics.formation} (${targetTactics.mentality}).`
+      );
+    },
+    [hydratedCareer, saveCareerCloud, pushClubNotification]
+  );
+
+  const handleUpdatePresetMeta = useCallback(
+    (slot: TacticSlotKey, nextPreset: TacticPreset) => {
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer) return;
+      const presets = ensureTacticPresets(
+        baseCareer.tactics,
+        baseCareer.squad,
+        baseCareer.tacticPresets
+      );
+      const nextPresets = {
+        ...presets,
+        [slot]: nextPreset,
+      };
+      void saveCareerCloud({
+        ...baseCareer,
+        tacticPresets: nextPresets,
+      });
+    },
+    [hydratedCareer, saveCareerCloud]
+  );
+
+  const handleUpdateGameSettings = useCallback(
+    (nextSettings: GameSettings) => {
+      setSoundEnabled(nextSettings.soundEnabled);
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer) return;
+      void saveCareerCloud({
+        ...baseCareer,
+        settings: nextSettings,
+      });
+    },
+    [hydratedCareer, saveCareerCloud]
+  );
+
+  const handleToggleSoundSetting = useCallback(
+    (enabled: boolean) => {
+      setSoundEnabled(enabled);
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer) return;
+      const curSettings = ensureGameSettings(baseCareer.settings, isSoundEnabled());
+      if (curSettings.soundEnabled === enabled) return;
+      void saveCareerCloud({
+        ...baseCareer,
+        settings: {
+          ...curSettings,
+          soundEnabled: enabled,
+        },
+      });
+    },
+    [hydratedCareer, saveCareerCloud]
+  );
+
+  const handlePrepareBeforeMatch = useCallback(async (): Promise<CareerSave> => {
+    const baseCareer = latestCareerRef.current ?? hydratedCareer;
+    if (!baseCareer) {
+      throw new Error('Chưa sẵn sàng dữ liệu CLB.');
+    }
+    const autoResult = applyPreMatchAutomation(baseCareer);
+    if (autoResult.actionsSummary.length === 0) {
+      return baseCareer;
+    }
+    await saveCareerCloud(autoResult.nextCareer);
+    const preview = autoResult.actionsSummary.slice(0, 4).join(' · ');
+    const extra =
+      autoResult.actionsSummary.length > 4
+        ? ` (+${autoResult.actionsSummary.length - 4} thao tác)`
+        : '';
+    await pushClubNotification(
+      'medical',
+      'Trợ lý tự động chuẩn bị trước trận',
+      `${preview}${extra}${autoResult.spentM > 0 ? ` · Chi €${autoResult.spentM}M` : ''}${autoResult.boostersUsed > 0 ? ` · Dùng ${autoResult.boostersUsed} Bình TL` : ''}.`
+    );
+    return autoResult.nextCareer;
+  }, [hydratedCareer, saveCareerCloud, pushClubNotification]);
+
   const handleQuickMentality = useCallback(
     (mentality: Mentality) => {
-      if (!hydratedCareer) return;
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer) return;
+      const activeSlot: TacticSlotKey = baseCareer.activeTacticSlot ?? 'A';
+      const presets = ensureTacticPresets(
+        baseCareer.tactics,
+        baseCareer.squad,
+        baseCareer.tacticPresets
+      );
+      const nextTactics = { ...baseCareer.tactics, mentality };
       saveCareerCloud({
-        ...hydratedCareer,
-        tactics: { ...hydratedCareer.tactics, mentality },
+        ...baseCareer,
+        tactics: nextTactics,
+        tacticPresets: {
+          ...presets,
+          [activeSlot]: {
+            ...presets[activeSlot],
+            tactics: cloneTacticSettings(nextTactics),
+          },
+        },
       });
       pushClubNotification(
         'tactics',
@@ -592,10 +779,11 @@ export default function App() {
 
   const handleCompleteMatchweek = useCallback(
     async (userMatch: MatchResultSummary, allMatches: MatchResultSummary[]) => {
-      if (!hydratedCareer || !localUser || !profile) return;
-      if (hydratedCareer.recentResults.some((r) => r.id === userMatch.id)) return;
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer || !localUser || !profile) return;
+      if (baseCareer.recentResults.some((r) => r.id === userMatch.id)) return;
 
-      let nextStandings = [...hydratedCareer.standings];
+      let nextStandings = [...baseCareer.standings];
       const resultMap = new Map<string, MatchResultSummary>();
       for (const m of allMatches) {
         nextStandings = applyMatchToStandings(
@@ -608,8 +796,8 @@ export default function App() {
         resultMap.set(`${m.homeClubId}-${m.awayClubId}`, m);
       }
 
-      const nextFixtures = hydratedCareer.fixtures.map((f) => {
-        if (f.matchweek !== hydratedCareer.matchweek) return f;
+      const nextFixtures = baseCareer.fixtures.map((f) => {
+        if (f.matchweek !== baseCareer.matchweek) return f;
         const m = resultMap.get(`${f.homeClubId}-${f.awayClubId}`);
         if (!m) return f;
         return {
@@ -621,41 +809,41 @@ export default function App() {
         };
       });
 
-      const isUserHome = userMatch.homeClubId === hydratedCareer.clubId;
+      const isUserHome = userMatch.homeClubId === baseCareer.clubId;
       const myGoals = isUserHome ? userMatch.homeGoals : userMatch.awayGoals;
       const oppGoals = isUserHome ? userMatch.awayGoals : userMatch.homeGoals;
       const won = myGoals > oppGoals;
       const drawn = myGoals === oppGoals;
 
-      const activeMgr = getActiveCareerManager(hydratedCareer);
-      const mgrImpact = getManagerImpactSummary(activeMgr, hydratedCareer.tactics);
+      const activeMgr = getActiveCareerManager(baseCareer);
+      const mgrImpact = getManagerImpactSummary(activeMgr, baseCareer.tactics);
       const starterSet = new Set(
         userMatch.participatedUserPlayerIds && userMatch.participatedUserPlayerIds.length > 0
           ? userMatch.participatedUserPlayerIds
-          : hydratedCareer.tactics.slots.map((s) => s.playerId)
+          : baseCareer.tactics.slots.map((s) => s.playerId)
       );
-      const focusRecoveryBonus = hydratedCareer.trainingFocus === 'Recovery' ? 2 : 0;
+      const focusRecoveryBonus = baseCareer.trainingFocus === 'Recovery' ? 2 : 0;
       const recoveryBoost =
-        (hydratedCareer.trainingIntensity === 'light'
+        (baseCareer.trainingIntensity === 'light'
           ? 7
-          : hydratedCareer.trainingIntensity === 'balanced'
+          : baseCareer.trainingIntensity === 'balanced'
             ? 3
             : -2) +
         focusRecoveryBonus +
         mgrImpact.recoveryBonus;
 
       const goalEvents = userMatch.events.filter(
-        (e) => e.type === 'goal' && e.teamId === hydratedCareer.clubId
+        (e) => e.type === 'goal' && e.teamId === baseCareer.clubId
       );
 
       const ratingByPlayerId = new Map(
         (userMatch.playerRatings ?? [])
-          .filter((r) => r.clubId === hydratedCareer.clubId)
+          .filter((r) => r.clubId === baseCareer.clubId)
           .map((r) => [r.playerId, r.rating])
       );
 
-      const leagueDrain = getMatchStaminaDrain(hydratedCareer.tactics, false);
-      const rawNextSquad = hydratedCareer.squad.map((p) => {
+      const leagueDrain = getMatchStaminaDrain(baseCareer.tactics, false);
+      const rawNextSquad = baseCareer.squad.map((p) => {
         const played = starterSet.has(p.id);
         const scored = goalEvents.filter((e) =>
           e.playerId ? e.playerId === p.id : e.playerName === p.name
@@ -683,37 +871,45 @@ export default function App() {
         };
       });
 
-      const facilities = ensureClubFacilities(hydratedCareer);
+      const facilities = ensureClubFacilities(baseCareer);
       const injuryOutcome = rollMatchInjuriesAndTickRecovery({
         squad: rawNextSquad,
         participatedIds: starterSet,
-        tactics: hydratedCareer.tactics,
-        trainingIntensity: hydratedCareer.trainingIntensity,
+        tactics: baseCareer.tactics,
+        trainingIntensity: baseCareer.trainingIntensity,
         medicalLevel: facilities.medicalLevel,
-        matchweek: hydratedCareer.matchweek,
-        competitionLabel: `Super League Vòng ${hydratedCareer.matchweek}`,
+        matchweek: baseCareer.matchweek,
+        competitionLabel: `Super League Vòng ${baseCareer.matchweek}`,
         allowNewInjuries: true,
       });
       const nextSquad = injuryOutcome.nextSquad;
-      const nextTactics =
+      const repairedMatchweekTactics =
         injuryOutcome.newlyInjured.length > 0
-          ? repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad)
-          : hydratedCareer.tactics;
+          ? repairCareerTacticPresets(
+              baseCareer.tactics,
+              baseCareer.activeTacticSlot ?? 'A',
+              baseCareer.tacticPresets,
+              nextSquad
+            )
+          : null;
+      const nextTactics = repairedMatchweekTactics
+        ? repairedMatchweekTactics.tactics
+        : baseCareer.tactics;
 
       const leagueFinishedNow = nextFixtures.every((f) => f.played);
       const sortedEnd = sortStandings(nextStandings);
-      let nextCabinet = [...(hydratedCareer.trophyCabinet ?? [])];
+      let nextCabinet = [...(baseCareer.trophyCabinet ?? [])];
       let awardedLeagueTrophy = 0;
 
-      if (leagueFinishedNow && sortedEnd[0]?.clubId === hydratedCareer.clubId) {
-        const trophyId = `trophy-league-${hydratedCareer.season.replace('/', '-')}`;
+      if (leagueFinishedNow && sortedEnd[0]?.clubId === baseCareer.clubId) {
+        const trophyId = `trophy-league-${baseCareer.season.replace('/', '-')}`;
         if (!nextCabinet.some((t) => t.id === trophyId)) {
           const leagueTrophy: TrophyItem = {
             id: trophyId,
-            title: `Vô địch Super League ${hydratedCareer.season}`,
+            title: `Vô địch Super League ${baseCareer.season}`,
             competition: 'league',
-            season: hydratedCareer.season,
-            clubId: hydratedCareer.clubId,
+            season: baseCareer.season,
+            clubId: baseCareer.clubId,
             awardedAt: new Date().toISOString(),
           };
           nextCabinet = [leagueTrophy, ...nextCabinet].slice(0, 120);
@@ -721,7 +917,7 @@ export default function App() {
         }
       }
 
-      const prevComps = hydratedCareer.competitions;
+      const prevComps = baseCareer.competitions;
       const nextComps = prevComps
         ? {
             ...prevComps,
@@ -737,7 +933,7 @@ export default function App() {
           }
         : undefined;
 
-      const inv = normalizeInventory(hydratedCareer.inventory);
+      const inv = normalizeInventory(baseCareer.inventory);
       const nextPacks = { ...inv.packs };
       let shardsEarned = won ? 5 : drawn ? 2 : 0;
       if (won) {
@@ -761,7 +957,7 @@ export default function App() {
       const hMatchShort = CLUBS.find((c) => c.id === userMatch.homeClubId)?.shortName ?? userMatch.homeClubId;
       const aMatchShort = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
       const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
-      const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
+      const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === baseCareer.activeSponsorId);
       const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
       const matchPrizeM =
         won || drawn
@@ -770,11 +966,11 @@ export default function App() {
 
       const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
       const motmPlayerId =
-        userMatch.manOfTheMatch?.clubId === hydratedCareer.clubId
+        userMatch.manOfTheMatch?.clubId === baseCareer.clubId
           ? userMatch.manOfTheMatch.playerId
-          : userMatch.playerRatings?.find((r) => r.clubId === hydratedCareer.clubId && r.isMotm)
+          : userMatch.playerRatings?.find((r) => r.clubId === baseCareer.clubId && r.isMotm)
               ?.playerId;
-      const nextClubRecords = recordOfficialMatchInClubRecords(hydratedCareer, {
+      const nextClubRecords = recordOfficialMatchInClubRecords(baseCareer, {
         matchId: userMatch.id,
         opponentClubId,
         myGoals,
@@ -782,7 +978,7 @@ export default function App() {
         won,
         drawn,
         competitionLabel: 'Super League',
-        matchweek: hydratedCareer.matchweek,
+        matchweek: baseCareer.matchweek,
         participatedPlayerIds: starterSet,
         goalEvents,
         playerRatings: userMatch.playerRatings,
@@ -790,22 +986,23 @@ export default function App() {
         nextSquad,
       });
 
-      const nextMatchweek = hydratedCareer.matchweek + 1;
-      const prunedOffers = (hydratedCareer.incomingTransferOffers ?? []).filter(
+      const nextMatchweek = baseCareer.matchweek + 1;
+      const prunedOffers = (baseCareer.incomingTransferOffers ?? []).filter(
         (o) =>
           o.expiresAtMatchweek >= nextMatchweek &&
           nextSquad.some((p) => p.id === o.playerId)
       );
 
       const preOfferCareer: CareerSave = {
-        ...hydratedCareer,
+        ...baseCareer,
         matchweek: nextMatchweek,
-        transferBudget: Number((hydratedCareer.transferBudget + matchPrizeM).toFixed(1)),
+        transferBudget: Number((baseCareer.transferBudget + matchPrizeM).toFixed(1)),
         boardConfidence: Math.max(
           25,
-          Math.min(100, hydratedCareer.boardConfidence + (won ? 3 : drawn ? 0 : -4))
+          Math.min(100, baseCareer.boardConfidence + (won ? 3 : drawn ? 0 : -4))
         ),
         tactics: nextTactics,
+        ...(repairedMatchweekTactics ? { tacticPresets: repairedMatchweekTactics.tacticPresets } : {}),
         squad: nextSquad,
         standings: nextStandings,
         fixtures: nextFixtures,
@@ -815,22 +1012,22 @@ export default function App() {
         incomingTransferOffers: prunedOffers,
         financialLedger:
           matchPrizeM > 0
-            ? appendLedgerEntries(hydratedCareer.financialLedger, [
+            ? appendLedgerEntries(baseCareer.financialLedger, [
                 createLedgerEntry({
-                  season: hydratedCareer.season,
-                  matchweek: hydratedCareer.matchweek,
+                  season: baseCareer.season,
+                  matchweek: baseCareer.matchweek,
                   type: 'income',
                   category: 'match_prize',
-                  title: `Thưởng trận VĐQG Vòng ${hydratedCareer.matchweek}: ${hMatchShort} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aMatchShort}`,
+                  title: `Thưởng trận VĐQG Vòng ${baseCareer.matchweek}: ${hMatchShort} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aMatchShort}`,
                   detail: won ? 'Chiến thắng' : 'Hòa',
                   amountM: matchPrizeM,
                 }),
               ])
-            : hydratedCareer.financialLedger,
+            : baseCareer.financialLedger,
         inventory: nextInv,
         recentResults: [
           userMatch,
-          ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
+          ...baseCareer.recentResults.filter((r) => r.id !== userMatch.id),
         ].slice(0, 50),
       };
 
@@ -870,17 +1067,17 @@ export default function App() {
         const aName = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
         await pushClubNotification(
           'match',
-          `VĐQG Vòng ${hydratedCareer.matchweek}: ${hName} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aName}`,
+          `VĐQG Vòng ${baseCareer.matchweek}: ${hName} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aName}`,
           matchPrizeM > 0
             ? `${won ? 'Chiến thắng!' : 'Chia điểm!'} Thưởng trận đấu +€${matchPrizeM}M vào ngân sách CLB.`
             : 'Thất bại — Trận thua không nhận được phần thưởng.'
         );
         if (awardedLeagueTrophy > 0) {
-          const myClubName = CLUBS.find((c) => c.id === hydratedCareer.clubId)?.name ?? hydratedCareer.clubId;
+          const myClubName = CLUBS.find((c) => c.id === baseCareer.clubId)?.name ?? baseCareer.clubId;
           await pushClubNotification(
             'trophy',
-            `Vô địch Super League ${hydratedCareer.season}!`,
-            `Chúc mừng ${myClubName} chính thức nâng cúp vô địch quốc gia mùa giải ${hydratedCareer.season}!`
+            `Vô địch Super League ${baseCareer.season}!`,
+            `Chúc mừng ${myClubName} chính thức nâng cúp vô địch quốc gia mùa giải ${baseCareer.season}!`
           );
         }
         for (const aw of awardResult.newlyAwarded) {
@@ -907,23 +1104,23 @@ export default function App() {
           );
         }
 
-        if (leagueFinishedNow || hydratedCareer.matchweek === 30) {
-          const curYear = Number(hydratedCareer.season.slice(0, 4)) || 2026;
+        if (leagueFinishedNow || baseCareer.matchweek === 30) {
+          const curYear = Number(baseCareer.season.slice(0, 4)) || 2026;
           const expCount = nextSquad.filter((p) => p.contractUntil <= curYear + 1).length;
           if (expCount > 0) {
             await pushClubNotification(
               'contract',
               `Nhắc nhở Gia hạn Hợp đồng (${expCount} cầu thủ)`,
-              `Có ${expCount} cầu thủ sẽ hết hạn hợp đồng vào cuối mùa ${hydratedCareer.season}. Nếu không gia hạn trước khi sang mùa mới, họ sẽ ra đi tự do!`
+              `Có ${expCount} cầu thủ sẽ hết hạn hợp đồng vào cuối mùa ${baseCareer.season}. Nếu không gia hạn trước khi sang mùa mới, họ sẽ ra đi tự do!`
             );
           }
-          const activeMgrNow = getActiveCareerManager(hydratedCareer);
-          const mgrContractUntil = getActiveManagerContractUntil(hydratedCareer, activeMgrNow);
+          const activeMgrNow = getActiveCareerManager(baseCareer);
+          const mgrContractUntil = getActiveManagerContractUntil(baseCareer, activeMgrNow);
           if (activeMgrNow && mgrContractUntil !== null && mgrContractUntil <= curYear + 1) {
             await pushClubNotification(
               'contract',
               `Hợp đồng HLV ${activeMgrNow.name} sắp hết hạn`,
-              `Hợp đồng của HLV trưởng ${activeMgrNow.name} sẽ hết hạn cuối mùa ${hydratedCareer.season} (${mgrContractUntil}). Hãy gia hạn tại CLB → HLV trưởng để tiếp tục giữ ghế.`
+              `Hợp đồng của HLV trưởng ${activeMgrNow.name} sẽ hết hạn cuối mùa ${baseCareer.season} (${mgrContractUntil}). Hãy gia hạn tại CLB → HLV trưởng để tiếp tục giữ ghế.`
             );
           }
         }
@@ -948,68 +1145,69 @@ export default function App() {
       userMatch: MatchResultSummary | null,
       roundEntries: { matchId: string; result: MatchResultSummary }[]
     ) => {
-      if (!hydratedCareer || !hydratedCareer.competitions || !localUser || !profile) return;
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer || !baseCareer.competitions || !localUser || !profile) return;
       if (roundEntries.length === 0) return;
 
       const resultsMap = new Map(roundEntries.map((e) => [e.matchId, e.result]));
-      const prevComps = hydratedCareer.competitions;
+      const prevComps = baseCareer.competitions;
       const nextComps = applyCupMatchResults(prevComps, competition, resultsMap);
 
-      let nextSquad = hydratedCareer.squad;
-      let nextTactics = hydratedCareer.tactics;
+      let nextSquad = baseCareer.squad;
+      let nextTactics = baseCareer.tactics;
       let cupNewlyInjured: Player[] = [];
       let cupRecoveredPlayers: Player[] = [];
-      let nextClubRecords = ensureClubRecords(hydratedCareer);
+      let nextClubRecords = ensureClubRecords(baseCareer);
       let budgetBonus = 0;
       let matchCash = 0;
       let wonMatch = false;
       let drawnMatch = false;
 
       if (userMatch) {
-        const isUserHome = userMatch.homeClubId === hydratedCareer.clubId;
+        const isUserHome = userMatch.homeClubId === baseCareer.clubId;
         const myGoals = isUserHome ? userMatch.homeGoals : userMatch.awayGoals;
         const oppGoals = isUserHome ? userMatch.awayGoals : userMatch.homeGoals;
         wonMatch = userMatch.winnerId
-          ? userMatch.winnerId === hydratedCareer.clubId
+          ? userMatch.winnerId === baseCareer.clubId
           : myGoals > oppGoals;
         drawnMatch = !userMatch.winnerId && myGoals === oppGoals;
-        const facilities = ensureClubFacilities(hydratedCareer);
+        const facilities = ensureClubFacilities(baseCareer);
         if (wonMatch || drawnMatch) {
           const stadiumMult = getStadiumTicketMultiplier(facilities.stadiumLevel);
-          const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === hydratedCareer.activeSponsorId);
+          const activeSponsor = SPONSOR_OFFERS.find((s) => s.id === baseCareer.activeSponsorId);
           const sponsorBonus = activeSponsor ? activeSponsor.matchBonusM : 0;
           const baseCupCash = wonMatch ? 1.25 : 0.6;
           matchCash = Number((baseCupCash * stadiumMult + sponsorBonus).toFixed(1));
           budgetBonus += matchCash;
         }
 
-        const activeMgr = getActiveCareerManager(hydratedCareer);
-        const mgrImpact = getManagerImpactSummary(activeMgr, hydratedCareer.tactics);
-        const focusRecoveryBonus = hydratedCareer.trainingFocus === 'Recovery' ? 2 : 0;
+        const activeMgr = getActiveCareerManager(baseCareer);
+        const mgrImpact = getManagerImpactSummary(activeMgr, baseCareer.tactics);
+        const focusRecoveryBonus = baseCareer.trainingFocus === 'Recovery' ? 2 : 0;
         const cupRecoveryBoost =
-          (hydratedCareer.trainingIntensity === 'light'
+          (baseCareer.trainingIntensity === 'light'
             ? 5
-            : hydratedCareer.trainingIntensity === 'balanced'
+            : baseCareer.trainingIntensity === 'balanced'
               ? 2
               : -2) +
           focusRecoveryBonus +
           mgrImpact.recoveryBonus;
-        const cupDrain = getMatchStaminaDrain(hydratedCareer.tactics, true);
+        const cupDrain = getMatchStaminaDrain(baseCareer.tactics, true);
 
         const starterSet = new Set(
           userMatch.participatedUserPlayerIds && userMatch.participatedUserPlayerIds.length > 0
             ? userMatch.participatedUserPlayerIds
-            : hydratedCareer.tactics.slots.map((s) => s.playerId)
+            : baseCareer.tactics.slots.map((s) => s.playerId)
         );
         const goalEvents = userMatch.events.filter(
-          (e) => e.type === 'goal' && e.teamId === hydratedCareer.clubId
+          (e) => e.type === 'goal' && e.teamId === baseCareer.clubId
         );
         const ratingByPlayerId = new Map(
           (userMatch.playerRatings ?? [])
-            .filter((r) => r.clubId === hydratedCareer.clubId)
+            .filter((r) => r.clubId === baseCareer.clubId)
             .map((r) => [r.playerId, r.rating])
         );
-        const rawCupSquad = hydratedCareer.squad.map((p) => {
+        const rawCupSquad = baseCareer.squad.map((p) => {
           const played = starterSet.has(p.id);
           const scored = goalEvents.filter((e) =>
             e.playerId ? e.playerId === p.id : e.playerName === p.name
@@ -1047,27 +1245,36 @@ export default function App() {
         const cupInjuryOutcome = rollMatchInjuriesAndTickRecovery({
           squad: rawCupSquad,
           participatedIds: starterSet,
-          tactics: hydratedCareer.tactics,
-          trainingIntensity: hydratedCareer.trainingIntensity,
+          tactics: baseCareer.tactics,
+          trainingIntensity: baseCareer.trainingIntensity,
           medicalLevel: facilities.medicalLevel,
-          matchweek: hydratedCareer.matchweek,
+          matchweek: baseCareer.matchweek,
           competitionLabel: recordCompLabel,
           allowNewInjuries: true,
         });
         nextSquad = cupInjuryOutcome.nextSquad;
         cupNewlyInjured = cupInjuryOutcome.newlyInjured;
         cupRecoveredPlayers = cupInjuryOutcome.recoveredPlayers;
-        if (cupNewlyInjured.length > 0) {
-          nextTactics = repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad);
+        const repairedCupTactics =
+          cupNewlyInjured.length > 0
+            ? repairCareerTacticPresets(
+                baseCareer.tactics,
+                baseCareer.activeTacticSlot ?? 'A',
+                baseCareer.tacticPresets,
+                nextSquad
+              )
+            : null;
+        if (repairedCupTactics) {
+          nextTactics = repairedCupTactics.tactics;
         }
 
         const opponentClubId = isUserHome ? userMatch.awayClubId : userMatch.homeClubId;
         const motmPlayerId =
-          userMatch.manOfTheMatch?.clubId === hydratedCareer.clubId
+          userMatch.manOfTheMatch?.clubId === baseCareer.clubId
             ? userMatch.manOfTheMatch.playerId
-            : userMatch.playerRatings?.find((r) => r.clubId === hydratedCareer.clubId && r.isMotm)
+            : userMatch.playerRatings?.find((r) => r.clubId === baseCareer.clubId && r.isMotm)
                 ?.playerId;
-        nextClubRecords = recordOfficialMatchInClubRecords(hydratedCareer, {
+        nextClubRecords = recordOfficialMatchInClubRecords(baseCareer, {
           matchId: userMatch.id,
           opponentClubId,
           myGoals,
@@ -1075,7 +1282,7 @@ export default function App() {
           won: wonMatch,
           drawn: drawnMatch,
           competitionLabel: recordCompLabel,
-          matchweek: userMatch.matchweek || hydratedCareer.matchweek,
+          matchweek: userMatch.matchweek || baseCareer.matchweek,
           participatedPlayerIds: starterSet,
           goalEvents,
           playerRatings: userMatch.playerRatings,
@@ -1084,7 +1291,7 @@ export default function App() {
         });
       }
 
-      let nextCabinet = [...(hydratedCareer.trophyCabinet ?? [])];
+      let nextCabinet = [...(baseCareer.trophyCabinet ?? [])];
       let trophiesAdded = 0;
 
       const checkAndAwardTrophy = (
@@ -1098,8 +1305,8 @@ export default function App() {
             id,
             title,
             competition: compId,
-            season: hydratedCareer.season,
-            clubId: hydratedCareer.clubId,
+            season: baseCareer.season,
+            clubId: baseCareer.clubId,
             awardedAt: new Date().toISOString(),
           };
           nextCabinet = [item, ...nextCabinet].slice(0, 120);
@@ -1111,33 +1318,33 @@ export default function App() {
       if (
         competition === 'champions-cup' &&
         !prevComps.championsCup.championClubId &&
-        nextComps.championsCup.championClubId === hydratedCareer.clubId
+        nextComps.championsCup.championClubId === baseCareer.clubId
       ) {
         checkAndAwardTrophy(
-          `trophy-cc-${hydratedCareer.season.replace('/', '-')}`,
-          `Vô địch Champions Cup ${hydratedCareer.season}`,
+          `trophy-cc-${baseCareer.season.replace('/', '-')}`,
+          `Vô địch Champions Cup ${baseCareer.season}`,
           'champions-cup',
           18
         );
       } else if (
         competition === 'national-cup' &&
         !prevComps.nationalCup.championClubId &&
-        nextComps.nationalCup.championClubId === hydratedCareer.clubId
+        nextComps.nationalCup.championClubId === baseCareer.clubId
       ) {
         checkAndAwardTrophy(
-          `trophy-nc-${hydratedCareer.season.replace('/', '-')}`,
-          `Vô địch Cúp Quốc Gia ${hydratedCareer.season}`,
+          `trophy-nc-${baseCareer.season.replace('/', '-')}`,
+          `Vô địch Cúp Quốc Gia ${baseCareer.season}`,
           'national-cup',
           10
         );
       } else if (
         competition === 'super-cup' &&
         !prevComps.superCup.championClubId &&
-        nextComps.superCup.championClubId === hydratedCareer.clubId
+        nextComps.superCup.championClubId === baseCareer.clubId
       ) {
         checkAndAwardTrophy(
-          `trophy-sc-${hydratedCareer.season.replace('/', '-')}`,
-          `Siêu Cúp ${hydratedCareer.season}`,
+          `trophy-sc-${baseCareer.season.replace('/', '-')}`,
+          `Siêu Cúp ${baseCareer.season}`,
           'super-cup',
           6
         );
@@ -1156,12 +1363,12 @@ export default function App() {
         },
       };
 
-      let nextInv = normalizeInventory(hydratedCareer.inventory);
+      let nextInv = normalizeInventory(baseCareer.inventory);
       if (userMatch || trophiesAdded > 0) {
         const nextPacks = { ...nextInv.packs };
         let shardsEarned = 0;
         if (userMatch) {
-          const isUserHome = userMatch.homeClubId === hydratedCareer.clubId;
+          const isUserHome = userMatch.homeClubId === baseCareer.clubId;
           const myGoals = isUserHome ? userMatch.homeGoals : userMatch.awayGoals;
           const oppGoals = isUserHome ? userMatch.awayGoals : userMatch.homeGoals;
           const isKnockout =
@@ -1209,8 +1416,8 @@ export default function App() {
           const aS = CLUBS.find((c) => c.id === userMatch.awayClubId)?.shortName ?? userMatch.awayClubId;
           cupLedgerEntries.push(
             createLedgerEntry({
-              season: hydratedCareer.season,
-              matchweek: hydratedCareer.matchweek,
+              season: baseCareer.season,
+              matchweek: baseCareer.matchweek,
               type: 'income',
               category: 'match_prize',
               title: `Thưởng trận ${compLabel}: ${hS} ${userMatch.homeGoals}-${userMatch.awayGoals} ${aS}`,
@@ -1223,11 +1430,11 @@ export default function App() {
         if (trophyCash > 0) {
           cupLedgerEntries.push(
             createLedgerEntry({
-              season: hydratedCareer.season,
-              matchweek: hydratedCareer.matchweek,
+              season: baseCareer.season,
+              matchweek: baseCareer.matchweek,
               type: 'income',
               category: 'competition_bonus',
-              title: `Thưởng Vô địch ${compLabel} ${hydratedCareer.season}`,
+              title: `Thưởng Vô địch ${compLabel} ${baseCareer.season}`,
               amountM: trophyCash,
             })
           );
@@ -1235,22 +1442,32 @@ export default function App() {
       }
 
       const preAwardCareer: CareerSave = {
-        ...hydratedCareer,
-        transferBudget: Number((hydratedCareer.transferBudget + budgetBonus).toFixed(1)),
-        boardConfidence: Math.min(100, hydratedCareer.boardConfidence + (trophiesAdded > 0 ? 6 : 0)),
+        ...baseCareer,
+        transferBudget: Number((baseCareer.transferBudget + budgetBonus).toFixed(1)),
+        boardConfidence: Math.min(100, baseCareer.boardConfidence + (trophiesAdded > 0 ? 6 : 0)),
         tactics: nextTactics,
+        ...(cupNewlyInjured.length > 0
+          ? {
+              tacticPresets: repairCareerTacticPresets(
+                nextTactics,
+                baseCareer.activeTacticSlot ?? 'A',
+                baseCareer.tacticPresets,
+                nextSquad
+              ).tacticPresets,
+            }
+          : {}),
         squad: nextSquad,
         competitions: nextCompsWithStats,
         trophyCabinet: nextCabinet,
         clubRecords: nextClubRecords,
-        financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, cupLedgerEntries),
+        financialLedger: appendLedgerEntries(baseCareer.financialLedger, cupLedgerEntries),
         inventory: nextInv,
         recentResults: userMatch
           ? [
               userMatch,
-              ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
+              ...baseCareer.recentResults.filter((r) => r.id !== userMatch.id),
             ].slice(0, 50)
-          : hydratedCareer.recentResults,
+          : baseCareer.recentResults,
       };
 
       const awardResult = finalizeFinishedCompetitionAwards(preAwardCareer, competition);
@@ -1296,10 +1513,10 @@ export default function App() {
               : `${userMatch.roundLabel || compLabel} · Thất bại — Không nhận được phần thưởng.`
           );
           if (trophiesAdded > 0) {
-            const myClubName = CLUBS.find((c) => c.id === hydratedCareer.clubId)?.name ?? hydratedCareer.clubId;
+            const myClubName = CLUBS.find((c) => c.id === baseCareer.clubId)?.name ?? baseCareer.clubId;
             await pushClubNotification(
               'trophy',
-              `Vô địch ${compLabel} ${hydratedCareer.season}!`,
+              `Vô địch ${compLabel} ${baseCareer.season}!`,
               `${myClubName} đăng quang ${compLabel} và nhận thưởng lớn vào ngân sách.`
             );
           }
@@ -1349,9 +1566,10 @@ export default function App() {
 
   const handleCompleteFriendly = useCallback(
     async (userMatch: MatchResultSummary) => {
-      if (!hydratedCareer || !localUser || !profile) return;
-      if (hydratedCareer.recentResults.some((r) => r.id === userMatch.id)) return;
-      const isUserHome = userMatch.homeClubId === hydratedCareer.clubId;
+      const baseCareer = latestCareerRef.current ?? hydratedCareer;
+      if (!baseCareer || !localUser || !profile) return;
+      if (baseCareer.recentResults.some((r) => r.id === userMatch.id)) return;
+      const isUserHome = userMatch.homeClubId === baseCareer.clubId;
       const myGoals = isUserHome ? userMatch.homeGoals : userMatch.awayGoals;
       const oppGoals = isUserHome ? userMatch.awayGoals : userMatch.homeGoals;
       const won = myGoals > oppGoals;
@@ -1360,14 +1578,14 @@ export default function App() {
       const starterSet = new Set(
         userMatch.participatedUserPlayerIds && userMatch.participatedUserPlayerIds.length > 0
           ? userMatch.participatedUserPlayerIds
-          : hydratedCareer.tactics.slots.map((s) => s.playerId)
+          : baseCareer.tactics.slots.map((s) => s.playerId)
       );
       const ratingByPlayerId = new Map(
         (userMatch.playerRatings ?? [])
-          .filter((r) => r.clubId === hydratedCareer.clubId)
+          .filter((r) => r.clubId === baseCareer.clubId)
           .map((r) => [r.playerId, r.rating])
       );
-      const rawFriendlySquad = hydratedCareer.squad.map((p) => {
+      const rawFriendlySquad = baseCareer.squad.map((p) => {
         const matchRating = ratingByPlayerId.get(p.id);
         const nextForm =
           matchRating !== undefined
@@ -1381,20 +1599,20 @@ export default function App() {
         };
       });
 
-      const facilities = ensureClubFacilities(hydratedCareer);
+      const facilities = ensureClubFacilities(baseCareer);
       const friendlyInjuryTick = rollMatchInjuriesAndTickRecovery({
         squad: rawFriendlySquad,
         participatedIds: starterSet,
-        tactics: hydratedCareer.tactics,
-        trainingIntensity: hydratedCareer.trainingIntensity,
+        tactics: baseCareer.tactics,
+        trainingIntensity: baseCareer.trainingIntensity,
         medicalLevel: facilities.medicalLevel,
-        matchweek: hydratedCareer.matchweek,
+        matchweek: baseCareer.matchweek,
         competitionLabel: 'Giao hữu Quốc tế',
         allowNewInjuries: false,
       });
       const nextSquad = friendlyInjuryTick.nextSquad;
 
-      const prevComps = hydratedCareer.competitions;
+      const prevComps = baseCareer.competitions;
       const nextComps = prevComps
         ? {
             ...prevComps,
@@ -1411,12 +1629,12 @@ export default function App() {
         : undefined;
 
       const nextCareer: CareerSave = {
-        ...hydratedCareer,
+        ...baseCareer,
         squad: nextSquad,
         competitions: nextComps,
         recentResults: [
           userMatch,
-          ...hydratedCareer.recentResults.filter((r) => r.id !== userMatch.id),
+          ...baseCareer.recentResults.filter((r) => r.id !== userMatch.id),
         ].slice(0, 50),
       };
 
@@ -1878,15 +2096,17 @@ export default function App() {
   }, [hydratedCareer, localUser, saveCareerCloud, pushClubNotification]);
 
   const handleStartNextSeason = useCallback(async () => {
-    if (!hydratedCareer || !localUser || !profile) return;
-    if (hydratedCareer.settledPayrollSeason !== hydratedCareer.season) {
+    const baseCareer = latestCareerRef.current ?? hydratedCareer;
+    if (!baseCareer || !localUser || !profile) return;
+    if (baseCareer.settledPayrollSeason !== baseCareer.season) {
       await pushClubNotification(
         'season',
         `Chưa thể khởi tranh mùa mới`,
-        `Bạn cần vào Trang chủ → Tài chính để quyết toán đầy đủ quỹ lương toàn CLB mùa ${hydratedCareer.season} trước khi sang mùa giải mới.`
+        `Bạn cần vào Trang chủ → Tài chính để quyết toán đầy đủ quỹ lương toàn CLB mùa ${baseCareer.season} trước khi sang mùa giải mới.`
       );
       return;
     }
+    const autoRenewRes = applyAutoRenewContractsBeforeRollover(baseCareer);
     const {
       nextCareer,
       summary,
@@ -1896,7 +2116,7 @@ export default function App() {
       departedFreeAgents,
       emergencyPromotedCount,
       expiredManagerName,
-    } = createNextSeasonCareer(hydratedCareer);
+    } = createNextSeasonCareer(autoRenewRes.nextCareer);
     await saveCareerCloud(nextCareer);
 
     try {
@@ -1912,7 +2132,7 @@ export default function App() {
         id: logId,
         uid: localUser.uid,
         eventType: 'season_completed',
-        clubId: hydratedCareer.clubId,
+        clubId: baseCareer.clubId,
         detail: `Kết thúc mùa ${summary.season} hạng #${summary.leagueRank}, sang mùa ${nextCareer.season}`,
         valueM: prizeM,
         createdAt: Date.now(),
@@ -1928,6 +2148,46 @@ export default function App() {
           ? `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Đạt ${objDone}/${objTotal} mục tiêu BLĐ${totsMine > 0 ? `, có ${totsMine} cầu thủ lọt ĐHTB` : ''}. Phần thưởng mùa đã được nhận trước đó · Bước sang mùa 20 CLB.`
           : `Tổng kết mùa ${summary.season} ở hạng #${summary.leagueRank}. Đạt ${objDone}/${objTotal} mục tiêu BLĐ${totsMine > 0 ? `, có ${totsMine} cầu thủ lọt ĐHTB` : ''}. Nhận tổng thưởng +€${prizeM}M và sang mùa 20 CLB.`
       );
+
+      if (autoRenewRes.renewedPlayers.length > 0 || autoRenewRes.renewedManager) {
+        const parts: string[] = [];
+        if (autoRenewRes.renewedPlayers.length > 0) {
+          const totalBonus = Number(
+            autoRenewRes.renewedPlayers.reduce((s, r) => s + r.bonusM, 0).toFixed(2)
+          );
+          const namesPreview = autoRenewRes.renewedPlayers
+            .slice(0, 5)
+            .map((r) => `${r.shortName} (+${r.years} năm)`)
+            .join(', ');
+          const extra =
+            autoRenewRes.renewedPlayers.length > 5
+              ? ` và ${autoRenewRes.renewedPlayers.length - 5} người khác`
+              : '';
+          parts.push(`Gia hạn ${autoRenewRes.renewedPlayers.length} cầu thủ (${namesPreview}${extra}, tổng phí €${totalBonus}M)`);
+        }
+        if (autoRenewRes.renewedManager) {
+          parts.push(
+            `Gia hạn HLV ${autoRenewRes.renewedManager.name} (+${autoRenewRes.renewedManager.years} năm → ${autoRenewRes.renewedManager.newUntil}, -€${autoRenewRes.renewedManager.feeM}M)`
+          );
+        }
+        if (autoRenewRes.skippedListedCount > 0) {
+          parts.push(`bỏ qua ${autoRenewRes.skippedListedCount} cầu thủ đang rao bán`);
+        }
+        if (autoRenewRes.skippedBudgetCount > 0) {
+          parts.push(`${autoRenewRes.skippedBudgetCount} cầu thủ thiếu ngân sách`);
+        }
+        await pushClubNotification(
+          'contract',
+          `Tự động gia hạn hợp đồng cuối mùa`,
+          parts.join(' · ') + '.'
+        );
+      } else if (autoRenewRes.skippedBudgetCount > 0 || autoRenewRes.managerSkippedBudget) {
+        await pushClubNotification(
+          'contract',
+          `Tự động gia hạn không đủ ngân sách`,
+          `Cài đặt tự động gia hạn đang Bật nhưng ngân sách CLB không đủ chi trả phí ký cho ${autoRenewRes.skippedBudgetCount} cầu thủ${autoRenewRes.managerSkippedBudget ? ' và HLV trưởng' : ''}.`
+        );
+      }
 
       if (departedFreeAgents.length > 0) {
         const previewNames = departedFreeAgents
@@ -2305,7 +2565,12 @@ export default function App() {
       }
 
       const nextSquad = hydratedCareer.squad.filter((p) => p.id !== playerId);
-      const nextTactics = repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad);
+      const repairedBundle = repairCareerTacticPresets(
+        hydratedCareer.tactics,
+        hydratedCareer.activeTacticSlot ?? 'A',
+        hydratedCareer.tacticPresets,
+        nextSquad
+      );
       const nextOffers = (hydratedCareer.incomingTransferOffers ?? []).filter(
         (o) => o.playerId !== playerId
       );
@@ -2365,7 +2630,8 @@ export default function App() {
           },
           ...(hydratedCareer.transferHistory ?? []),
         ].slice(0, 50),
-        tactics: nextTactics,
+        tactics: repairedBundle.tactics,
+        tacticPresets: repairedBundle.tacticPresets,
       });
 
       await pushClubNotification(
@@ -2404,7 +2670,12 @@ export default function App() {
       }
 
       const nextSquad = hydratedCareer.squad.filter((p) => p.id !== playerId);
-      const nextTactics = repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad);
+      const repairedBundle = repairCareerTacticPresets(
+        hydratedCareer.tactics,
+        hydratedCareer.activeTacticSlot ?? 'A',
+        hydratedCareer.tacticPresets,
+        nextSquad
+      );
       const nextOffers = (hydratedCareer.incomingTransferOffers ?? []).filter(
         (o) => o.playerId !== playerId
       );
@@ -2477,7 +2748,8 @@ export default function App() {
           },
           ...(hydratedCareer.transferHistory ?? []),
         ].slice(0, 50),
-        tactics: nextTactics,
+        tactics: repairedBundle.tactics,
+        tacticPresets: repairedBundle.tacticPresets,
       });
 
       await pushClubNotification(
@@ -2694,14 +2966,20 @@ export default function App() {
       const terms = getLoanOutTerms(target);
       const netM = Number((terms.loanFeeM - accruedWageM).toFixed(2));
       const nextSquad = hydratedCareer.squad.filter((p) => p.id !== playerId);
-      const nextTactics = repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad);
+      const repairedBundle = repairCareerTacticPresets(
+        hydratedCareer.tactics,
+        hydratedCareer.activeTacticSlot ?? 'A',
+        hydratedCareer.tacticPresets,
+        nextSquad
+      );
       const destClub = CLUBS.find((c) => c.id === terms.targetClubId);
 
       await saveCareerCloud({
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + netM).toFixed(2)),
         squad: nextSquad,
-        tactics: nextTactics,
+        tactics: repairedBundle.tactics,
+        tacticPresets: repairedBundle.tacticPresets,
         loanedOutPlayers: [
           {
             player: {
@@ -2905,13 +3183,19 @@ export default function App() {
       const netProceedsM = Number((totalSaleGrossM - accruedWageM).toFixed(2));
 
       const nextSquad = hydratedCareer.squad.filter((p) => p.id !== target.id);
-      const nextTactics = repairTacticsAfterSquadChange(hydratedCareer.tactics, nextSquad);
+      const repairedBundle = repairCareerTacticPresets(
+        hydratedCareer.tactics,
+        hydratedCareer.activeTacticSlot ?? 'A',
+        hydratedCareer.tacticPresets,
+        nextSquad
+      );
 
       await saveCareerCloud({
         ...hydratedCareer,
         transferBudget: Number((hydratedCareer.transferBudget + netProceedsM).toFixed(2)),
         squad: nextSquad,
-        tactics: nextTactics,
+        tactics: repairedBundle.tactics,
+        tacticPresets: repairedBundle.tacticPresets,
         incomingTransferOffers: offers.filter((o) => o.playerId !== target.id),
         financialLedger: appendLedgerEntries(hydratedCareer.financialLedger, [
           createLedgerEntry({
@@ -5194,6 +5478,16 @@ export default function App() {
 
           <button
             type="button"
+            onClick={() => setShowSettingsModal(true)}
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-slate-300 hover:text-white hover:bg-white/5"
+            title="Cài đặt hệ thống & tự động hóa"
+            aria-label="Cài đặt"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
+          <button
+            type="button"
             onClick={requestLogout}
             className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/5"
             title="Đăng xuất"
@@ -5255,6 +5549,8 @@ export default function App() {
             <TacticsView
               career={hydratedCareer}
               onUpdateTactics={handleUpdateTactics}
+              onSwitchTacticSlot={handleSwitchTacticSlot}
+              onUpdatePresetMeta={handleUpdatePresetMeta}
               onSelectPlayer={(p) => openPlayerSheet(p, false)}
             />
           )}
@@ -5270,6 +5566,9 @@ export default function App() {
               onStartNextSeason={handleStartNextSeason}
               onOpenFinancePayroll={() => requestTabSwitch('home', { openFinance: true })}
               onQuickMentality={handleQuickMentality}
+              onSelectTacticSlot={handleSwitchTacticSlot}
+              onPrepareBeforeMatch={handlePrepareBeforeMatch}
+              onToggleSoundSetting={handleToggleSoundSetting}
               pauseLiveMatchExternal={Boolean(pendingLeaveLiveAction)}
               onLiveMatchGuardChange={handleLiveMatchGuardChange}
               forceFinishLiveMatchRef={forceFinishLiveMatchRef}
@@ -5554,6 +5853,15 @@ export default function App() {
           logoutLocalAccount();
         }}
         onCancel={() => setConfirmLogoutOpen(false)}
+      />
+
+      <GameSettingsModal
+        open={showSettingsModal}
+        settings={ensureGameSettings(hydratedCareer.settings, isSoundEnabled())}
+        fitnessBoostersCount={normalizeInventory(hydratedCareer.inventory).fitnessBoosters}
+        transferBudgetM={hydratedCareer.transferBudget}
+        onChange={handleUpdateGameSettings}
+        onClose={() => setShowSettingsModal(false)}
       />
 
       {/* Real-Time Push Toast */}

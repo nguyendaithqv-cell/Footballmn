@@ -37,14 +37,27 @@ import {
   SeasonPayrollBreakdown,
   SeasonRecord,
   SuperCupState,
+  TacticPreset,
   TacticSettings,
   TacticSlot,
+  TacticSlotKey,
   TeamOfTheSeasonPlayer,
   TransferRecord,
   TrophyItem,
+  GameSettings,
 } from '../types/game';
-import { getMedicalCostMultiplier, getPlayerRemainingSeasonWageM } from './economyEngine';
-import { createStarterInventory, normalizeInventory } from './inventoryEngine';
+import {
+  ensureClubFacilities,
+  getContractRenewalCostK,
+  getMedicalCostMultiplier,
+  getPlayerRemainingSeasonWageM,
+} from './economyEngine';
+import {
+  createStarterInventory,
+  FITNESS_BOOSTER_RECOVERY,
+  normalizeInventory,
+} from './inventoryEngine';
+import { isSoundEnabled } from './soundFx';
 import {
   advanceAcademyOnNewSeason,
   createEmptyClubRecords,
@@ -1528,6 +1541,21 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     questsState.dailyKey !== career.quests?.dailyKey ||
     questsState.weeklyKey !== career.quests?.weeklyKey;
 
+  const hasTacticPresets = Boolean(
+    career.activeTacticSlot &&
+      career.tacticPresets?.A &&
+      career.tacticPresets?.B &&
+      career.tacticPresets?.C
+  );
+  const hasSettings = Boolean(
+    career.settings &&
+      typeof career.settings.soundEnabled === 'boolean' &&
+      typeof career.settings.autoRenewContracts === 'boolean' &&
+      typeof career.settings.autoRecoverStamina === 'boolean' &&
+      typeof career.settings.defaultLiveSpeed === 'number' &&
+      career.settings.confirmMode
+  );
+
   if (
     hasComps &&
     career.competitions?.leaderboards &&
@@ -1545,7 +1573,9 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     hasYouthAcademy &&
     hasClubRecords &&
     hasFreeAgents &&
-    !questsChanged
+    !questsChanged &&
+    hasTacticPresets &&
+    hasSettings
   ) {
     return career;
   }
@@ -1585,6 +1615,12 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
 
   const nowDate = new Date();
   const defaultOnlineSeasonId = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}`;
+  const repairedPresetsBundle = repairCareerTacticPresets(
+    career.tactics,
+    career.activeTacticSlot ?? 'A',
+    career.tacticPresets,
+    paddedSquad
+  );
 
   return {
     ...career,
@@ -1609,7 +1645,10 @@ export function ensureCareerCompetitions(career: CareerSave): CareerSave {
     seasonAwards: career.seasonAwards ?? [],
     boardObjectives: nextObjectives,
     squad: paddedSquad,
-    tactics: repairTacticsAfterSquadChange(career.tactics, paddedSquad),
+    tactics: repairedPresetsBundle.tactics,
+    activeTacticSlot: repairedPresetsBundle.activeSlot,
+    tacticPresets: repairedPresetsBundle.tacticPresets,
+    settings: ensureGameSettings(career.settings, isSoundEnabled()),
     competitions,
     trophyCabinet: career.trophyCabinet ?? [],
     seasonHistory: career.seasonHistory ?? [],
@@ -1705,6 +1744,9 @@ export function createInitialCareer(
     trainingFocus: 'Tactical',
     trainingIntensity: 'balanced',
     tactics,
+    activeTacticSlot: 'A',
+    tacticPresets: ensureTacticPresets(tactics, clubSquad),
+    settings: ensureGameSettings(undefined, isSoundEnabled()),
     squad: clubSquad,
     standings,
     fixtures,
@@ -4802,8 +4844,6 @@ export function createNextSeasonCareer(career: CareerSave): {
     }
   }
 
-  const repairedTactics = repairTacticsAfterSquadChange(hydrated.tactics, nextSquad);
-
   const freeTransferRecords: TransferRecord[] = [
     ...departedFreeAgents.map((p, idx) => ({
       id: `tr-free-${Date.now()}-${idx}`,
@@ -4950,6 +4990,13 @@ export function createNextSeasonCareer(career: CareerSave): {
         Math.max(45, hydrated.boardConfidence + (leagueRank <= 4 ? 6 : 1) + bundle.objConfidenceDelta)
       );
 
+  const repairedBundle = repairCareerTacticPresets(
+    hydrated.tactics,
+    hydrated.activeTacticSlot ?? 'A',
+    hydrated.tacticPresets,
+    nextSquad
+  );
+
   const nextCareer: CareerSave = {
     ...hydrated,
     activeManagerId: isManagerExpired ? null : hydrated.activeManagerId,
@@ -4964,7 +5011,10 @@ export function createNextSeasonCareer(career: CareerSave): {
     fanSupport: alreadyClaimed
       ? hydrated.fanSupport
       : Math.min(100, Math.max(60, hydrated.fanSupport + (leagueRank <= 4 ? 6 : 2))),
-    tactics: repairedTactics,
+    tactics: repairedBundle.tactics,
+    activeTacticSlot: repairedBundle.activeSlot,
+    tacticPresets: repairedBundle.tacticPresets,
+    settings: ensureGameSettings(hydrated.settings, isSoundEnabled()),
     squad: nextSquad,
     standings,
     fixtures,
@@ -5503,6 +5553,662 @@ export function generateIncomingTransferOffer(
     offerM,
     expiresAtMatchweek: career.matchweek + 4,
     createdAt: new Date().toISOString(),
+  };
+}
+
+export const DEFAULT_GAME_SETTINGS: GameSettings = {
+  soundEnabled: true,
+  autoRenewContracts: false,
+  autoRenewManagerContract: false,
+  autoRecoverStamina: false,
+  autoRecoverThreshold: 80,
+  autoRecoverScope: 'starters',
+  autoRecoverSource: 'booster_then_budget',
+  autoTreatMinorInjuries: false,
+  autoReplaceUnavailableStarters: false,
+  defaultLiveSpeed: 2,
+  confirmMode: 'strict',
+};
+
+export function ensureGameSettings(
+  settings?: Partial<GameSettings> | null,
+  fallbackSoundEnabled?: boolean
+): GameSettings {
+  const soundDefault =
+    typeof fallbackSoundEnabled === 'boolean' ? fallbackSoundEnabled : DEFAULT_GAME_SETTINGS.soundEnabled;
+  const threshold = settings?.autoRecoverThreshold;
+  const speed = settings?.defaultLiveSpeed;
+  return {
+    soundEnabled: typeof settings?.soundEnabled === 'boolean' ? settings.soundEnabled : soundDefault,
+    autoRenewContracts:
+      typeof settings?.autoRenewContracts === 'boolean'
+        ? settings.autoRenewContracts
+        : DEFAULT_GAME_SETTINGS.autoRenewContracts,
+    autoRenewManagerContract:
+      typeof settings?.autoRenewManagerContract === 'boolean'
+        ? settings.autoRenewManagerContract
+        : DEFAULT_GAME_SETTINGS.autoRenewManagerContract,
+    autoRecoverStamina:
+      typeof settings?.autoRecoverStamina === 'boolean'
+        ? settings.autoRecoverStamina
+        : DEFAULT_GAME_SETTINGS.autoRecoverStamina,
+    autoRecoverThreshold: threshold === 75 || threshold === 80 || threshold === 85 ? threshold : 80,
+    autoRecoverScope:
+      settings?.autoRecoverScope === 'squad' || settings?.autoRecoverScope === 'starters'
+        ? settings.autoRecoverScope
+        : 'starters',
+    autoRecoverSource:
+      settings?.autoRecoverSource === 'booster_then_budget' ||
+      settings?.autoRecoverSource === 'booster_only' ||
+      settings?.autoRecoverSource === 'budget_only'
+        ? settings.autoRecoverSource
+        : 'booster_then_budget',
+    autoTreatMinorInjuries:
+      typeof settings?.autoTreatMinorInjuries === 'boolean'
+        ? settings.autoTreatMinorInjuries
+        : DEFAULT_GAME_SETTINGS.autoTreatMinorInjuries,
+    autoReplaceUnavailableStarters:
+      typeof settings?.autoReplaceUnavailableStarters === 'boolean'
+        ? settings.autoReplaceUnavailableStarters
+        : DEFAULT_GAME_SETTINGS.autoReplaceUnavailableStarters,
+    defaultLiveSpeed: speed === 1 || speed === 2 || speed === 4 ? speed : 2,
+    confirmMode:
+      settings?.confirmMode === 'fast' || settings?.confirmMode === 'strict'
+        ? settings.confirmMode
+        : 'strict',
+  };
+}
+
+export const DEFAULT_TACTIC_PRESET_LABELS: Record<TacticSlotKey, string> = {
+  A: 'Chính (Mặc định)',
+  B: 'Phụ 1 (Xoay tua)',
+  C: 'Phụ 2 (Phản công)',
+};
+
+export function cloneTacticSettings(tactics: TacticSettings): TacticSettings {
+  return {
+    ...tactics,
+    slots: (tactics.slots ?? []).map((s) => ({ ...s })),
+    penaltyTakerIds: tactics.penaltyTakerIds ? [...tactics.penaltyTakerIds] : undefined,
+  };
+}
+
+export function buildRotationLineupSlots(
+  formation: FormationId,
+  clubSquad: Player[],
+  primarySlots: TacticSlot[] = []
+): TacticSlot[] {
+  const template = FORMATION_TEMPLATES[formation];
+  const primarySet = new Set(primarySlots.map((s) => s.playerId).filter(Boolean));
+  const usedIds = new Set<string>();
+  const sorted = [...clubSquad].sort((a, b) => {
+    const aUnavail = isPlayerUnavailable(a) ? 1 : 0;
+    const bUnavail = isPlayerUnavailable(b) ? 1 : 0;
+    if (aUnavail !== bUnavail) return aUnavail - bUnavail;
+    const aIsPrimary = primarySet.has(a.id) ? 1 : 0;
+    const bIsPrimary = primarySet.has(b.id) ? 1 : 0;
+    if (aIsPrimary !== bIsPrimary) return aIsPrimary - bIsPrimary;
+    if (b.fitness !== a.fitness && Math.abs(b.fitness - a.fitness) >= 8) {
+      return b.fitness - a.fitness;
+    }
+    return b.rating - a.rating;
+  });
+
+  return template.map((tpl, idx) => {
+    const compatOrder = POSITION_COMPATIBILITY[tpl.label];
+    let picked: Player | undefined;
+    for (const pos of compatOrder) {
+      picked = sorted.find((pl) => !usedIds.has(pl.id) && !isPlayerUnavailable(pl) && pl.position === pos);
+      if (picked) break;
+    }
+    if (!picked) {
+      picked = sorted.find((pl) => !usedIds.has(pl.id) && !isPlayerUnavailable(pl));
+    }
+    if (!picked) {
+      picked = sorted.find((pl) => !usedIds.has(pl.id)) ?? sorted[0];
+    }
+    if (picked) usedIds.add(picked.id);
+    return {
+      slotIndex: idx,
+      label: tpl.label,
+      x: tpl.x,
+      y: tpl.y,
+      playerId: picked?.id ?? '',
+      role: tpl.defaultRole,
+    };
+  });
+}
+
+function buildPenSyncForPreset(slots: TacticSlot[], squad: Player[], base: TacticSettings) {
+  const byId = new Map(squad.map((p) => [p.id, p]));
+  const xiSorted = slots
+    .map((s) => byId.get(s.playerId))
+    .filter((p): p is Player => Boolean(p))
+    .sort((a, b) => {
+      if (a.position === 'GK' && b.position !== 'GK') return 1;
+      if (b.position === 'GK' && a.position !== 'GK') return -1;
+      return b.attributes.sho - a.attributes.sho;
+    });
+  return {
+    ...base,
+    slots,
+    designatedPenaltyTakerId: xiSorted[0]?.id,
+    penaltyTakerIds: xiSorted.slice(0, 10).map((p) => p.id),
+  };
+}
+
+export function ensureTacticPresets(
+  activeTactics: TacticSettings,
+  squad: Player[],
+  existingPresets?: Partial<Record<TacticSlotKey, TacticPreset>>
+): Record<TacticSlotKey, TacticPreset> {
+  const cleanActive = repairTacticsAfterSquadChange(cloneTacticSettings(activeTactics), squad);
+
+  const presetA: TacticPreset = existingPresets?.A?.tactics
+    ? {
+        id: 'A',
+        label: existingPresets.A.label?.trim() || DEFAULT_TACTIC_PRESET_LABELS.A,
+        tactics: repairTacticsAfterSquadChange(cloneTacticSettings(existingPresets.A.tactics), squad),
+      }
+    : {
+        id: 'A',
+        label: DEFAULT_TACTIC_PRESET_LABELS.A,
+        tactics: cloneTacticSettings(cleanActive),
+      };
+
+  const presetB: TacticPreset = existingPresets?.B?.tactics
+    ? {
+        id: 'B',
+        label: existingPresets.B.label?.trim() || DEFAULT_TACTIC_PRESET_LABELS.B,
+        tactics: repairTacticsAfterSquadChange(cloneTacticSettings(existingPresets.B.tactics), squad),
+      }
+    : (() => {
+        const altFormation: FormationId = cleanActive.formation === '4-2-3-1' ? '4-3-3' : '4-2-3-1';
+        const rotSlots = buildRotationLineupSlots(altFormation, squad, cleanActive.slots);
+        return {
+          id: 'B',
+          label: DEFAULT_TACTIC_PRESET_LABELS.B,
+          tactics: buildPenSyncForPreset(rotSlots, squad, {
+            ...cloneTacticSettings(cleanActive),
+            formation: altFormation,
+            mentality: 'Balanced',
+            pressingIntensity: 3,
+            tempo: 3,
+          }),
+        };
+      })();
+
+  const presetC: TacticPreset = existingPresets?.C?.tactics
+    ? {
+        id: 'C',
+        label: existingPresets.C.label?.trim() || DEFAULT_TACTIC_PRESET_LABELS.C,
+        tactics: repairTacticsAfterSquadChange(cloneTacticSettings(existingPresets.C.tactics), squad),
+      }
+    : (() => {
+        const defFormation: FormationId = cleanActive.formation === '5-3-2' ? '4-4-2' : '5-3-2';
+        const defSlots = buildAutoLineupSlots(defFormation, squad);
+        return {
+          id: 'C',
+          label: DEFAULT_TACTIC_PRESET_LABELS.C,
+          tactics: buildPenSyncForPreset(defSlots, squad, {
+            ...cloneTacticSettings(cleanActive),
+            formation: defFormation,
+            mentality: 'Cautious',
+            passingDirectness: 4,
+            tempo: 4,
+            pressingIntensity: 2,
+            defensiveLine: 2,
+            counterPress: false,
+            offsideTrap: false,
+          }),
+        };
+      })();
+
+  return { A: presetA, B: presetB, C: presetC };
+}
+
+export function repairCareerTacticPresets(
+  activeTactics: TacticSettings,
+  activeSlot: TacticSlotKey = 'A',
+  existingPresets: Partial<Record<TacticSlotKey, TacticPreset>> | undefined,
+  squad: Player[]
+): {
+  activeSlot: TacticSlotKey;
+  tactics: TacticSettings;
+  tacticPresets: Record<TacticSlotKey, TacticPreset>;
+} {
+  const safeSlot: TacticSlotKey =
+    activeSlot === 'B' || activeSlot === 'C' ? activeSlot : 'A';
+  const ensured = ensureTacticPresets(activeTactics, squad, existingPresets);
+  ensured[safeSlot] = {
+    ...ensured[safeSlot],
+    tactics: repairTacticsAfterSquadChange(cloneTacticSettings(activeTactics), squad),
+  };
+  return {
+    activeSlot: safeSlot,
+    tactics: ensured[safeSlot].tactics,
+    tacticPresets: ensured,
+  };
+}
+
+export function applyPreMatchAutomation(career: CareerSave): {
+  nextCareer: CareerSave;
+  actionsSummary: string[];
+  spentM: number;
+  boostersUsed: number;
+  healedCount: number;
+  recoveredCount: number;
+  replacedCount: number;
+} {
+  const settings = ensureGameSettings(career.settings, isSoundEnabled());
+  const needsAny =
+    settings.autoTreatMinorInjuries ||
+    settings.autoRecoverStamina ||
+    settings.autoReplaceUnavailableStarters;
+
+  if (!needsAny) {
+    return {
+      nextCareer: career,
+      actionsSummary: [],
+      spentM: 0,
+      boostersUsed: 0,
+      healedCount: 0,
+      recoveredCount: 0,
+      replacedCount: 0,
+    };
+  }
+
+  const facilities = ensureClubFacilities(career);
+  let nextBudget = career.transferBudget;
+  let nextInv = normalizeInventory(career.inventory);
+  let nextSquad = career.squad.map((p) => ({ ...p }));
+  let nextLedger = [...(career.financialLedger ?? [])];
+  const actionsSummary: string[] = [];
+  let spentM = 0;
+  let boostersUsed = 0;
+  let healedCount = 0;
+  let recoveredCount = 0;
+  let replacedCount = 0;
+
+  const starterIdSet = new Set(career.tactics.slots.map((s) => s.playerId).filter(Boolean));
+
+  // 1. Auto-treat minor injuries (<= 2 matches)
+  if (settings.autoTreatMinorInjuries) {
+    const candidates = nextSquad
+      .filter((p) => isPlayerInjured(p) && (p.injury?.matchesRemaining ?? 99) <= 2)
+      .sort((a, b) => {
+        const aStart = starterIdSet.has(a.id) ? 1 : 0;
+        const bStart = starterIdSet.has(b.id) ? 1 : 0;
+        if (aStart !== bStart) return bStart - aStart;
+        return b.rating - a.rating;
+      });
+
+    for (const c of candidates) {
+      const costM = getInjuryTreatmentCostM(c, facilities.medicalLevel);
+      if (nextBudget < costM) continue;
+      nextBudget = Number((nextBudget - costM).toFixed(1));
+      spentM = Number((spentM + costM).toFixed(1));
+      healedCount++;
+      const prevInjuryName = c.injury?.type ?? 'Chấn thương nhẹ';
+      nextSquad = nextSquad.map((p) => {
+        if (p.id !== c.id) return p;
+        const { injury: _removed, ...rest } = p;
+        return {
+          ...rest,
+          fitness: Math.max(92, p.fitness),
+          morale: Math.min(100, p.morale + 4),
+        };
+      });
+      nextLedger = appendLedgerEntries(nextLedger, [
+        createLedgerEntry({
+          season: career.season,
+          matchweek: career.matchweek,
+          type: 'expense',
+          category: 'medical_recovery',
+          title: `Tự động trị chấn thương nhẹ: ${c.name}`,
+          detail: `${prevInjuryName} (Y tế Cấp ${facilities.medicalLevel})`,
+          amountM: costM,
+        }),
+      ]);
+      actionsSummary.push(`Chữa khỏi ${c.shortName} (-€${costM}M)`);
+    }
+  }
+
+  // 2. Auto-replace injured or suspended starters in active lineup (before stamina recovery so replacements get topped up)
+  let nextTactics = career.tactics;
+  let nextPresets = career.tacticPresets;
+  const activeSlot: TacticSlotKey = career.activeTacticSlot ?? 'A';
+  let activeStarterIdSet = new Set(career.tactics.slots.map((s) => s.playerId).filter(Boolean));
+
+  if (settings.autoReplaceUnavailableStarters) {
+    const squadMap = new Map(nextSquad.map((p) => [p.id, p]));
+    const hadUnavailable = career.tactics.slots.some((s) =>
+      isPlayerUnavailable(squadMap.get(s.playerId))
+    );
+    if (hadUnavailable) {
+      const repaired = repairTacticsAfterSquadChange(career.tactics, nextSquad);
+      for (let i = 0; i < career.tactics.slots.length; i++) {
+        if (career.tactics.slots[i]?.playerId !== repaired.slots[i]?.playerId) {
+          replacedCount++;
+        }
+      }
+      nextTactics = repaired;
+      activeStarterIdSet = new Set(repaired.slots.map((s) => s.playerId).filter(Boolean));
+      const presetBundle = repairCareerTacticPresets(repaired, activeSlot, nextPresets, nextSquad);
+      nextPresets = presetBundle.tacticPresets;
+      if (replacedCount > 0) {
+        actionsSummary.push(
+          `Tự động thay ${replacedCount} cầu thủ chấn thương/treo giò khỏi đội hình chính`
+        );
+      }
+    }
+  }
+
+  // 3. Auto-recover stamina below threshold
+  if (settings.autoRecoverStamina) {
+    const targetPool = nextSquad
+      .filter((p) => {
+        if (settings.autoRecoverScope === 'starters' && !activeStarterIdSet.has(p.id)) {
+          return false;
+        }
+        if (settings.autoRecoverScope === 'starters' && isPlayerUnavailable(p)) {
+          return false;
+        }
+        return p.fitness < settings.autoRecoverThreshold;
+      })
+      .sort((a, b) => {
+        const aStart = activeStarterIdSet.has(a.id) ? 1 : 0;
+        const bStart = activeStarterIdSet.has(b.id) ? 1 : 0;
+        if (aStart !== bStart) return bStart - aStart;
+        if (a.fitness !== b.fitness) return a.fitness - b.fitness;
+        return b.rating - a.rating;
+      });
+
+    for (const candidate of targetPool) {
+      let current = nextSquad.find((p) => p.id === candidate.id);
+      if (!current) continue;
+      const startFitness = current.fitness;
+      let touched = false;
+
+      if (
+        (settings.autoRecoverSource === 'booster_then_budget' ||
+          settings.autoRecoverSource === 'booster_only') &&
+        nextInv.fitnessBoosters > 0
+      ) {
+        while (current.fitness < settings.autoRecoverThreshold && nextInv.fitnessBoosters > 0) {
+          nextInv = normalizeInventory({
+            ...nextInv,
+            fitnessBoosters: nextInv.fitnessBoosters - 1,
+          });
+          boostersUsed++;
+          const boostedFitness = Math.min(100, current.fitness + FITNESS_BOOSTER_RECOVERY);
+          current = {
+            ...current,
+            fitness: boostedFitness,
+            morale: Math.min(100, current.morale + 2),
+          };
+          touched = true;
+        }
+      }
+
+      if (
+        current.fitness < settings.autoRecoverThreshold &&
+        (settings.autoRecoverSource === 'booster_then_budget' ||
+          settings.autoRecoverSource === 'budget_only')
+      ) {
+        const costM = getPlayerRecoveryCostM(current.fitness, facilities.medicalLevel);
+        if (nextBudget >= costM && costM > 0) {
+          nextBudget = Number((nextBudget - costM).toFixed(1));
+          spentM = Number((spentM + costM).toFixed(1));
+          const beforeBudgetFit = current.fitness;
+          current = {
+            ...current,
+            fitness: 100,
+            morale: Math.min(100, current.morale + 3),
+          };
+          touched = true;
+          nextLedger = appendLedgerEntries(nextLedger, [
+            createLedgerEntry({
+              season: career.season,
+              matchweek: career.matchweek,
+              type: 'expense',
+              category: 'medical_recovery',
+              title: `Tự động hồi phục thể lực: ${current.name}`,
+              detail: `${beforeBudgetFit}% → 100% (Y tế Cấp ${facilities.medicalLevel})`,
+              amountM: costM,
+            }),
+          ]);
+        }
+      }
+
+      if (touched) {
+        recoveredCount++;
+        const updatedPlayer = current;
+        nextSquad = nextSquad.map((p) => (p.id === updatedPlayer.id ? updatedPlayer : p));
+        actionsSummary.push(
+          `Bơm thể lực ${updatedPlayer.shortName} (${startFitness}% → ${updatedPlayer.fitness}%)`
+        );
+      }
+    }
+  }
+
+  if (actionsSummary.length === 0) {
+    return {
+      nextCareer: career,
+      actionsSummary: [],
+      spentM: 0,
+      boostersUsed: 0,
+      healedCount: 0,
+      recoveredCount: 0,
+      replacedCount: 0,
+    };
+  }
+
+  return {
+    nextCareer: {
+      ...career,
+      transferBudget: nextBudget,
+      squad: nextSquad,
+      inventory: nextInv,
+      financialLedger: nextLedger,
+      tactics: nextTactics,
+      ...(nextPresets ? { tacticPresets: nextPresets } : {}),
+    },
+    actionsSummary,
+    spentM,
+    boostersUsed,
+    healedCount,
+    recoveredCount,
+    replacedCount,
+  };
+}
+
+export function applyAutoRenewContractsBeforeRollover(career: CareerSave): {
+  nextCareer: CareerSave;
+  renewedPlayers: {
+    playerId: string;
+    name: string;
+    shortName: string;
+    years: number;
+    newUntil: number;
+    bonusM: number;
+    newWageK: number;
+  }[];
+  skippedListedCount: number;
+  skippedBudgetCount: number;
+  renewedManager?: {
+    name: string;
+    years: 1 | 2;
+    newUntil: number;
+    feeM: number;
+  };
+  managerSkippedBudget: boolean;
+} {
+  const settings = ensureGameSettings(career.settings, isSoundEnabled());
+  const currentYear = Number(career.season.slice(0, 4)) || 2026;
+  const nextSeasonStartYear = currentYear + 1;
+
+  let nextBudget = career.transferBudget;
+  let nextSquad = career.squad.map((p) => ({ ...p }));
+  let nextLedger = [...(career.financialLedger ?? [])];
+  let nextManagerContractUntil = career.activeManagerContractUntil;
+  let nextManagerHistory = [...(career.managerHistory ?? [])];
+
+  const renewedPlayers: {
+    playerId: string;
+    name: string;
+    shortName: string;
+    years: number;
+    newUntil: number;
+    bonusM: number;
+    newWageK: number;
+  }[] = [];
+  let skippedListedCount = 0;
+  let skippedBudgetCount = 0;
+  let renewedManager:
+    | { name: string; years: 1 | 2; newUntil: number; feeM: number }
+    | undefined;
+  let managerSkippedBudget = false;
+
+  if (settings.autoRenewContracts) {
+    const loanedInIds = new Set((career.loanedInPlayers ?? []).map((li) => li.playerId));
+    const starterIds = new Set(career.tactics.slots.map((s) => s.playerId));
+
+    const expiringAll = nextSquad.filter(
+      (p) => !loanedInIds.has(p.id) && p.contractUntil <= nextSeasonStartYear
+    );
+    const eligible = expiringAll
+      .filter((p) => {
+        if (p.transferStatus === 'listed') {
+          skippedListedCount++;
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aStart = starterIds.has(a.id) ? 1 : 0;
+        const bStart = starterIds.has(b.id) ? 1 : 0;
+        if (aStart !== bStart) return bStart - aStart;
+        return b.rating - a.rating;
+      });
+
+    for (const p of eligible) {
+      const { wageIncreaseK, bonusM, targetYears } = getContractRenewalCostK(p, 2);
+      if (nextBudget < bonusM) {
+        skippedBudgetCount++;
+        continue;
+      }
+      const newUntil = Math.max(p.contractUntil, currentYear) + targetYears;
+      const newWageK = p.wageK + wageIncreaseK;
+      nextBudget = Number((nextBudget - bonusM).toFixed(1));
+      nextSquad = nextSquad.map((sp) =>
+        sp.id === p.id
+          ? {
+              ...sp,
+              contractUntil: newUntil,
+              wageK: newWageK,
+              morale: Math.min(100, sp.morale + 8),
+            }
+          : sp
+      );
+      nextLedger = appendLedgerEntries(nextLedger, [
+        createLedgerEntry({
+          season: career.season,
+          matchweek: career.matchweek,
+          type: 'expense',
+          category: 'contract_compensation',
+          title: `Tự động gia hạn HĐ: ${p.name}`,
+          detail: `+${targetYears} năm (đến ${newUntil}), lương €${newWageK}K/tuần, lót tay €${bonusM}M`,
+          amountM: bonusM,
+        }),
+      ]);
+      renewedPlayers.push({
+        playerId: p.id,
+        name: p.name,
+        shortName: p.shortName,
+        years: targetYears,
+        newUntil,
+        bonusM,
+        newWageK,
+      });
+    }
+  }
+
+  if (settings.autoRenewManagerContract) {
+    const activeMgr = getActiveCareerManager(career);
+    if (activeMgr) {
+      const curUntil = getActiveManagerContractUntil(career, activeMgr) ?? currentYear + 2;
+      if (curUntil <= nextSeasonStartYear) {
+        const annualSalaryM = getActiveManagerAnnualSalaryM(career, activeMgr);
+        let chosenYears: 1 | 2 | null = null;
+        let chosenFee = 0;
+
+        for (const yrs of [2, 1] as const) {
+          const candidateUntil = Math.max(curUntil, currentYear) + yrs;
+          if (candidateUntil > currentYear + 6) continue;
+          const fee = getManagerContractExtensionCostM(annualSalaryM, yrs);
+          if (nextBudget >= fee) {
+            chosenYears = yrs;
+            chosenFee = fee;
+            break;
+          }
+        }
+
+        if (chosenYears) {
+          const newUntil = Math.max(curUntil, currentYear) + chosenYears;
+          nextBudget = Number((nextBudget - chosenFee).toFixed(1));
+          nextManagerContractUntil = newUntil;
+          nextManagerHistory = [
+            {
+              id: `mh-auto-ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+              managerId: activeMgr.id,
+              managerName: activeMgr.name,
+              action: 'extended' as const,
+              season: career.season,
+              matchweek: career.matchweek,
+              feeM: chosenFee,
+              date: new Date().toISOString(),
+            },
+            ...nextManagerHistory,
+          ].slice(0, 100);
+          nextLedger = appendLedgerEntries(nextLedger, [
+            createLedgerEntry({
+              season: career.season,
+              matchweek: career.matchweek,
+              type: 'expense',
+              category: 'contract_compensation',
+              title: `Tự động gia hạn HĐ HLV ${activeMgr.name} (+${chosenYears} năm → ${newUntil})`,
+              detail: `Lương năm €${annualSalaryM.toFixed(1)}M/năm`,
+              amountM: chosenFee,
+            }),
+          ]);
+          renewedManager = {
+            name: activeMgr.name,
+            years: chosenYears,
+            newUntil,
+            feeM: chosenFee,
+          };
+        } else {
+          managerSkippedBudget = true;
+        }
+      }
+    }
+  }
+
+  return {
+    nextCareer: {
+      ...career,
+      transferBudget: nextBudget,
+      squad: nextSquad,
+      financialLedger: nextLedger,
+      activeManagerContractUntil: nextManagerContractUntil,
+      managerHistory: nextManagerHistory,
+    },
+    renewedPlayers,
+    skippedListedCount,
+    skippedBudgetCount,
+    renewedManager,
+    managerSkippedBudget,
   };
 }
 
